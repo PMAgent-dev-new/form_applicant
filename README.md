@@ -25,7 +25,7 @@
 - Lark Webhookへの自動通知
 - Google Tag Manager統合（GTM-5CQGTMXF）
 
-### UI/UX
+### UI・UX
 - ローディング画面
 - カードベースのステップナビゲーション
 - レスポンシブデザイン
