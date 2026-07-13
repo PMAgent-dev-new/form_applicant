@@ -1,0 +1,40 @@
+name: post-deploy-guard
+
+# After main merges (and Vercel auto-deploys), verify production is healthy and,
+# when armed, roll back any project that isn't. This job is observational: it does
+# NOT gate merges — those already happened. It alerts, and (only if
+# vars.POST_DEPLOY_ROLLBACK_ARMED == 'true') rolls back.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  statuses: read
+
+concurrency:
+  group: post-deploy-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Post-deploy health guard
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          HEALTH_CHECK_TOKEN: ${{ secrets.HEALTH_CHECK_TOKEN }}
+          LARK_ALERT_WEBHOOK: ${{ secrets.LARK_ALERT_WEBHOOK }}
+          ROLLBACK_ARMED: ${{ vars.POST_DEPLOY_ROLLBACK_ARMED }}
+        run: node scripts/post-deploy-guard.mjs
