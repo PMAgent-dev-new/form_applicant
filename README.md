@@ -33,7 +33,7 @@
 
 ## 技術スタック
 
-- **フレームワーク**: Next.js 15.3.1
+- **フレームワーク**: Next.js 16.0.8
 - **言語**: TypeScript
 - **UI**: React 19
 - **スタイリング**: Tailwind CSS v4
