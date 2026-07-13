@@ -186,6 +186,11 @@ src/
 }
 ```
 
+### GET /api/health
+デプロイ後の死活監視用エンドポイント。通常は `200 { "status": "ok" }` を返します。
+
+`HEALTH_CHECK_TOKEN` と一致する `x-health-token` ヘッダーを指定した場合は、応募に必要な環境変数の準備状況を確認し、準備完了なら `200 { "status": "ready" }`、不足があれば `503 { "status": "degraded", "missing": [...] }` を返します。
+
 ## 開発コマンド
 
 ```bash
