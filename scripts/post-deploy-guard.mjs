@@ -31,9 +31,13 @@ const {
   VERCEL_TEAM = 'pmagent-dev-new',
   LARK_ALERT_WEBHOOK = '',
   ROLLBACK_ARMED = 'false',
+  GUARD_MODE = 'guard',
+  FORCE_UNHEALTHY = 'false',
 } = process.env;
 
 const ARMED = ROLLBACK_ARMED.trim().toLowerCase() === 'true';
+const MODE = GUARD_MODE.trim().toLowerCase(); // 'guard' | 'selftest'
+const DRILL = FORCE_UNHEALTHY.trim().toLowerCase() === 'true';
 
 // project name -> production URL (custom domain / production alias, NOT the
 // immutable *.vercel.app deployment URL, which can be behind Deployment Protection).
@@ -143,15 +147,45 @@ async function healthCheck(project) {
   return { project: project.name, verdict: 'unhealthy', detail: lastDetail };
 }
 
-function rollback(project) {
-  // vercel rollback (no target) rolls the linked project back to its previous
-  // production deployment. Link in a throwaway dir so we target the right project.
+function linkArgs(project) {
   const dir = mkdtempSync(join(tmpdir(), `vlink-${project.name}-`));
   const base = ['--token', VERCEL_TOKEN, '--scope', VERCEL_TEAM, '--cwd', dir, '--yes'];
   execFileSync('npx', ['--yes', 'vercel@latest', 'link', '--project', project.name, ...base], {
     stdio: 'inherit',
   });
+  return base;
+}
+
+function rollback(project) {
+  // vercel rollback (no target) rolls the linked project back to its previous
+  // production deployment. Link in a throwaway dir so we target the right project.
+  const base = linkArgs(project);
   execFileSync('npx', ['--yes', 'vercel@latest', 'rollback', ...base], { stdio: 'inherit' });
+}
+
+// selftest: prove the rollback PREREQUISITES (Vercel auth + team scope + project
+// resolution/link) work in CI, WITHOUT performing a rollback. This de-risks arming
+// the guard without touching production.
+function selfTest() {
+  if (!VERCEL_TOKEN) {
+    fail('selftest: VERCEL_TOKEN is not set');
+    process.exitCode = 1;
+    return;
+  }
+  let ok = true;
+  for (const project of PROJECTS) {
+    try {
+      log(`\n=== selftest: ${project.name} ===`);
+      const base = linkArgs(project); // link proves token + scope + project name resolve
+      execFileSync('npx', ['--yes', 'vercel@latest', 'ls', ...base], { stdio: 'inherit' });
+      log(`✓ ${project.name}: vercel auth + link + ls OK (rollback prerequisites verified)`);
+    } catch (e) {
+      ok = false;
+      fail(`${project.name}: selftest FAILED — ${e.message}`);
+    }
+  }
+  if (!ok) process.exitCode = 1;
+  else log('\nselftest passed: rollback can authenticate and resolve both projects');
 }
 
 async function notify(text) {
@@ -175,17 +209,28 @@ async function main() {
   }
 
   log(
-    `post-deploy guard: armed=${ARMED} ` +
+    `post-deploy guard: mode=${MODE} armed=${ARMED} drill=${DRILL} ` +
       `readinessToken=${HEALTH_CHECK_TOKEN ? 'set' : 'absent'} ` +
       `vercelToken=${VERCEL_TOKEN ? 'set' : 'absent'} sha=${GITHUB_SHA.slice(0, 7)}`,
   );
+
+  if (MODE === 'selftest') {
+    selfTest();
+    return;
+  }
 
   await waitForDeploys();
 
   const results = [];
   for (const project of PROJECTS) {
     log(`health-checking ${project.name} (${project.url}/api/health)`);
-    results.push(await healthCheck(project));
+    const r = await healthCheck(project);
+    if (DRILL) {
+      // Fire-drill: force the rollback path to exercise it on demand.
+      results.push({ ...r, verdict: 'unhealthy', detail: `[FORCED DRILL] ${r.detail}` });
+    } else {
+      results.push(r);
+    }
   }
 
   for (const r of results) {
