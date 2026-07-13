@@ -8,7 +8,17 @@ name: post-deploy-guard
 on:
   push:
     branches: [main]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "guard (normal) or selftest (verify Vercel rollback prerequisites, no prod change)"
+        type: choice
+        default: guard
+        options: [guard, selftest]
+      force_unhealthy:
+        description: "Fire-drill: force the rollback path even if prod is healthy (rolls back to previous deploy)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -37,4 +47,6 @@ jobs:
           HEALTH_CHECK_TOKEN: ${{ secrets.HEALTH_CHECK_TOKEN }}
           LARK_ALERT_WEBHOOK: ${{ secrets.LARK_ALERT_WEBHOOK }}
           ROLLBACK_ARMED: ${{ vars.POST_DEPLOY_ROLLBACK_ARMED }}
+          GUARD_MODE: ${{ inputs.mode || 'guard' }}
+          FORCE_UNHEALTHY: ${{ inputs.force_unhealthy || 'false' }}
         run: node scripts/post-deploy-guard.mjs
