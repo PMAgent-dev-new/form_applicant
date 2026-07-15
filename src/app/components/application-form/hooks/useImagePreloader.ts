@@ -14,7 +14,9 @@ export function useImagePreloader({ images, onComplete, enable }: UseImagePreloa
   // onComplete はインラインで毎レンダー変わるため ref 経由で参照し、effect の依存に含めない。
   // （依存に含めると親の再レンダーごとに effect が再実行され、完了タイマーが毎回クリアされてローディングが終わらない）
   const onCompleteRef = useRef(onComplete);
-  onCompleteRef.current = onComplete;
+  useEffect(() => {
+    onCompleteRef.current = onComplete;
+  });
   const doneRef = useRef(false);
 
   useEffect(() => {

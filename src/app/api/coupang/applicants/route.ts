@@ -6,6 +6,7 @@ import {
 } from '@/app/components/coupang-form/constants';
 import { getCoupangStep1Options } from '../step1-options/options';
 import { resolveAdImageUrl, isLikelyAdId } from '@/lib/meta/resolveAdImage';
+import { sendMetaCapiLead } from '@/lib/meta/capi';
 
 type UTMParams = {
   utm_source?: string;
@@ -19,6 +20,7 @@ type UTMParams = {
 
 type CoupangSubmission = CoupangFormData & {
   utmParams?: UTMParams;
+  metaEventId?: string;
 };
 
 
@@ -190,6 +192,25 @@ export async function POST(request: NextRequest) {
               console.log('Lark Base webhook triggered successfully');
             }
           })()
+        );
+      }
+
+      // Meta Conversions API（Lead）— 非致命。eventId が無ければスキップ
+      if (typeof submissionData.metaEventId === 'string' && submissionData.metaEventId) {
+        const capiUserAgent = request.headers.get('user-agent') || '';
+        const capiClientIp = (request.headers.get('x-forwarded-for') || '').split(',')[0]?.trim() || '';
+        const capiReferer = request.headers.get('referer') || '';
+        tasks.push(
+          sendMetaCapiLead({
+            eventId: submissionData.metaEventId,
+            eventSourceUrl: capiReferer,
+            email: formData.email,
+            phone: formData.phoneNumber,
+            fbp: request.cookies.get('_fbp')?.value,
+            fbc: request.cookies.get('_fbc')?.value,
+            clientIpAddress: capiClientIp || undefined,
+            clientUserAgent: capiUserAgent || undefined,
+          }).then(() => {})
         );
       }
 

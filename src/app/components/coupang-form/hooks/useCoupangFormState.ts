@@ -9,6 +9,7 @@ import {
   validateStep4,
   validateAllSteps,
 } from '../utils/coupangValidators';
+import { genEventId, trackMeta } from '@/lib/meta/pixel';
 
 declare global {
   interface Window {
@@ -202,6 +203,9 @@ export function useCoupangFormState() {
           form_name: 'coupang_rocketnow_application',
         });
 
+        // Pixel と CAPI で共有する eventId（重複排除用）
+        const metaEventId = genEventId();
+
         const response = await fetch(apiPath('/api/coupang/applicants'), {
           method: 'POST',
           headers: {
@@ -210,6 +214,7 @@ export function useCoupangFormState() {
           body: JSON.stringify({
             ...formData,
             utmParams,
+            metaEventId,
           }),
         });
 
@@ -222,6 +227,9 @@ export function useCoupangFormState() {
 
         await response.json();
         setIsFormDirty(false);
+
+        // 送信成功時に Meta Lead を発火（サーバーCAPIと同一 eventId で重複排除）
+        trackMeta('Lead', { value: 0, currency: 'JPY' }, metaEventId);
 
         // サンクスページへ遷移
         router.push('/coupang/applicants/new');
