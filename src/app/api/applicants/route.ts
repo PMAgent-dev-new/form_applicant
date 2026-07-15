@@ -10,6 +10,160 @@ import {
 import { sendApplicationSms } from '@/lib/sms/send-application-sms';
 import { resolveAdImageUrl, isLikelyAdId } from '@/lib/meta/resolveAdImage';
 import { sendMetaCapiLead } from '@/lib/meta/capi';
+import {
+  createBaseRecord,
+  isLarkBaseConfigured,
+  type LarkFieldValue,
+  type LarkProfile,
+} from '@/lib/larkBase';
+
+// Bitable 直書きの投入先テーブル（env で上書き可）。
+//   default / bus       → 求職者DB🚕   （ridejob base：APP_*_RIDEJOB）
+//   mechanic / newgrad  → 求職者DB👷‍♂️  （mechanic base：APP_*_MECHANIC・既存流用）
+// ※ coupang は今回対象外（従来どおり Base Webhook 送信）。
+const RIDEJOB_TABLE_ID = process.env.LARK_BASE_TABLE_ID_RIDEJOB || 'tblO0pPqFyHqpVcj';
+const MECHANIC_TABLE_ID = process.env.LARK_BASE_TABLE_ID_MECHANIC_APPLICANTS || 'tblXcvtQJqoD2PIV';
+
+// Bitable 直書きに必要な、リクエスト内で算出済みの値をまとめたもの。
+type BaseWriteContext = {
+  isMechanic: boolean;
+  isMechanicNewgrad: boolean;
+  isCoupang: boolean;
+  mediaName: string;
+  utm: UTMParams;
+  adId: string;
+  adCreativeId: string;
+  adImageUrl: string;
+  form: ApplicantFormData;
+  jobTimingLabel: string;
+  jobIntentLabel: string;
+  desiredIncomeLabel: string;
+  mechanicQualificationsLabel: string;
+  qualificationFieldLabel: string;
+  pageUrl: string;
+  submittedAtMs: number; // 応募日（DateTime）用 epoch ms
+};
+
+type DirectBaseWrite = {
+  profile: LarkProfile;
+  tableId: string;
+  fields: Record<string, LarkFieldValue | undefined>;
+};
+
+// 流入元(origin)に応じて、直書き先テーブルと日本語カラムへのマッピングを決める。
+// coupang は今回対象外なので null（＝呼び出し側で Base Webhook にフォールバック）。
+// media_name の「応募経由(マスタ連動)」リンクは張らず、utm系＋クリエイティブ等のテキストのみ書き込む方針。
+function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite | null {
+  if (ctx.isCoupang) return null;
+
+  const address = [ctx.form.municipalityName, ctx.form.townName].filter(Boolean).join('') || undefined;
+
+  if (ctx.isMechanic) {
+    // 転職時期／希望年収／転職意向／保有資格は専用 Select への型変換リスクを避け、対応履歴メモに集約する。
+    const memo = [
+      ctx.jobTimingLabel ? `転職時期: ${ctx.jobTimingLabel}` : '',
+      ctx.desiredIncomeLabel ? `希望年収: ${ctx.desiredIncomeLabel}` : '',
+      ctx.jobIntentLabel ? `転職意向: ${ctx.jobIntentLabel}` : '',
+      ctx.mechanicQualificationsLabel ? `${ctx.qualificationFieldLabel}: ${ctx.mechanicQualificationsLabel}` : '',
+    ].filter(Boolean).join(' / ') || undefined;
+
+    return {
+      profile: 'mechanic',
+      tableId: MECHANIC_TABLE_ID,
+      fields: {
+        求職者名: ctx.form.fullName,
+        フリガナ: ctx.form.fullNameKana,
+        電話番号: ctx.form.phoneNumber,
+        メールアドレス: ctx.form.email,
+        生年月日: ctx.form.birthDate,
+        郵便番号: ctx.form.postalCode,
+        '居住地/都道府県': ctx.form.prefectureName,
+        '居住地/市区町村以下': address,
+        応募日: ctx.submittedAtMs,
+        ステータス: 'リード',
+        登録職種: '自動車整備士',
+        対応履歴メモ: memo,
+        utm_source: ctx.utm.utm_source,
+        utm_medium: ctx.utm.utm_medium,
+        utm_campaign: ctx.utm.utm_campaign,
+        utm_term: ctx.utm.utm_term,
+        utm_creative: ctx.utm.utm_creative,
+        utm_content: ctx.utm.utm_content,
+        ad_id: ctx.adId,
+        ad_creative_id: ctx.adCreativeId,
+        ad_image_url: ctx.adImageUrl,
+        LP_URL: ctx.pageUrl,
+        クリエイティブ: ctx.mediaName,
+      },
+    };
+  }
+
+  // default / bus → 求職者DB🚕（ridejob base）
+  const memo = ctx.jobTimingLabel ? `転職時期: ${ctx.jobTimingLabel}` : undefined;
+  return {
+    profile: 'ridejob',
+    tableId: RIDEJOB_TABLE_ID,
+    fields: {
+      求職者名: ctx.form.fullName,
+      フリガナ: ctx.form.fullNameKana,
+      電話番号: ctx.form.phoneNumber,
+      メールアドレス: ctx.form.email,
+      生年月日: ctx.form.birthDate,
+      郵便番号: ctx.form.postalCode,
+      都道府県: ctx.form.prefectureName,
+      市区町村以下: address,
+      応募日: ctx.submittedAtMs,
+      Status: 'リード',
+      対応履歴メモ: memo,
+      utm_source: ctx.utm.utm_source,
+      utm_medium: ctx.utm.utm_medium,
+      utm_campaign: ctx.utm.utm_campaign,
+      utm_term: ctx.utm.utm_term,
+      utm_creative: ctx.utm.utm_creative,
+      utm_content: ctx.utm.utm_content,
+      ad_id: ctx.adId,
+      ad_creative_id: ctx.adCreativeId,
+      ad_image_url: ctx.adImageUrl,
+      LP_URL: ctx.pageUrl,
+      クリエイティブ: ctx.mediaName,
+    },
+  };
+}
+
+// Base への保存。可能なら Bitable API で直書きし、未設定 or 失敗 or 対象外(coupang) なら
+// 既存の Base 自動化 Webhook にフォールバックする（応募データを取りこぼさないため）。
+async function saveToBase(
+  ctx: BaseWriteContext,
+  baseWebhookUrl: string | undefined,
+  basePayload: Record<string, unknown>
+): Promise<void> {
+  const target = resolveDirectBaseWrite(ctx);
+  if (target && isLarkBaseConfigured(target.profile)) {
+    try {
+      await createBaseRecord(target.tableId, target.fields, target.profile);
+      console.log(`Lark Base 直書き成功 (${target.profile} / ${target.tableId})`);
+      return;
+    } catch (e) {
+      console.error(`Lark Base 直書き失敗、Webhook にフォールバック (${target.profile}):`, e);
+    }
+  }
+
+  if (baseWebhookUrl) {
+    const resp = await fetch(baseWebhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(basePayload),
+    });
+    if (!resp.ok) {
+      const errorBody = await resp.text();
+      console.error(`Failed to send to Lark Base Webhook (${resp.status}): ${errorBody}`);
+    } else {
+      console.log('Lark Base webhook triggered successfully');
+    }
+  } else {
+    console.warn('Lark Base Webhook URL is not configured. Skipping Base record creation.');
+  }
+}
 
 // Types for submission payload
 type ExperimentInfo = {
@@ -233,6 +387,26 @@ export async function POST(request: NextRequest) {
       console.log('Resolved Meta ad image:', { adId, adImageUrl: adImageUrl ? '(取得済)' : '(なし)', adCreativeId });
     }
 
+    // Base 保存用コンテキスト（直書き／Webhook 両方で共有）
+    const baseWriteCtx: BaseWriteContext = {
+      isMechanic,
+      isMechanicNewgrad,
+      isCoupang,
+      mediaName,
+      utm: utmParams || {},
+      adId,
+      adCreativeId,
+      adImageUrl,
+      form: formData,
+      jobTimingLabel: baseJobTimingLabel,
+      jobIntentLabel: baseJobIntentLabel,
+      desiredIncomeLabel: baseDesiredIncomeLabel,
+      mechanicQualificationsLabel,
+      qualificationFieldLabel,
+      pageUrl: referer,
+      submittedAtMs: Date.now(),
+    };
+
     // 並列送信（Baseのみテスト中は直下の単独送信へ）
     if (!sendBaseOnly) {
       const tasks: Promise<void>[] = [];
@@ -299,8 +473,8 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
         );
       }
 
-      // Base 送信タスク
-      if (baseWebhookUrl) {
+      // Base 送信タスク（Bitable API 直書き優先・未設定/失敗/対象外は Webhook フォールバック）
+      {
         const userAgent = request.headers.get('user-agent') || '';
         const clientIp = (request.headers.get('x-forwarded-for') || '').split(',')[0]?.trim() || '';
         const basePayload = {
@@ -341,23 +515,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
           page_url: referer,
         } as Record<string, unknown>;
 
-        tasks.push(
-          (async () => {
-            const resp = await fetch(baseWebhookUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(basePayload),
-            });
-            if (!resp.ok) {
-              const errorBody = await resp.text();
-              console.error(`Failed to send to Lark Base Webhook (${resp.status}): ${errorBody}`);
-            } else {
-              console.log('Lark Base webhook triggered successfully');
-            }
-          })()
-        );
-      } else {
-        console.warn('Lark Base Webhook URL is not configured. Skipping Base record creation.');
+        tasks.push(saveToBase(baseWriteCtx, baseWebhookUrl, basePayload));
       }
 
       // 応募受付完了 自動返信メール送信タスク
@@ -450,60 +608,48 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
       // どれかが失敗しても応募自体は成功扱い (Lark/Base/メール全て)
       await Promise.allSettled(tasks);
     } else {
-      // Baseのみ送信（テストモード）
-      if (baseWebhookUrl) {
-        const userAgent = request.headers.get('user-agent') || '';
-        const clientIp = (request.headers.get('x-forwarded-for') || '').split(',')[0]?.trim() || '';
-        const basePayload = {
-          media_name: isCoupang ? 'Meta広告' : (getMediaName(utmParams || {})),
-          utm_source: utmParams?.utm_source || '',
-          utm_medium: utmParams?.utm_medium || '',
-          utm_campaign: utmParams?.utm_campaign || '',
-          utm_term: utmParams?.utm_term || '',
-          utm_creative: utmParams?.utm_creative || '',
-          utm_content: utmParams?.utm_content || '',
-          utm_id: utmParams?.utm_id || '',
-          ad_id: adId,
-          ad_creative_id: adCreativeId,
-          ad_image_url: adImageUrl,
-          birth_date: formData.birthDate || '',
-          full_name: formData.fullName || '',
-          full_name_kana: formData.fullNameKana || '',
-          postal_code: formData.postalCode || '',
-          prefecture_id: formData.prefectureId || '',
-          prefecture_name: formData.prefectureName || '',
-          municipality_id: formData.municipalityId || '',
-          municipality_name: formData.municipalityName || '',
-          town_name: formData.townName || '',
-          phone_number: formData.phoneNumber || '',
-          email: formData.email || '',
-          job_timing: baseJobTimingLabel,
-          job_intent: baseJobIntentLabel,
-          desired_income: baseDesiredIncomeLabel,
-          mechanic_qualifications: mechanicQualificationsLabel,
-          experiment_name: submissionData?.experiment?.name || '',
-          experiment_variant: submissionData?.experiment?.variant || '',
-          submitted_at: new Date().toISOString(),
-          environment: process.env.NODE_ENV,
-          user_agent: userAgent,
-          client_ip: clientIp,
-          form_origin: formOrigin || '',
-          is_coupang: isCoupang,
-          page_url: referer,
-        } as Record<string, unknown>;
+      // Baseのみ送信（テストモード）— 直書き優先・フォールバック Webhook
+      const userAgent = request.headers.get('user-agent') || '';
+      const clientIp = (request.headers.get('x-forwarded-for') || '').split(',')[0]?.trim() || '';
+      const basePayload = {
+        media_name: isCoupang ? 'Meta広告' : (getMediaName(utmParams || {})),
+        utm_source: utmParams?.utm_source || '',
+        utm_medium: utmParams?.utm_medium || '',
+        utm_campaign: utmParams?.utm_campaign || '',
+        utm_term: utmParams?.utm_term || '',
+        utm_creative: utmParams?.utm_creative || '',
+        utm_content: utmParams?.utm_content || '',
+        utm_id: utmParams?.utm_id || '',
+        ad_id: adId,
+        ad_creative_id: adCreativeId,
+        ad_image_url: adImageUrl,
+        birth_date: formData.birthDate || '',
+        full_name: formData.fullName || '',
+        full_name_kana: formData.fullNameKana || '',
+        postal_code: formData.postalCode || '',
+        prefecture_id: formData.prefectureId || '',
+        prefecture_name: formData.prefectureName || '',
+        municipality_id: formData.municipalityId || '',
+        municipality_name: formData.municipalityName || '',
+        town_name: formData.townName || '',
+        phone_number: formData.phoneNumber || '',
+        email: formData.email || '',
+        job_timing: baseJobTimingLabel,
+        job_intent: baseJobIntentLabel,
+        desired_income: baseDesiredIncomeLabel,
+        mechanic_qualifications: mechanicQualificationsLabel,
+        experiment_name: submissionData?.experiment?.name || '',
+        experiment_variant: submissionData?.experiment?.variant || '',
+        submitted_at: new Date().toISOString(),
+        environment: process.env.NODE_ENV,
+        user_agent: userAgent,
+        client_ip: clientIp,
+        form_origin: formOrigin || '',
+        is_coupang: isCoupang,
+        page_url: referer,
+      } as Record<string, unknown>;
 
-        const resp = await fetch(baseWebhookUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(basePayload),
-        });
-        if (!resp.ok) {
-          const errorBody = await resp.text();
-          console.error(`Failed to send to Lark Base Webhook (${resp.status}): ${errorBody}`);
-        } else {
-          console.log('Lark Base webhook triggered successfully');
-        }
-      }
+      await saveToBase(baseWriteCtx, baseWebhookUrl, basePayload);
     }
 
     // クライアントには成功したことを返す
