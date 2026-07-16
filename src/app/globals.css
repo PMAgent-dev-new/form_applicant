@@ -15,23 +15,26 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+  min-height: 100vh; /* Use min-height for full viewport height */
+}
+
+/* 背景画像はビューポート固定の擬似要素で描画する。
+   body 直指定だと縦長ページ（プライバシーポリシー等）で画像がページ中央に
+   1回だけ描画され、上下に背景色の帯が出てしまうため。 */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
   /* basePath 配下対応: URL は layout.tsx で CSS 変数として注入（既定はルート配信） */
   background-image: var(--app-bg-mobile, url('/images/mobile-bg.png'));
   background-size: 115% auto;
   background-position: center;
   background-repeat: no-repeat;
-  min-height: 100vh; /* Use min-height for full viewport height */
 }
 
 .no-scrollbar {
@@ -43,7 +46,7 @@ body {
 }
 
 @media (min-width: 768px) {
-  body {
+  body::before {
     background-image: var(--app-bg-pc, url('/images/pc-bg.png'));
   }
 }
