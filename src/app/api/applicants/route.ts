@@ -25,7 +25,7 @@ const RIDEJOB_TABLE_ID = process.env.LARK_BASE_TABLE_ID_RIDEJOB || 'tblO0pPqFyHq
 const MECHANIC_TABLE_ID = process.env.LARK_BASE_TABLE_ID_MECHANIC_APPLICANTS || 'tblXcvtQJqoD2PIV';
 
 // Bitable 直書きに必要な、リクエスト内で算出済みの値をまとめたもの。
-type BaseWriteContext = {
+export type BaseWriteContext = {
   isMechanic: boolean;
   isMechanicNewgrad: boolean;
   isCoupang: boolean;
@@ -53,18 +53,21 @@ type DirectBaseWrite = {
 // 流入元(origin)に応じて、直書き先テーブルと日本語カラムへのマッピングを決める。
 // coupang は今回対象外なので null（＝呼び出し側で Base Webhook にフォールバック）。
 // media_name の「応募経由(マスタ連動)」リンクは張らず、utm系＋クリエイティブ等のテキストのみ書き込む方針。
-function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite | null {
+export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite | null {
   if (ctx.isCoupang) return null;
 
   const address = [ctx.form.municipalityName, ctx.form.townName].filter(Boolean).join('') || undefined;
 
   if (ctx.isMechanic) {
-    // 転職時期／希望年収／転職意向／保有資格は専用 Select への型変換リスクを避け、対応履歴メモに集約する。
+    // 経験者フォームの転職時期／資格は Base の専用 Select に保存する。
+    // 新卒フォームの資格回答（通学コース）は従来どおり対応履歴メモに残す。
     const memo = [
-      ctx.jobTimingLabel ? `転職時期: ${ctx.jobTimingLabel}` : '',
+      ctx.isMechanicNewgrad && ctx.jobTimingLabel ? `転職時期: ${ctx.jobTimingLabel}` : '',
       ctx.desiredIncomeLabel ? `希望年収: ${ctx.desiredIncomeLabel}` : '',
       ctx.jobIntentLabel ? `転職意向: ${ctx.jobIntentLabel}` : '',
-      ctx.mechanicQualificationsLabel ? `${ctx.qualificationFieldLabel}: ${ctx.mechanicQualificationsLabel}` : '',
+      ctx.isMechanicNewgrad && ctx.mechanicQualificationsLabel
+        ? `${ctx.qualificationFieldLabel}: ${ctx.mechanicQualificationsLabel}`
+        : '',
     ].filter(Boolean).join(' / ') || undefined;
 
     return {
@@ -82,6 +85,10 @@ function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite | null {
         応募日: ctx.submittedAtMs,
         ステータス: 'リード',
         登録職種: '自動車整備士',
+        転職時期: ctx.isMechanicNewgrad ? undefined : ctx.jobTimingLabel || undefined,
+        資格: ctx.isMechanicNewgrad || !ctx.form.mechanicQualification
+          ? undefined
+          : ctx.mechanicQualificationsLabel,
         対応履歴メモ: memo,
         utm_source: ctx.utm.utm_source,
         utm_medium: ctx.utm.utm_medium,
