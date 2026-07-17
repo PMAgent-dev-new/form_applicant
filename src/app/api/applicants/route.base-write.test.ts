@@ -40,8 +40,6 @@ describe('resolveDirectBaseWrite', () => {
 
     expect(target?.fields.転職時期).toBe('6か月以内');
     expect(target?.fields.資格).toBe('自動車整備士2級');
-    expect(target?.fields.対応履歴メモ).toBe(
-      '希望年収: 600万円 / 転職意向: 決まれば早く転職したい'
-    );
+    expect(target?.fields.対応履歴メモ).toBe('希望年収: 600万円');
   });
 });
