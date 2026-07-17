@@ -64,7 +64,6 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
     const memo = [
       ctx.isMechanicNewgrad && ctx.jobTimingLabel ? `転職時期: ${ctx.jobTimingLabel}` : '',
       ctx.desiredIncomeLabel ? `希望年収: ${ctx.desiredIncomeLabel}` : '',
-      ctx.jobIntentLabel ? `転職意向: ${ctx.jobIntentLabel}` : '',
       ctx.isMechanicNewgrad && ctx.mechanicQualificationsLabel
         ? `${ctx.qualificationFieldLabel}: ${ctx.mechanicQualificationsLabel}`
         : '',
