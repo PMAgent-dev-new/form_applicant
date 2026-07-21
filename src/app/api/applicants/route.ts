@@ -95,11 +95,12 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
         utm_term: ctx.utm.utm_term,
         utm_creative: ctx.utm.utm_creative,
         utm_content: ctx.utm.utm_content,
+        utm_id: ctx.utm.utm_id,
         ad_id: ctx.adId,
         ad_creative_id: ctx.adCreativeId,
         ad_image_url: ctx.adImageUrl,
         LP_URL: ctx.pageUrl,
-        クリエイティブ: ctx.mediaName,
+        '流入媒体（自動判定）': ctx.mediaName,
       },
     };
   }
@@ -127,11 +128,12 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
       utm_term: ctx.utm.utm_term,
       utm_creative: ctx.utm.utm_creative,
       utm_content: ctx.utm.utm_content,
+      utm_id: ctx.utm.utm_id,
       ad_id: ctx.adId,
       ad_creative_id: ctx.adCreativeId,
       ad_image_url: ctx.adImageUrl,
       LP_URL: ctx.pageUrl,
-      クリエイティブ: ctx.mediaName,
+      '流入媒体（自動判定）': ctx.mediaName,
     },
   };
 }
