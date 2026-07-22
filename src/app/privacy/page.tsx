@@ -31,7 +31,7 @@ export default function PrivacyPolicy() {
           <section>
             <h2 className="text-lg font-bold text-gray-900 mb-3">1. 事業者情報</h2>
             <p>法人名：株式会社PM Agent</p>
-            <p>住所　：〒150-0001　東京都渋谷区神宮前1丁目9番地3 原宿第3コーポ4階402号室</p>
+            <p>住所　：〒150-0041　東京都渋谷区神南１−６−５ Shibuya WayP ８−４</p>
             <p>代表　：梅津　哲豪</p>
           </section>
 
@@ -48,6 +48,7 @@ export default function PrivacyPolicy() {
             <ul className="list-disc ml-6 mt-2 space-y-1">
               <li>ユーザーからのコメントやお問い合わせに回答するため</li>
               <li>ユーザーが利用しているサービスの更新情報など、必要に応じたご連絡をするため</li>
+              <li>提携企業との業務提携に基づき、応募状況、面談実施状況、選考結果、内定・入社等の成約情報を共有し、サービス品質の向上、業務改善、契約条件の見直しその他業務提携の運営のために利用するため</li>
             </ul>
             <p className="mt-3">
               個人情報の利用目的は、変更前後の関連性について合理性が認められる場合に限って変更するものとします。個人情報の利用目的について変更を行った際は、変更後の目的について当社所定の方法によってユーザーに通知又は公表するものとします。
@@ -79,6 +80,9 @@ export default function PrivacyPolicy() {
                 </ul>
               </li>
             </ul>
+            <p className="mt-3">
+              当社は、ユーザーから同意を得た場合または法令に基づく場合のほか、転職支援サービスの提供に必要な範囲において、提携企業との業務提携契約に基づき、応募状況、面談実施状況、選考結果、内定・入社等の成約情報を、サービス提供・業務改善・契約条件の見直し等を目的として提供することがあります。
+            </p>
           </section>
 
           <section>
@@ -109,6 +113,7 @@ export default function PrivacyPolicy() {
           <section>
             <h2 className="text-lg font-bold text-gray-900 mb-3">9. プライバシーポリシーの制定日及び改定日</h2>
             <p>第１版：２０２５年３月１１日　制定</p>
+            <p>第２版：２０２６年７月２２日　改定</p>
           </section>
         </div>
       </div>
