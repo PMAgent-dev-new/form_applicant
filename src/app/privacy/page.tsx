@@ -113,7 +113,7 @@ export default function PrivacyPolicy() {
           <section>
             <h2 className="text-lg font-bold text-gray-900 mb-3">9. プライバシーポリシーの制定日及び改定日</h2>
             <p>第１版：２０２５年３月１１日　制定</p>
-            <p>第２版：２０２６年７月２２日　改定</p>
+            <p>第２版：２０２６年７月２３日　改定</p>
           </section>
         </div>
       </div>
