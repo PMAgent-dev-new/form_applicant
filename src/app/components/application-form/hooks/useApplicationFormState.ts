@@ -649,6 +649,15 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
 
         // 送信成功時に Meta Lead を発火（サーバーCAPIと同一 eventId で重複排除）
         trackMeta('Lead', { value: 0, currency: 'JPY' }, metaEventId);
+        // GA4 側にも GA4 推奨イベント名で応募完了を送る。GTM で generate_lead タグを作り
+        // GA4 のキーイベントに登録すると、チャネル別のCVとして集計できるようになる。
+        // （従来は step_view / form_submit しか無く、CV が別プロパティ側にしか無かった）
+        trackEvent('generate_lead', {
+          form_name: 'ridejob_application',
+          job_category: isMechanicLike ? 'mechanic' : 'taxi',
+          currency: 'JPY',
+          value: 0,
+        });
 
         // 都道府県IDとお名前をlocalStorageに保存（サンクスページで求人表示・パーソナライズ用）
         if (typeof window !== 'undefined') {
