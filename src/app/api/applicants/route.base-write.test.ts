@@ -40,6 +40,28 @@ describe('resolveDirectBaseWrite', () => {
 
     expect(target?.fields.転職時期).toBe('6か月以内');
     expect(target?.fields.資格).toBe('自動車整備士2級');
-    expect(target?.fields.対応履歴メモ).toBe('希望年収: 600万円');
+    expect(target?.fields.対応履歴メモ).toBeUndefined();
+  });
+
+  it('Mechanic応募の希望年収を「履歴書（添付なし）」欄へ保存する', () => {
+    const target = resolveDirectBaseWrite(mechanicContext());
+
+    expect(target?.fields['履歴書（添付なし）']).toBe('希望年収: 600万円');
+  });
+
+  it('希望年収が未回答なら「履歴書（添付なし）」欄には書き込まない', () => {
+    const target = resolveDirectBaseWrite({ ...mechanicContext(), desiredIncomeLabel: '未選択' });
+
+    expect(target?.fields['履歴書（添付なし）']).toBeUndefined();
+  });
+
+  it('新卒フォームは希望年収を保存しない', () => {
+    const target = resolveDirectBaseWrite({
+      ...mechanicContext(),
+      isMechanicNewgrad: true,
+      desiredIncomeLabel: '',
+    });
+
+    expect(target?.fields['履歴書（添付なし）']).toBeUndefined();
   });
 });

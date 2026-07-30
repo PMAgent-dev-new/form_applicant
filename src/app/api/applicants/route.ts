@@ -63,11 +63,17 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
     // 新卒フォームの資格回答（通学コース）は従来どおり対応履歴メモに残す。
     const memo = [
       ctx.isMechanicNewgrad && ctx.jobTimingLabel ? `転職時期: ${ctx.jobTimingLabel}` : '',
-      ctx.desiredIncomeLabel ? `希望年収: ${ctx.desiredIncomeLabel}` : '',
       ctx.isMechanicNewgrad && ctx.mechanicQualificationsLabel
         ? `${ctx.qualificationFieldLabel}: ${ctx.mechanicQualificationsLabel}`
         : '',
     ].filter(Boolean).join(' / ') || undefined;
+
+    // 希望年収（経験者フォームのみの設問）は「履歴書（添付なし）」欄（テキスト）へ保存する。
+    // mapDesiredIncomeLabel は未回答時に「未選択」を返すため、その場合は書き込まない。
+    const desiredIncomeText =
+      ctx.desiredIncomeLabel && ctx.desiredIncomeLabel !== '未選択'
+        ? `希望年収: ${ctx.desiredIncomeLabel}`
+        : undefined;
 
     return {
       profile: 'mechanic',
@@ -88,6 +94,7 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
         資格: ctx.isMechanicNewgrad || !ctx.form.mechanicQualification
           ? undefined
           : ctx.mechanicQualificationsLabel,
+        '履歴書（添付なし）': desiredIncomeText,
         対応履歴メモ: memo,
         utm_source: ctx.utm.utm_source,
         utm_medium: ctx.utm.utm_medium,
