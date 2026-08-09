@@ -4,13 +4,13 @@ import { apiPath } from '@/lib/basePath';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-import type { FormData, FormErrors, FormOrigin, JobCountResult, PeopleImageVariant } from '../types';
+import type { FormData, FormErrors, FormOrigin, JobCountResult, PeopleImageVariant, TruckLicense } from '../types';
 import { useHiraganaConverter } from './useHiraganaConverter';
 import { useFormExitGuard } from './useFormExitGuard';
 import { useImagePreloader } from './useImagePreloader';
 import { trackEvent } from '../utils/trackEvent';
 import { genEventId, trackMeta } from '@/lib/meta/pixel';
-import { isValidEmail, isValidPhoneNumber, validateBirthDateCard, validateCard2, validateDesiredIncome, validateFinalStep, validateJobTiming, validateMechanicQualification, validateNameFields } from '../utils/validators';
+import { isValidEmail, isValidPhoneNumber, validateBirthDateCard, validateCard2, validateDesiredIncome, validateFinalStep, validateJobTiming, validateMechanicQualification, validateNameFields, validateTruckLicenses } from '../utils/validators';
 import { fetchJobCount, type JobCountParams } from '../utils/fetchJobCount';
 import { notifyInvalidPhoneNumber } from '../utils/notifyInvalidPhoneNumber';
 
@@ -35,6 +35,7 @@ const initialFormData: FormData = {
   phoneNumber: '',
   email: '',
   mechanicQualification: '',
+  truckLicenses: [],
 };
 
 export function useApplicationFormState({ showLoadingScreen, imagesToPreload, variant, formOrigin, enableJobTimingStep }: UseApplicationFormStateParams) {
@@ -42,6 +43,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
   const isMechanic = formOrigin === 'mechanic';
   const isMechanicNewgrad = formOrigin === 'mechanic_newgrad';
   const isMechanicLike = isMechanic || isMechanicNewgrad;
+  const isTruck = formOrigin === 'truck';
   const [loading, setLoading] = useState(showLoadingScreen);
   const [currentCardIndex, setCurrentCardIndex] = useState(1);
   const [formData, setFormData] = useState<FormData>(initialFormData);
@@ -68,7 +70,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
     markFormClean,
     setPendingNavigation,
     setExitModalVariant,
-    phoneCardIndex: isMechanic ? 8 : isMechanicNewgrad ? 5 : formOrigin === 'coupang' ? 3 : enableJobTimingStep ? 5 : 4,
+    phoneCardIndex: isMechanic ? 8 : isMechanicNewgrad ? 5 : formOrigin === 'coupang' ? 3 : isTruck ? 6 : enableJobTimingStep ? 5 : 4,
   });
 
   const getStepNumber = useCallback(
@@ -290,7 +292,8 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
       setErrors((prev) => {
         const next = { ...prev };
         if (name === 'birthDate') {
-          next.birthDate = '';
+          // 8桁そろった時点で実在日・年齢(18〜84歳)を即時判定する（携帯番号の即時判定と同じUX）
+          next.birthDate = value.length === 8 ? validateBirthDateCard(value).errors.birthDate ?? '' : '';
         } else if (name === 'jobTiming') {
           next.jobTiming = '';
         } else if (name === 'email') {
@@ -409,6 +412,43 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
     },
     [getStepEventPayload, isFormDirty]
   );
+
+  // トラックLPの保有免許トグル。'none'(免許なし)は他の選択肢と排他にする。
+  const handleTruckLicenseToggle = useCallback(
+    (value: TruckLicense) => {
+      setFormData((prev) => {
+        const current = prev.truckLicenses;
+        let next: TruckLicense[];
+        if (current.includes(value)) {
+          next = current.filter((license) => license !== value);
+        } else if (value === 'none') {
+          next = ['none'];
+        } else {
+          next = [...current.filter((license) => license !== 'none'), value];
+        }
+        return { ...prev, truckLicenses: next };
+      });
+      setErrors((prev) => ({ ...prev, truckLicenses: '' }));
+      if (!isFormDirty) {
+        setIsFormDirty(true);
+      }
+    },
+    [isFormDirty]
+  );
+
+  const handleNextTruckLicense = useCallback(() => {
+    const result = validateTruckLicenses(formData.truckLicenses);
+    setErrors((prev) => ({ ...prev, ...result.errors }));
+    if (!result.isValid) {
+      return;
+    }
+    setCurrentCardIndex((prev) => {
+      trackEvent('step_complete', getStepEventPayload(prev));
+      const next = prev + 1;
+      trackEvent('step_view', getStepEventPayload(next));
+      return next;
+    });
+  }, [formData.truckLicenses, getStepEventPayload]);
 
   const handleJobIntentSelect = useCallback(
     (value: FormData['jobIntent']) => {
@@ -654,7 +694,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         // （従来は step_view / form_submit しか無く、CV が別プロパティ側にしか無かった）
         trackEvent('generate_lead', {
           form_name: 'ridejob_application',
-          job_category: isMechanicLike ? 'mechanic' : 'taxi',
+          job_category: isMechanicLike ? 'mechanic' : isTruck ? 'truck' : 'taxi',
           currency: 'JPY',
           value: 0,
         });
@@ -679,7 +719,9 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
             ? '/coupang/applicants/new'
             : formOrigin === 'bus'
               ? '/bus/applicants/new'
-              : '/applicants/new';
+              : formOrigin === 'truck'
+                ? '/truck/applicants/new'
+                : '/applicants/new';
         router.push(targetPath);
       } catch (error) {
         console.error('Error submitting form:', error);
@@ -687,7 +729,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         setIsSubmitting(false);
       }
     },
-    [formData, formOrigin, isMechanicLike, router, variant, isSubmitting, jobResult.prefectureId]
+    [formData, formOrigin, isMechanicLike, isTruck, router, variant, isSubmitting, jobResult.prefectureId]
   );
 
   const cardStates = useMemo(
@@ -729,6 +771,20 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
           isCard4Active: false,
           isCard5Active: false,
           isCard6Active: false,
+          isCard7Active: false,
+          isCard8Active: false,
+        };
+      }
+
+      if (formOrigin === 'truck') {
+        // truck: 6カード (JobTiming, TruckLicense, BirthDate, PostalCode, Name, Contact)
+        return {
+          isCard1Active: currentCardIndex === 1,
+          isCard2Active: currentCardIndex === 2,
+          isCard3Active: currentCardIndex === 3,
+          isCard4Active: currentCardIndex === 4,
+          isCard5Active: currentCardIndex === 5,
+          isCard6Active: currentCardIndex === 6,
           isCard7Active: false,
           isCard8Active: false,
         };
@@ -781,6 +837,8 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
     handleNextMechanicQualification,
     handleNextMechanicJobTiming,
     handleNextDesiredIncome,
+    handleTruckLicenseToggle,
+    handleNextTruckLicense,
     handleNameBlur,
     handleNextCard1,
     handleNextCard2,

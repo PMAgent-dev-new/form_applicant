@@ -4,7 +4,7 @@ import Image from '@/app/components/AppImage';
 import { Suspense, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 
-import { BirthDateCard, DesiredIncomeCard, FormExitModal, JobTimingCard, MechanicJobTimingCard, MechanicQualificationCard, NameCard, NameInputCard, PhoneNumberCard, NameAndContactCard } from './application-form/components';
+import { BirthDateCard, DesiredIncomeCard, FormExitModal, JobTimingCard, MechanicJobTimingCard, MechanicQualificationCard, NameCard, NameInputCard, PhoneNumberCard, NameAndContactCard, TruckLicenseCard } from './application-form/components';
 import { useApplicationFormState } from './application-form/hooks/useApplicationFormState';
 import type { FormOrigin, PeopleImageVariant } from './application-form/types';
 import { FORM_PRESETS, type FormPreset } from './application-form/presets';
@@ -117,6 +117,8 @@ function ApplicationFormInner({
     handleNextMechanicQualification,
     handleNextMechanicJobTiming,
     handleNextDesiredIncome,
+    handleTruckLicenseToggle,
+    handleNextTruckLicense,
     handleNameBlur,
     handleNextCard1,
     handleNextCard2,
@@ -139,7 +141,8 @@ function ApplicationFormInner({
   const modalContentRef = useRef<HTMLDivElement | null>(null);
   const isMechanic = resolvedFormOrigin === 'mechanic';
   const isMechanicNewgrad = resolvedFormOrigin === 'mechanic_newgrad';
-  const showLegalFooter = resolvedFormOrigin === 'default' || resolvedFormOrigin === 'bus' || isMechanic || isMechanicNewgrad;
+  const isTruck = resolvedFormOrigin === 'truck';
+  const showLegalFooter = resolvedFormOrigin === 'default' || resolvedFormOrigin === 'bus' || isMechanic || isMechanicNewgrad || isTruck;
 
   useEffect(() => {
     if (!resolvedUseModal) return;
@@ -354,6 +357,71 @@ function ApplicationFormInner({
             preferPhoneFirst={true}
             submitButtonText="求人情報を受け取る"
             progress={{ currentStep: 5, totalSteps: 5 }}
+          />
+        </>
+      ) : isTruck ? (
+        <>
+          {/* STEP画像は4段階(STEP1〜4)のため、追加の免許カードは画像なし・見出しのみとし、
+              以降の4カードはタクシー(default)と同じSTEP割当を維持する */}
+          <TruckLicenseCard
+            selectedLicenses={formData.truckLicenses}
+            errors={errors}
+            onToggle={handleTruckLicenseToggle}
+            onNext={handleNextTruckLicense}
+            onPrevious={handlePreviousCard}
+            isActive={cardStates.isCard2Active}
+          />
+
+          <BirthDateCard
+            stepImageSrc={resolvedStep1ImageSrc}
+            birthDate={formData.birthDate}
+            errors={errors}
+            onChange={handleInputChange}
+            onNext={handleNextCard2}
+            onPrevious={handlePreviousCard}
+            isActive={cardStates.isCard3Active}
+          />
+
+          <NameCard
+            stepImageSrc={resolvedStep2ImageSrc}
+            postalCode={formData.postalCode}
+            prefectureId={formData.prefectureId}
+            municipalityId={formData.municipalityId}
+            errors={errors}
+            onChange={handleInputChange}
+            onPrevious={handlePreviousCard}
+            onNext={handleNextCard3}
+            isActive={cardStates.isCard4Active}
+          />
+
+          <NameInputCard
+            stepImageSrc={resolvedStep3ImageSrc}
+            formData={formData}
+            errors={errors}
+            jobResult={jobResult}
+            showJobCount={true}
+            onChange={handleInputChange}
+            onBlur={handleNameBlur}
+            onPrevious={handlePreviousCard}
+            onNext={handleNextCard4}
+            isActive={cardStates.isCard5Active}
+          />
+
+          <PhoneNumberCard
+            stepImageSrc={resolvedStep4ImageSrc || resolvedStep3ImageSrc}
+            jobResult={jobResult}
+            showJobCount={true}
+            formData={formData}
+            errors={errors}
+            phoneError={phoneError}
+            emailError={emailError}
+            phoneNumber={formData.phoneNumber}
+            onChange={handleInputChange}
+            onPrevious={handlePreviousCard}
+            isSubmitDisabled={isSubmitDisabled}
+            isSubmitting={isSubmitting}
+            isActive={cardStates.isCard6Active}
+            showEmailField={true}
           />
         </>
       ) : resolvedFormOrigin === 'coupang' ? (

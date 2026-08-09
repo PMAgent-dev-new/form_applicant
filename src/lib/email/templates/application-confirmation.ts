@@ -8,6 +8,7 @@
  * 編集する場合は下の RIDEJOB_CONTENT / MECHANIC_CONTENT を直接書き換えてください。
  *
  *   - default / bus              → RIDEJOB_CONTENT   (タクシー転職 訴求)
+ *   - truck                       → TRUCK_CONTENT    (トラック転職 訴求)
  *   - mechanic / mechanic_newgrad → MECHANIC_CONTENT (整備士転職 訴求)
  *
  * 共通のレイアウト (見出し / CTAボタン / 注意書き / フッター) は本ファイル下部の
@@ -130,6 +131,49 @@ const RIDEJOB_CONTENT: MailContent = {
   phone: '03-6692-0477',
 };
 
+// ─── RIDE JOB (トラック: truck) ────────────────────────
+// ⚠️ TODO: 運用側(小笠原さん)確認前の仮版。共通文はRIDEJOB_CONTENTと同一で、
+//    求人チラ見せのみフィード実在のトラック求人(2026-08時点)に差し替えている。
+const TRUCK_CONTENT: MailContent = {
+  brandName: 'RIDE JOB',
+  fromName: 'RIDE JOB',
+  subject: '【限定公開】あなたに合ったトラックドライバーの「好条件求人」を一部お届けします',
+  bookingUrl: 'https://leomeet.pmagent.jp/book/ride',
+  greetingLine: 'ドライバーのお仕事探しRIDE JOBへのご登録ありがとうございます。',
+  bodyParagraphs: [
+    '「まずは求人を見てみたい」と思われたところ、すぐに一覧をお見せできず申し訳ありません。',
+    '実は、ドライバー業界には「給与保障が高く、稼げる好条件求人」が多数ありますが、ご自身の希望の働き方や適性によって、一番ご活躍いただける会社が異なります。そのため、ネット上の情報だけで判断していただくのではなく、直接お話しして最適な求人をご案内する形をとっております。',
+  ],
+  ctaHeading:
+    'そこで、あなたのご希望に合う求人があるかを【10分〜20分の気軽なお電話（またはオンライン）】でサクッと確認できる時間をご用意しました。',
+  ctaSubheading:
+    '無理な転職の強要は一切ありません。\nまずは以下のリンクから、お気軽に都合の良い日時をお選びください。',
+  ctaButtonLabel: '【1分で完了】ご希望の日時をこちらから選ぶ',
+  showBookingNote: false,
+  jobSection: {
+    heading: '＼ 今ご紹介できるイチオシ求人をチラ見せ ／',
+    lead: '以下のような好条件求人をご用意しています。',
+    listings: [
+      {
+        title: '1 2tドライバー・年間休日125日',
+        salary: '月給29.2万円〜34.3万円＋インセンティブあり',
+        feature: '2tトラックのドライバー職\n年間休日125日でプライベートも充実！',
+      },
+      {
+        title: '2 資格取得支援あり・残業少なめ',
+        salary: '月給25万円〜51.3万円',
+        feature: '残業月平均10時間・年間休日120日\n資格取得支援ありでキャリアアップも！',
+      },
+    ],
+  },
+  closingParagraphs: [
+    'ここだけの「リアルな本音」、ちょっと聞いてみませんか？',
+    '「一番稼げる会社はどこ？」「労働時間は本当にきつくない？」など、ネットの検索では出てこない業界の裏事情を、10分〜20分の電話（またはオンライン）でこっそりお伝えします。',
+    '「まずは情報収集だけしたい」「話を聞いてみたい」という動機で全く問題ありません。\n履歴書も不要ですので、ぜひ上のURLからお気軽にご予約ください。\nご予約をお待ちしています。',
+  ],
+  phone: '03-6692-0477',
+};
+
 // ─── RIDE JOBメカニック (整備士: mechanic + mechanic_newgrad) ─
 // ⚠️ TODO: この文面は仮の下書きです。実コピーをご支給いただき次第差し替えてください。
 const MECHANIC_CONTENT: MailContent = {
@@ -151,6 +195,7 @@ const MECHANIC_CONTENT: MailContent = {
 const CONTENT_BY_ORIGIN: Record<EmailFormOrigin, MailContent> = {
   default: RIDEJOB_CONTENT,
   bus: RIDEJOB_CONTENT,
+  truck: TRUCK_CONTENT,
   mechanic: MECHANIC_CONTENT,
   mechanic_newgrad: MECHANIC_CONTENT,
 };
