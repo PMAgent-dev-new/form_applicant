@@ -91,7 +91,11 @@ export default function PhoneNumberCard({
                 <span className="text-sm font-semibold">求人件数を確認中...</span>
               </div>
             ) : jobResult.error ? (
-              <p className="text-sm font-semibold text-red-600">{jobResult.error}</p>
+              // 件数取得に失敗しても応募導線を止めない。エラー文言は見せず前向きな案内に差し替える
+              <div className="space-y-1 text-[#2C32FF]">
+                <p className="text-xl font-bold">{displayAreaName}のおすすめ求人をご紹介できます！</p>
+                <p className="text-base font-semibold text-gray-900">すぐにご案内できます！</p>
+              </div>
             ) : isJobCountAvailable ? (
               <div className="space-y-2 text-[#2C32FF]">
                 <p className="text-xs font-semibold tracking-wide text-[#7A83FF]">
