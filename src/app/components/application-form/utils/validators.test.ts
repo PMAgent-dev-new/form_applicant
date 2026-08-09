@@ -4,6 +4,7 @@ import type { FormData } from '../types';
 import {
   isValidEmail,
   isValidPhoneNumber,
+  validateBirthDateCard,
   validateCard2,
   validateFinalStep,
   validateNameFields,
@@ -135,5 +136,30 @@ describe('validateFinalStep', () => {
   it('trims surrounding whitespace before validating the phone number', () => {
     const result = validateFinalStep(form({ phoneNumber: '  07031415926  ' }), false);
     expect(result.isValid).toBe(true);
+  });
+});
+
+describe('validateBirthDateCard', () => {
+  it('rejects a date that does not exist on the calendar', () => {
+    const result = validateBirthDateCard('19919999');
+    expect(result.isValid).toBe(false);
+    expect(result.errors.birthDate).toBe('有効な日付を入力してください。');
+  });
+
+  it('rejects input shorter than 8 digits', () => {
+    expect(validateBirthDateCard('1991011').isValid).toBe(false);
+  });
+
+  it('rejects applicants under 18', () => {
+    const year = new Date().getFullYear() - 10;
+    expect(validateBirthDateCard(`${year}0101`).isValid).toBe(false);
+  });
+
+  it('rejects applicants over 84', () => {
+    expect(validateBirthDateCard('19200101').isValid).toBe(false);
+  });
+
+  it('accepts a valid birth date', () => {
+    expect(validateBirthDateCard('19910111').isValid).toBe(true);
   });
 });

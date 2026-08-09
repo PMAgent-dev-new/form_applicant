@@ -292,7 +292,8 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
       setErrors((prev) => {
         const next = { ...prev };
         if (name === 'birthDate') {
-          next.birthDate = '';
+          // 8桁そろった時点で実在日・年齢(18〜84歳)を即時判定する（携帯番号の即時判定と同じUX）
+          next.birthDate = value.length === 8 ? validateBirthDateCard(value).errors.birthDate ?? '' : '';
         } else if (name === 'jobTiming') {
           next.jobTiming = '';
         } else if (name === 'email') {
