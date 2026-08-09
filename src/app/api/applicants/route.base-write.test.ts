@@ -6,6 +6,8 @@ function mechanicContext(): BaseWriteContext {
     isMechanic: true,
     isMechanicNewgrad: false,
     isCoupang: false,
+    isTruck: false,
+    truckLicensesLabel: '',
     mediaName: 'RIDE JOB Mechanic',
     utm: {},
     adId: '',
@@ -63,5 +65,68 @@ describe('resolveDirectBaseWrite', () => {
     });
 
     expect(target?.fields['履歴書（添付なし）']).toBeUndefined();
+  });
+});
+
+function truckContext(): BaseWriteContext {
+  return {
+    isMechanic: false,
+    isMechanicNewgrad: false,
+    isCoupang: false,
+    isTruck: true,
+    truckLicensesLabel: '中型免許（8t限定含む）、大型免許',
+    mediaName: 'Meta広告',
+    utm: {},
+    adId: '',
+    adCreativeId: '',
+    adImageUrl: '',
+    form: {
+      fullName: '運送 太郎',
+      fullNameKana: 'うんそう たろう',
+      phoneNumber: '09012345678',
+      email: 'truck@example.com',
+      birthDate: '1990-01-01',
+      postalCode: '5550001',
+      prefectureName: '大阪府',
+      municipalityName: '大阪市西淀川区',
+      townName: '',
+      jobTiming: 'asap',
+      truckLicenses: ['medium', 'large'],
+    },
+    jobTimingLabel: '決まれば早く転職したい',
+    jobIntentLabel: '',
+    desiredIncomeLabel: '',
+    mechanicQualificationsLabel: '未選択',
+    qualificationFieldLabel: '保有資格',
+    pageUrl: 'https://example.com/truck',
+    submittedAtMs: 1_700_000_000_000,
+  } as BaseWriteContext;
+}
+
+describe('resolveDirectBaseWrite (truck)', () => {
+  it('トラック応募は求職者DB🚕へ、職種と保有免許を対応履歴メモに保存する', () => {
+    const target = resolveDirectBaseWrite(truckContext());
+
+    expect(target?.profile).toBe('ridejob');
+    expect(target?.fields.対応履歴メモ).toBe(
+      '登録職種: トラックドライバー / 転職時期: 決まれば早く転職したい / 保有免許: 中型免許（8t限定含む）、大型免許'
+    );
+  });
+
+  it('保有免許が未選択ならメモには職種と転職時期のみ残す', () => {
+    const target = resolveDirectBaseWrite({ ...truckContext(), truckLicensesLabel: '未選択' });
+
+    expect(target?.fields.対応履歴メモ).toBe('登録職種: トラックドライバー / 転職時期: 決まれば早く転職したい');
+  });
+
+  it('タクシー(default)応募のメモは従来どおり転職時期のみ', () => {
+    const target = resolveDirectBaseWrite({
+      ...truckContext(),
+      isTruck: false,
+      truckLicensesLabel: '',
+    });
+
+    expect(target?.profile).toBe('ridejob');
+    expect(target?.fields.対応履歴メモ).toBe('転職時期: 決まれば早く転職したい');
   });
 });

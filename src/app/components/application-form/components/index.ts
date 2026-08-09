@@ -11,3 +11,4 @@ export { default as NameInputCard } from './NameInputCard';
 export { default as PhoneNumberCard } from './PhoneNumberCard';
 export { default as NameAndContactCard } from './NameAndContactCard';
 export { default as FormExitModal } from './FormExitModal';
+export { default as TruckLicenseCard } from './TruckLicenseCard';

@@ -3,6 +3,7 @@ import type { FormData } from '@/app/components/application-form/types';
 import { mapJobTimingLabel } from '@/app/components/application-form/utils/mapJobTimingLabel';
 import { getMechanicQualificationFieldLabel, mapMechanicQualifications } from '@/app/components/application-form/utils/mapMechanicQualifications';
 import { mapDesiredIncomeLabel } from '@/app/components/application-form/utils/mapDesiredIncomeLabel';
+import { mapTruckLicenses } from '@/app/components/application-form/utils/mapTruckLicenses';
 import {
   isSupportedEmailOrigin,
   sendApplicationConfirmationEmail,
@@ -29,6 +30,8 @@ export type BaseWriteContext = {
   isMechanic: boolean;
   isMechanicNewgrad: boolean;
   isCoupang: boolean;
+  isTruck: boolean;
+  truckLicensesLabel: string;
   mediaName: string;
   utm: UTMParams;
   adId: string;
@@ -112,8 +115,16 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
     };
   }
 
-  // default / bus → 求職者DB🚕（ridejob base）
-  const memo = ctx.jobTimingLabel ? `転職時期: ${ctx.jobTimingLabel}` : undefined;
+  // default / bus / truck → 求職者DB🚕（ridejob base）
+  // truck は Base 側に専用フィールドが無いため、職種と保有免許を対応履歴メモへ残す
+  //（Base に「登録職種」「保有免許」欄が追加されたら専用フィールドへ移行する）。
+  const memo = [
+    ctx.isTruck ? '登録職種: トラックドライバー' : '',
+    ctx.jobTimingLabel ? `転職時期: ${ctx.jobTimingLabel}` : '',
+    ctx.isTruck && ctx.truckLicensesLabel && ctx.truckLicensesLabel !== '未選択'
+      ? `保有免許: ${ctx.truckLicensesLabel}`
+      : '',
+  ].filter(Boolean).join(' / ') || undefined;
   return {
     profile: 'ridejob',
     tableId: RIDEJOB_TABLE_ID,
@@ -212,12 +223,13 @@ type ApplicantFormData = {
   jobTiming?: FormData['jobTiming'];
   mechanicQualification?: FormData['mechanicQualification'];
   desiredIncome?: FormData['desiredIncome'];
+  truckLicenses?: FormData['truckLicenses'];
 };
 
 type ApplicantSubmission = ApplicantFormData & {
   utmParams?: UTMParams;
   experiment?: ExperimentInfo;
-  formOrigin?: 'coupang' | 'default' | 'bus' | 'mechanic' | 'mechanic_newgrad';
+  formOrigin?: 'coupang' | 'default' | 'bus' | 'mechanic' | 'mechanic_newgrad' | 'truck';
   metaEventId?: string;
 };
 
@@ -311,6 +323,7 @@ export async function POST(request: NextRequest) {
     const isCoupang = formOrigin === 'coupang' || /\/coupang(\?|$|\/)?.*/.test(referer);
     const isMechanicNewgrad = formOrigin === 'mechanic_newgrad' || /\/mechanic-newgrad(\?|$|\/)?.*/.test(referer);
     const isMechanic = formOrigin === 'mechanic' || /\/mechanic(\?|$|\/)?.*/.test(referer) || isMechanicNewgrad;
+    const isTruck = formOrigin === 'truck';
 
     // Determine the appropriate Lark webhook URLs based on environment (with sensible fallbacks)
     const larkWebhookUrlCommon = isProduction
@@ -373,6 +386,7 @@ export async function POST(request: NextRequest) {
     const jobTimingLabel = mapJobTimingLabel(submissionJobTiming, formOrigin);
     const jobIntentLabel = mapJobTimingLabel(formData.jobIntent ?? '', 'default');
     const mechanicQualificationsLabel = mapMechanicQualifications(formData.mechanicQualification ?? '');
+    const truckLicensesLabel = isTruck ? mapTruckLicenses(formData.truckLicenses) : '';
     const desiredIncomeLabel = mapDesiredIncomeLabel(formData.desiredIncome ?? '');
     const qualificationFieldLabel = getMechanicQualificationFieldLabel(formOrigin);
     const baseJobTimingLabel = isMechanicNewgrad ? '' : jobTimingLabel;
@@ -407,6 +421,8 @@ export async function POST(request: NextRequest) {
       isMechanic,
       isMechanicNewgrad,
       isCoupang,
+      isTruck,
+      truckLicensesLabel,
       mediaName,
       utm: utmParams || {},
       adId,
@@ -430,7 +446,8 @@ export async function POST(request: NextRequest) {
       if (larkWebhookUrl) {
         const title = isMechanic
           ? '整備士の応募がありました！'
-          : isCoupang ? 'クーパンの応募がありました！' : '新しい応募がありました！';
+          : isCoupang ? 'クーパンの応募がありました！'
+          : isTruck ? 'トラックドライバーの応募がありました！' : '新しい応募がありました！';
         const utmDisplay = utmParams?.utm_source
           ? `${utmParams.utm_source}${utmParams.utm_medium ? `(${utmParams.utm_medium})` : ''}`
           : 'RIDEJOB HP';
@@ -440,6 +457,9 @@ export async function POST(request: NextRequest) {
         const mechanicQualificationsDisplay = isMechanic && mechanicQualificationsLabel
           ? `${qualificationFieldLabel}: ${mechanicQualificationsLabel}`
           : '';
+        const truckLicensesDisplay = isTruck && truckLicensesLabel && truckLicensesLabel !== '未選択'
+          ? `保有免許: ${truckLicensesLabel}`
+          : '';
         const desiredIncomeDisplay = isMechanic && !isMechanicNewgrad && desiredIncomeLabel
           ? `希望年収: ${desiredIncomeLabel}`
           : '';
@@ -447,7 +467,7 @@ export async function POST(request: NextRequest) {
           ? `転職意向: ${jobIntentLabel}`
           : '';
         const transferTimingDisplay = isMechanicNewgrad ? '' : `転職時期: ${jobTimingLabel || '未選択'}`;
-        const additionalFields = [transferTimingDisplay, desiredIncomeDisplay, mechanicQualificationsDisplay, jobIntentDisplay]
+        const additionalFields = [transferTimingDisplay, desiredIncomeDisplay, mechanicQualificationsDisplay, truckLicensesDisplay, jobIntentDisplay]
           .filter(Boolean)
           .join('\n');
         const ageDisplay = calculateAge(formData.birthDate) ?? '未入力';
@@ -519,6 +539,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
           job_intent: baseJobIntentLabel,
           desired_income: baseDesiredIncomeLabel,
           mechanic_qualifications: mechanicQualificationsLabel,
+          truck_licenses: truckLicensesLabel,
           experiment_name: submissionData?.experiment?.name || '',
           experiment_variant: submissionData?.experiment?.variant || '',
           submitted_at: new Date().toISOString(),
@@ -578,7 +599,8 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
       }
 
       // 新規応募SMS(ライド/メカの全応募者)。流入元では絞らない(電話を残した応募者に予約リンクを送る)。
-      // coupang / bus は対象外(smsChannel=null)。送信本体は eeasy の共通エンドポイントに委譲。
+      // coupang / bus は対象外(smsChannel=null)。truck はタクシーと同じ 'ridejob' チャネル
+      // (=面談予約リンクも共通)。送信本体は eeasy の共通エンドポイントに委譲。
       // media には実際の流入元(utm_source)を渡す。無ければ 'form'。
       const smsChannel: 'ridejob' | 'mechanic' | null =
         isCoupang || formOrigin === 'bus' ? null : isMechanic ? 'mechanic' : 'ridejob';

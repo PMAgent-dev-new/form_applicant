@@ -22,6 +22,7 @@ const emptyForm: FormData = {
   phoneNumber: '',
   email: '',
   mechanicQualification: '',
+  truckLicenses: [],
 };
 
 const form = (overrides: Partial<FormData>): FormData => ({ ...emptyForm, ...overrides });

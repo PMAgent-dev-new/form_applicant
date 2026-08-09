@@ -34,6 +34,7 @@ const SUPPORTED_ORIGINS: readonly EmailFormOrigin[] = [
   'bus',
   'mechanic',
   'mechanic_newgrad',
+  'truck',
 ];
 
 export function isSupportedEmailOrigin(

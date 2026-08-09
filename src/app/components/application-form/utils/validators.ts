@@ -1,4 +1,4 @@
-import type { BirthDate, FormData, FormErrors } from '../types';
+import type { BirthDate, FormData, FormErrors, TruckLicense } from '../types';
 
 const isValidPhoneNumber = (phoneNumber: string): boolean => {
   if (!/^(070|080|090)\d{8}$/.test(phoneNumber)) return false;
@@ -28,6 +28,15 @@ export const validateDesiredIncome = (desiredIncome: FormData['desiredIncome']) 
   const errors: FormErrors = {};
   if (!desiredIncome) {
     errors.desiredIncome = '選択してください。';
+    return { isValid: false, errors };
+  }
+  return { isValid: true, errors };
+};
+
+export const validateTruckLicenses = (truckLicenses: TruckLicense[]) => {
+  const errors: FormErrors = {};
+  if (!truckLicenses || truckLicenses.length === 0) {
+    errors.truckLicenses = '選択してください。';
     return { isValid: false, errors };
   }
   return { isValid: true, errors };

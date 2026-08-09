@@ -2,7 +2,7 @@
  * 自動返信メール対応フォームの種別。
  * Coupang(ロケットナウ)は別ルート/別仕様なのでここには含めない。
  */
-export type EmailFormOrigin = 'default' | 'bus' | 'mechanic' | 'mechanic_newgrad';
+export type EmailFormOrigin = 'default' | 'bus' | 'mechanic' | 'mechanic_newgrad' | 'truck';
 
 export type ApplicationConfirmationInput = {
   to: string;

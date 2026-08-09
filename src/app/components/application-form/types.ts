@@ -1,6 +1,6 @@
 export type PeopleImageVariant = 'A' | 'B';
 
-export type FormOrigin = 'coupang' | 'default' | 'bus' | 'mechanic' | 'mechanic_newgrad';
+export type FormOrigin = 'coupang' | 'default' | 'bus' | 'mechanic' | 'mechanic_newgrad' | 'truck';
 
 export type BirthDate = string;
 
@@ -11,6 +11,17 @@ export type MechanicQualification =
   | 'level2'
   | 'level1'
   | 'inspector'
+  | 'none';
+
+// トラックLPの保有免許・資格（複数選択可。'none' は排他）
+export type TruckLicense =
+  | 'regular_at'
+  | 'regular_mt'
+  | 'semi_medium'
+  | 'medium'
+  | 'large'
+  | 'towing'
+  | 'other'
   | 'none';
 
 export type DesiredIncomeOption = '300' | '400' | '500' | '600';
@@ -28,6 +39,7 @@ export type FormData = {
   phoneNumber: string;
   email: string;
   mechanicQualification: MechanicQualification | '';
+  truckLicenses: TruckLicense[];
 };
 
 export type FormErrors = {
@@ -43,6 +55,7 @@ export type FormErrors = {
   phoneNumber?: string;
   email?: string;
   mechanicQualification?: string;
+  truckLicenses?: string;
 };
 
 export type JobCountResult = {

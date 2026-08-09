@@ -1,4 +1,4 @@
-export type FormPreset = 'default' | 'bus' | 'coupang' | 'mechanic' | 'mechanic_newgrad';
+export type FormPreset = 'default' | 'bus' | 'coupang' | 'mechanic' | 'mechanic_newgrad' | 'truck';
 
 export interface FormPresetConfig {
   // Visual settings
@@ -23,7 +23,7 @@ export interface FormPresetConfig {
   useModal: boolean;
 
   // Form behavior
-  formOrigin: 'default' | 'bus' | 'coupang' | 'mechanic' | 'mechanic_newgrad';
+  formOrigin: 'default' | 'bus' | 'coupang' | 'mechanic' | 'mechanic_newgrad' | 'truck';
 
   // Styling
   footerBgClassName: string;
@@ -52,6 +52,27 @@ export const FORM_PRESETS: Record<FormPreset, FormPresetConfig> = {
     enableJobTimingStep: true,
     useModal: true,
     formOrigin: 'default',
+    footerBgClassName: '',
+    containerClassName: '',
+  },
+
+  truck: {
+    headerLogoSrc: '/images/ride_logo.svg',
+    headerUpperText: '未経験でトラックドライバーに転職するなら',
+    headerLowerText: 'RIDE JOB（ライドジョブ）',
+    loadingLogoSrc: '/images/ride_logo.svg',
+    step1ImageSrc: '/images/STEP1.webp',
+    step2ImageSrc: '/images/STEP2.webp',
+    step3ImageSrc: '/images/STEP3.webp',
+    step4ImageSrc: '/images/STEP4.webp',
+    step5ImageSrc: '/images/STEP5.webp',
+    showHeader: true,
+    showLoadingScreen: true,
+    showFooterLogo: true,
+    showBottomImage: true,
+    enableJobTimingStep: true,
+    useModal: true,
+    formOrigin: 'truck',
     footerBgClassName: '',
     containerClassName: '',
   },
