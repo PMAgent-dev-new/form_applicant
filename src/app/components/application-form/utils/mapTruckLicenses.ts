@@ -9,7 +9,7 @@ const truckLicenseLabels: Record<TruckLicense, string> = {
   medium: '中型免許（8t限定含む）',
   large: '大型免許',
   towing: 'けん引免許',
-  other: 'その他の資格',
+  forklift: 'フォークリフト',
   none: '免許なし',
 };
 
