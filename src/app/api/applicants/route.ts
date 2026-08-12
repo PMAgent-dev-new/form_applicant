@@ -116,14 +116,9 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
   }
 
   // default / bus / truck → 求職者DB🚕（ridejob base）
-  // truck は Base 側に専用フィールドが無いため、職種と保有免許を対応履歴メモへ残す
-  //（Base に「登録職種」「保有免許」欄が追加されたら専用フィールドへ移行する）。
+  // truck の職種と保有免許は専用フィールドへ保存し、転職時期だけ対応履歴メモへ残す。
   const memo = [
-    ctx.isTruck ? '登録職種: トラックドライバー' : '',
     ctx.jobTimingLabel ? `転職時期: ${ctx.jobTimingLabel}` : '',
-    ctx.isTruck && ctx.truckLicensesLabel && ctx.truckLicensesLabel !== '未選択'
-      ? `保有免許: ${ctx.truckLicensesLabel}`
-      : '',
   ].filter(Boolean).join(' / ') || undefined;
   return {
     profile: 'ridejob',
@@ -139,6 +134,10 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
       市区町村以下: address,
       応募日: ctx.submittedAtMs,
       Status: 'リード',
+      'マスタ-応募職種': ctx.isTruck ? 'トラックドライバー' : undefined,
+      保有資格: ctx.isTruck && ctx.truckLicensesLabel && ctx.truckLicensesLabel !== '未選択'
+        ? ctx.truckLicensesLabel
+        : undefined,
       対応履歴メモ: memo,
       utm_source: ctx.utm.utm_source,
       utm_medium: ctx.utm.utm_medium,
