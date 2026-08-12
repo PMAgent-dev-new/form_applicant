@@ -108,7 +108,7 @@ describe('resolveDirectBaseWrite (truck)', () => {
     const target = resolveDirectBaseWrite(truckContext());
 
     expect(target?.profile).toBe('ridejob');
-    expect(target?.fields.登録職種).toBe('トラックドライバー');
+    expect(target?.fields.登録職種).toEqual({ linkedRecordName: 'トラックドライバー' });
     expect(target?.fields.保有資格).toEqual(['中型免許（8t限定含む）', '大型免許']);
     expect(target?.fields.対応履歴メモ).toBe('転職時期: 決まれば早く転職したい');
   });
@@ -116,7 +116,7 @@ describe('resolveDirectBaseWrite (truck)', () => {
   it('保有免許が未選択なら保有資格欄へ書き込まない', () => {
     const target = resolveDirectBaseWrite({ ...truckContext(), truckLicensesLabel: '未選択' });
 
-    expect(target?.fields.登録職種).toBe('トラックドライバー');
+    expect(target?.fields.登録職種).toEqual({ linkedRecordName: 'トラックドライバー' });
     expect(target?.fields.保有資格).toBeUndefined();
     expect(target?.fields.対応履歴メモ).toBe('転職時期: 決まれば早く転職したい');
   });

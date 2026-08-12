@@ -21,6 +21,10 @@ interface LarkBaseConfig {
 // Bitable のフィールド値。Text/Select=string、MultiSelect=string[]、Number/DateTime=number、Checkbox=boolean。
 export type LarkFieldValue = string | number | boolean | string[];
 
+export type LarkLinkedRecordName = {
+  linkedRecordName: string;
+};
+
 interface TokenCache {
   token: string;
   expiresAt: number; // epoch ms
@@ -94,11 +98,77 @@ async function postRecord(
   return { code: data.code, msg: data.msg, ok: res.ok };
 }
 
+async function getJson(
+  cfg: LarkBaseConfig,
+  token: string,
+  path: string
+): Promise<Record<string, unknown>> {
+  const res = await fetch(`${cfg.domain}${path}`, {
+    headers: { Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(5000),
+  });
+  const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!res.ok || data.code !== 0) {
+    throw new Error(`Base API読取失敗: code=${data.code} msg=${data.msg}`);
+  }
+  return data;
+}
+
+function containsText(value: unknown, expected: string): boolean {
+  if (typeof value === "string") return value === expected;
+  if (Array.isArray(value)) return value.some((item) => containsText(item, expected));
+  if (value && typeof value === "object") {
+    return Object.values(value as Record<string, unknown>).some((item) => containsText(item, expected));
+  }
+  return false;
+}
+
+async function resolveLinkedRecordId(
+  cfg: LarkBaseConfig,
+  token: string,
+  tableId: string,
+  fieldName: string,
+  recordName: string
+): Promise<string> {
+  const fieldsResponse = await getJson(
+    cfg,
+    token,
+    `/open-apis/bitable/v1/apps/${cfg.appToken}/tables/${tableId}/fields?page_size=100`
+  );
+  const fields = ((fieldsResponse.data as { items?: Array<Record<string, unknown>> } | undefined)?.items) ?? [];
+  const field = fields.find((item) => item.field_name === fieldName);
+  const linkedTableId = (field?.property as { table_id?: string } | undefined)?.table_id;
+  if (!linkedTableId) {
+    throw new Error(`リンクフィールド「${fieldName}」のリンク先テーブルを取得できません`);
+  }
+
+  let pageToken = "";
+  do {
+    const query = new URLSearchParams({ page_size: "500" });
+    if (pageToken) query.set("page_token", pageToken);
+    const recordsResponse = await getJson(
+      cfg,
+      token,
+      `/open-apis/bitable/v1/apps/${cfg.appToken}/tables/${linkedTableId}/records?${query}`
+    );
+    const data = recordsResponse.data as {
+      items?: Array<{ record_id?: string; fields?: Record<string, unknown> }>;
+      has_more?: boolean;
+      page_token?: string;
+    } | undefined;
+    const match = data?.items?.find((record) => containsText(record.fields, recordName));
+    if (match?.record_id) return match.record_id;
+    pageToken = data?.has_more ? (data.page_token || "") : "";
+  } while (pageToken);
+
+  throw new Error(`リンク先に「${recordName}」のレコードが見つかりません`);
+}
+
 // 指定プロファイルのアプリで、指定テーブルにレコードを1件作成する。失敗時は throw。
 // undefined / 空文字のフィールドは送信しない。
 export async function createBaseRecord(
   tableId: string,
-  fields: Record<string, LarkFieldValue | undefined>,
+  fields: Record<string, LarkFieldValue | LarkLinkedRecordName | undefined>,
   profile: LarkProfile = DEFAULT_PROFILE
 ): Promise<void> {
   const cfg = readConfig(profile);
@@ -107,12 +177,16 @@ export async function createBaseRecord(
     throw new Error(`Lark Base 認証情報（APP_ID_${s} / APP_SECRET_${s} / APP_TOKEN_${s}）が未設定です。`);
   }
 
+  let token = await fetchTenantAccessToken(cfg, profile);
   const cleaned: Record<string, LarkFieldValue> = {};
   for (const [k, v] of Object.entries(fields)) {
-    if (v !== undefined && v !== "") cleaned[k] = v;
+    if (v && typeof v === "object" && !Array.isArray(v) && "linkedRecordName" in v) {
+      cleaned[k] = [await resolveLinkedRecordId(cfg, token, tableId, k, v.linkedRecordName)];
+    } else if (v !== undefined && v !== "") {
+      cleaned[k] = v as LarkFieldValue;
+    }
   }
 
-  let token = await fetchTenantAccessToken(cfg, profile);
   let result = await postRecord(cfg, token, tableId, cleaned);
 
   // トークン失効（99991661/99991663 など）時はキャッシュを捨てて1度だけ再試行。

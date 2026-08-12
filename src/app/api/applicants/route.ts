@@ -15,6 +15,7 @@ import {
   createBaseRecord,
   isLarkBaseConfigured,
   type LarkFieldValue,
+  type LarkLinkedRecordName,
   type LarkProfile,
 } from '@/lib/larkBase';
 
@@ -50,7 +51,7 @@ export type BaseWriteContext = {
 type DirectBaseWrite = {
   profile: LarkProfile;
   tableId: string;
-  fields: Record<string, LarkFieldValue | undefined>;
+  fields: Record<string, LarkFieldValue | LarkLinkedRecordName | undefined>;
 };
 
 // 流入元(origin)に応じて、直書き先テーブルと日本語カラムへのマッピングを決める。
@@ -135,7 +136,7 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
       応募日: ctx.submittedAtMs,
       Status: 'リード',
       // 「マスタ-応募職種」は「登録職種」からBase側で連動表示される参照欄。
-      登録職種: ctx.isTruck ? 'トラックドライバー' : undefined,
+      登録職種: ctx.isTruck ? { linkedRecordName: 'トラックドライバー' } : undefined,
       保有資格: ctx.isTruck && ctx.truckLicensesLabel !== '未選択'
         ? ctx.form.truckLicenses?.map(mapTruckLicenseLabel).filter(Boolean)
         : undefined,
