@@ -134,7 +134,8 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
       市区町村以下: address,
       応募日: ctx.submittedAtMs,
       Status: 'リード',
-      'マスタ-応募職種': ctx.isTruck ? 'トラックドライバー' : undefined,
+      // 「マスタ-応募職種」は「登録職種」からBase側で連動表示される参照欄。
+      登録職種: ctx.isTruck ? 'トラックドライバー' : undefined,
       保有資格: ctx.isTruck && ctx.truckLicensesLabel !== '未選択'
         ? ctx.form.truckLicenses?.map(mapTruckLicenseLabel).filter(Boolean)
         : undefined,
