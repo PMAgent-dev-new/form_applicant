@@ -7,6 +7,7 @@ function mechanicContext(): BaseWriteContext {
     isMechanicNewgrad: false,
     isCoupang: false,
     isTruck: false,
+    isBus: false,
     truckLicensesLabel: '',
     mediaName: 'RIDE JOB Mechanic',
     utm: {},
@@ -74,6 +75,7 @@ function truckContext(): BaseWriteContext {
     isMechanicNewgrad: false,
     isCoupang: false,
     isTruck: true,
+    isBus: false,
     truckLicensesLabel: '中型免許（8t限定含む）、大型免許',
     mediaName: 'Meta広告',
     utm: {},
@@ -104,24 +106,54 @@ function truckContext(): BaseWriteContext {
 }
 
 describe('resolveDirectBaseWrite (truck)', () => {
+  // 求職者DB🚕 に「登録職種」列は存在せず、職種は関連フィールド「マスタ-応募職種」で持つ。
   it('トラック応募は職種と保有免許を専用欄へ、転職時期を対応履歴メモへ保存する', () => {
     const target = resolveDirectBaseWrite(truckContext());
 
     expect(target?.profile).toBe('ridejob');
-    expect(target?.fields.登録職種).toEqual({ linkedRecordName: 'トラックドライバー' });
-    expect(target?.fields.保有資格).toEqual(['中型免許（8t限定含む）', '大型免許']);
+    expect(target?.fields['マスタ-応募職種']).toEqual({ linkedRecordName: 'トラックドライバー' });
+    expect(target?.fields.保有資格).toEqual(['中型免許', '大型免許']);
     expect(target?.fields.対応履歴メモ).toBe('転職時期: 決まれば早く転職したい');
   });
 
-  it('保有免許が未選択なら保有資格欄へ書き込まない', () => {
-    const target = resolveDirectBaseWrite({ ...truckContext(), truckLicensesLabel: '未選択' });
+  // Base の「保有資格」は MultiSelect のため、未登録の値を送ると選択肢が新規作成されてしまう。
+  it('保有免許はBaseの既存選択肢名へ変換して書き込む', () => {
+    const target = resolveDirectBaseWrite({
+      ...truckContext(),
+      form: { ...truckContext().form, truckLicenses: ['semi_medium', 'regular_at'] },
+    });
 
-    expect(target?.fields.登録職種).toEqual({ linkedRecordName: 'トラックドライバー' });
+    expect(target?.fields.保有資格).toEqual(['準中型免許', '普通免許（AT限定）']);
+  });
+
+  it('「免許なし」だけの回答は保有資格欄へ書き込まない', () => {
+    const target = resolveDirectBaseWrite({
+      ...truckContext(),
+      truckLicensesLabel: '免許なし',
+      form: { ...truckContext().form, truckLicenses: ['none'] },
+    });
+
+    expect(target?.fields['マスタ-応募職種']).toEqual({ linkedRecordName: 'トラックドライバー' });
     expect(target?.fields.保有資格).toBeUndefined();
     expect(target?.fields.対応履歴メモ).toBe('転職時期: 決まれば早く転職したい');
   });
 
-  it('タクシー(default)応募のメモは従来どおり転職時期のみ', () => {
+  it('バス応募はバスドライバーへ紐付け、保有資格は書き込まない', () => {
+    const target = resolveDirectBaseWrite({
+      ...truckContext(),
+      isTruck: false,
+      isBus: true,
+      truckLicensesLabel: '',
+      form: { ...truckContext().form, truckLicenses: [] },
+    });
+
+    expect(target?.profile).toBe('ridejob');
+    expect(target?.fields['マスタ-応募職種']).toEqual({ linkedRecordName: 'バスドライバー' });
+    expect(target?.fields.保有資格).toBeUndefined();
+  });
+
+  // default は formOrigin 未指定時のフォールバックも兼ねるため職種を紐付けない。
+  it('タクシー(default)応募は職種を紐付けず、メモは従来どおり転職時期のみ', () => {
     const target = resolveDirectBaseWrite({
       ...truckContext(),
       isTruck: false,
@@ -129,7 +161,7 @@ describe('resolveDirectBaseWrite (truck)', () => {
     });
 
     expect(target?.profile).toBe('ridejob');
-    expect(target?.fields.登録職種).toBeUndefined();
+    expect(target?.fields['マスタ-応募職種']).toBeUndefined();
     expect(target?.fields.保有資格).toBeUndefined();
     expect(target?.fields.対応履歴メモ).toBe('転職時期: 決まれば早く転職したい');
   });

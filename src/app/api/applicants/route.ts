@@ -3,7 +3,7 @@ import type { FormData } from '@/app/components/application-form/types';
 import { mapJobTimingLabel } from '@/app/components/application-form/utils/mapJobTimingLabel';
 import { getMechanicQualificationFieldLabel, mapMechanicQualifications } from '@/app/components/application-form/utils/mapMechanicQualifications';
 import { mapDesiredIncomeLabel } from '@/app/components/application-form/utils/mapDesiredIncomeLabel';
-import { mapTruckLicenseLabel, mapTruckLicenses } from '@/app/components/application-form/utils/mapTruckLicenses';
+import { mapTruckLicenses, mapTruckLicensesToBaseOptions } from '@/app/components/application-form/utils/mapTruckLicenses';
 import {
   isSupportedEmailOrigin,
   sendApplicationConfirmationEmail,
@@ -32,6 +32,7 @@ export type BaseWriteContext = {
   isMechanicNewgrad: boolean;
   isCoupang: boolean;
   isTruck: boolean;
+  isBus: boolean;
   truckLicensesLabel: string;
   mediaName: string;
   utm: UTMParams;
@@ -117,10 +118,14 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
   }
 
   // default / bus / truck → 求職者DB🚕（ridejob base）
-  // truck の職種と保有免許は専用フィールドへ保存し、転職時期だけ対応履歴メモへ残す。
+  // 職種と保有免許は専用フィールドへ保存し、転職時期だけ対応履歴メモへ残す。
   const memo = [
     ctx.jobTimingLabel ? `転職時期: ${ctx.jobTimingLabel}` : '',
   ].filter(Boolean).join(' / ') || undefined;
+
+  // 応募職種マスタ側のレコード名。default（タクシーLP）は formOrigin 未指定時のフォールバック
+  // 値も兼ねており、想定外の導線からの応募に職種が付いてしまうため紐付けない。
+  const jobCategoryName = ctx.isTruck ? 'トラックドライバー' : ctx.isBus ? 'バスドライバー' : undefined;
   return {
     profile: 'ridejob',
     tableId: RIDEJOB_TABLE_ID,
@@ -135,11 +140,10 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
       市区町村以下: address,
       応募日: ctx.submittedAtMs,
       Status: 'リード',
-      // 「マスタ-応募職種」は「登録職種」からBase側で連動表示される参照欄。
-      登録職種: ctx.isTruck ? { linkedRecordName: 'トラックドライバー' } : undefined,
-      保有資格: ctx.isTruck && ctx.truckLicensesLabel !== '未選択'
-        ? ctx.form.truckLicenses?.map(mapTruckLicenseLabel).filter(Boolean)
-        : undefined,
+      // 求職者DB🚕 に「登録職種」列は無く、職種は応募職種マスタへの関連フィールド
+      //「マスタ-応募職種」で持つ（linkedRecordName からレコードIDを解決して書き込む）。
+      'マスタ-応募職種': jobCategoryName ? { linkedRecordName: jobCategoryName } : undefined,
+      保有資格: ctx.isTruck ? mapTruckLicensesToBaseOptions(ctx.form.truckLicenses) : undefined,
       対応履歴メモ: memo,
       utm_source: ctx.utm.utm_source,
       utm_medium: ctx.utm.utm_medium,
@@ -325,6 +329,7 @@ export async function POST(request: NextRequest) {
     const isMechanicNewgrad = formOrigin === 'mechanic_newgrad' || /\/mechanic-newgrad(\?|$|\/)?.*/.test(referer);
     const isMechanic = formOrigin === 'mechanic' || /\/mechanic(\?|$|\/)?.*/.test(referer) || isMechanicNewgrad;
     const isTruck = formOrigin === 'truck';
+    const isBus = formOrigin === 'bus';
 
     // Determine the appropriate Lark webhook URLs based on environment (with sensible fallbacks)
     const larkWebhookUrlCommon = isProduction
@@ -423,6 +428,7 @@ export async function POST(request: NextRequest) {
       isMechanicNewgrad,
       isCoupang,
       isTruck,
+      isBus,
       truckLicensesLabel,
       mediaName,
       utm: utmParams || {},
