@@ -104,19 +104,21 @@ function truckContext(): BaseWriteContext {
 }
 
 describe('resolveDirectBaseWrite (truck)', () => {
-  it('トラック応募は求職者DB🚕へ、職種と保有免許を対応履歴メモに保存する', () => {
+  it('トラック応募は職種と保有免許を専用欄へ、転職時期を対応履歴メモへ保存する', () => {
     const target = resolveDirectBaseWrite(truckContext());
 
     expect(target?.profile).toBe('ridejob');
-    expect(target?.fields.対応履歴メモ).toBe(
-      '登録職種: トラックドライバー / 転職時期: 決まれば早く転職したい / 保有免許: 中型免許（8t限定含む）、大型免許'
-    );
+    expect(target?.fields['マスタ-応募職種']).toBe('トラックドライバー');
+    expect(target?.fields.保有資格).toBe('中型免許（8t限定含む）、大型免許');
+    expect(target?.fields.対応履歴メモ).toBe('転職時期: 決まれば早く転職したい');
   });
 
-  it('保有免許が未選択ならメモには職種と転職時期のみ残す', () => {
+  it('保有免許が未選択なら保有資格欄へ書き込まない', () => {
     const target = resolveDirectBaseWrite({ ...truckContext(), truckLicensesLabel: '未選択' });
 
-    expect(target?.fields.対応履歴メモ).toBe('登録職種: トラックドライバー / 転職時期: 決まれば早く転職したい');
+    expect(target?.fields['マスタ-応募職種']).toBe('トラックドライバー');
+    expect(target?.fields.保有資格).toBeUndefined();
+    expect(target?.fields.対応履歴メモ).toBe('転職時期: 決まれば早く転職したい');
   });
 
   it('タクシー(default)応募のメモは従来どおり転職時期のみ', () => {
@@ -127,6 +129,8 @@ describe('resolveDirectBaseWrite (truck)', () => {
     });
 
     expect(target?.profile).toBe('ridejob');
+    expect(target?.fields['マスタ-応募職種']).toBeUndefined();
+    expect(target?.fields.保有資格).toBeUndefined();
     expect(target?.fields.対応履歴メモ).toBe('転職時期: 決まれば早く転職したい');
   });
 });
