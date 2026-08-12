@@ -109,7 +109,7 @@ describe('resolveDirectBaseWrite (truck)', () => {
 
     expect(target?.profile).toBe('ridejob');
     expect(target?.fields['マスタ-応募職種']).toBe('トラックドライバー');
-    expect(target?.fields.保有資格).toBe('中型免許（8t限定含む）、大型免許');
+    expect(target?.fields.保有資格).toEqual(['中型免許（8t限定含む）', '大型免許']);
     expect(target?.fields.対応履歴メモ).toBe('転職時期: 決まれば早く転職したい');
   });
 

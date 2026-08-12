@@ -3,7 +3,7 @@ import type { FormData } from '@/app/components/application-form/types';
 import { mapJobTimingLabel } from '@/app/components/application-form/utils/mapJobTimingLabel';
 import { getMechanicQualificationFieldLabel, mapMechanicQualifications } from '@/app/components/application-form/utils/mapMechanicQualifications';
 import { mapDesiredIncomeLabel } from '@/app/components/application-form/utils/mapDesiredIncomeLabel';
-import { mapTruckLicenses } from '@/app/components/application-form/utils/mapTruckLicenses';
+import { mapTruckLicenseLabel, mapTruckLicenses } from '@/app/components/application-form/utils/mapTruckLicenses';
 import {
   isSupportedEmailOrigin,
   sendApplicationConfirmationEmail,
@@ -135,8 +135,8 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
       応募日: ctx.submittedAtMs,
       Status: 'リード',
       'マスタ-応募職種': ctx.isTruck ? 'トラックドライバー' : undefined,
-      保有資格: ctx.isTruck && ctx.truckLicensesLabel && ctx.truckLicensesLabel !== '未選択'
-        ? ctx.truckLicensesLabel
+      保有資格: ctx.isTruck && ctx.truckLicensesLabel !== '未選択'
+        ? ctx.form.truckLicenses?.map(mapTruckLicenseLabel).filter(Boolean)
         : undefined,
       対応履歴メモ: memo,
       utm_source: ctx.utm.utm_source,
