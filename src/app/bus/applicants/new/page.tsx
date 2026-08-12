@@ -120,7 +120,7 @@ export default function BusApplicationComplete() {
               高年収の求人から採用枠が埋まります。少しでも早く知りたい方は、こちらから面談日程のご予約ください。
             </p>
             <div className="mt-6">
-              <BookingEmbed slug="ride" height={1100} />
+              <BookingEmbed slug="ride" height={800} />
             </div>
           </div>
         </section>
