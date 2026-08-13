@@ -163,14 +163,17 @@ export default function ApplicationComplete() {
         <section className="mt-12">
           <div className="flex items-center pl-2">
             <span className="mr-2 block h-6 w-1 rounded bg-[#2205D9]"></span>
-            <h2 className="text-xl font-semibold text-gray-900">RIDE JOBが大切にしていること</h2>
+            <h2 className="text-xl font-semibold text-gray-900">RIDEJOBチャンネルで役立つ情報を見る</h2>
           </div>
           <div className="px-4">
             <p className="mt-4 text-lg leading-relaxed text-gray-900">
-              私たちはおもてなしの心あふれるサポートを通して、求職者様の感動を作り出す転職支援をモットーにしています。
+              ドライバーの皆さまが自分らしく働ける職場と出会えるよう、一人ひとりに寄り添った転職サポートを大切にしています。
             </p>
             <p className="mt-4 text-lg leading-relaxed text-gray-900">
-              日本全国の移動を作り出すことを目指して、タクシー業界に特化した転職エージェント事業を行っています。
+              YouTubeでは、転職活動に役立つ情報やドライバー業界のリアル、求人選びのポイントなどを分かりやすく発信しています。
+            </p>
+            <p className="mt-4 text-lg leading-relaxed text-gray-900">
+              転職を成功させるヒントがきっと見つかります。ぜひ動画をご覧ください！
             </p>      
           </div>
           <div className="mt-6 overflow-hidden rounded-2xl border border-[#00A0E9] shadow-[0_8px_20px_rgba(0,160,233,0.25)]">
