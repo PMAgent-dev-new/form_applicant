@@ -171,7 +171,7 @@ function ApplicationFormInner({
           会社概要
         </a>
         <span aria-hidden className="text-gray-400">|</span>
-        <a href="https://ridejob.pmagent.jp/privacy" target="_blank" rel="noopener noreferrer" className="hover:underline">
+        <a href="https://ridejob.jp/privacy" target="_blank" rel="noopener noreferrer" className="hover:underline">
           プライバシーポリシー
         </a>
       </div>
