@@ -50,7 +50,17 @@ export function useImagePreloader({ images, onComplete, enable }: UseImagePreloa
     });
 
     // 何があっても一定時間で必ずローディングを終了させる安全網。
-    const fallbackTimer = setTimeout(complete, 5000);
+    //
+    // 5000ms → 1200ms に短縮（2026-08-13）。根拠は次の2点のみ:
+    // 1. 初手カード（JobTimingCard / MechanicQualificationCard）に画像が無い。
+    //    ここで待っている画像は step2 以降のもので、最初の表示には要らない。
+    // 2. そもそもプリロードは生URL（/entry/images/*.webp）を取りに行くが、
+    //    実際の表示は AppImage 経由の /_next/image?url=... で別リソース。
+    //    待ってもキャッシュは温まらないため、長く待つ積極的な理由が無い。
+    //
+    // ※ 恒久的にはゲート自体の廃止が筋（初手が画像レスなので失うものが無い）。
+    //    本変更は上限を下げるだけの暫定措置。
+    const fallbackTimer = setTimeout(complete, 1200);
     return () => clearTimeout(fallbackTimer);
   }, [enable, images]);
 }
