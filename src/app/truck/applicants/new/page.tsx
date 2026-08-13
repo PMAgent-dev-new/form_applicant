@@ -176,7 +176,7 @@ export default function TruckApplicationComplete() {
           <div className="mt-6 overflow-hidden rounded-2xl border border-[#00A0E9] shadow-[0_8px_20px_rgba(0,160,233,0.25)]">
             <div className="relative h-0 w-full pb-[56.25%]">
               <iframe
-                src="https://www.youtube.com/embed/knB0b7Mq_KA?start=1101"
+                src="https://www.youtube.com/embed/-ov-CBlcPG8"
                 title="RIDE JOB紹介動画"
                 className="absolute left-0 top-0 h-full w-full"
                 allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
