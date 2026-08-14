@@ -21,6 +21,18 @@ const nextConfig: NextConfig = {
       },
     ],
   },
+  async headers() {
+    return [
+      {
+        // kuromoji の辞書（public/dict, 約17MB）は内容が変わらない不変ファイル。
+        // 既定だと再訪のたびに再検証が走るので、長期キャッシュを明示する。
+        source: '/dict/:path*',
+        headers: [
+          { key: 'Cache-Control', value: 'public, max-age=31536000, immutable' },
+        ],
+      },
+    ];
+  },
 };
 
 export default nextConfig;

@@ -119,7 +119,14 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
     trackEvent('step_view', getStepEventPayload(1));
   }, [variant, getStepEventPayload]);
 
-  const hiraganaConverter = useHiraganaConverter();
+  const { convert: hiraganaConverter, warmUp: warmUpHiragana } = useHiraganaConverter();
+
+  // フォームに最初に触れた時点で、ふりがな辞書(約17MB)の読み込みを開始する。
+  // 氏名カードに着くまで20〜60秒あるので、blur までに間に合う。
+  // 何もせず離脱する訪問者（17MB浪費の主因）は1バイトも落とさない。
+  useEffect(() => {
+    if (isFormDirty) warmUpHiragana();
+  }, [isFormDirty, warmUpHiragana]);
 
   const loadJobCount = useCallback(async (params: Partial<JobCountParams>) => {
     const hasPostal = typeof params.postalCode === 'string' && params.postalCode.trim().length > 0;
@@ -315,6 +322,13 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         return next;
       });
 
+      if (name === 'fullName') {
+        // 氏名の入力が始まったら、ふりがな変換用の辞書(約17MB)の読み込みを開始する。
+        // 実際の変換は blur で走るので、入力している間にロードが進み待ちが出にくい。
+        // 冪等なので毎キーストロークで呼んで問題ない。
+        warmUpHiragana();
+      }
+
       if (name === 'phoneNumber') {
         validatePhoneNumberInput(value);
       }
@@ -337,7 +351,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         }
       }
     },
-    [formOrigin, isFormDirty, loadJobCount, validateEmailInput, validatePhoneNumberInput]
+    [formOrigin, isFormDirty, loadJobCount, validateEmailInput, validatePhoneNumberInput, warmUpHiragana]
   );
 
   const handleNameBlur = useCallback(
