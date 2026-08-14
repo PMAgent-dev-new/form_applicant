@@ -30,8 +30,9 @@ body::before {
   position: fixed;
   inset: 0;
   z-index: -1;
-  /* basePath 配下対応: URL は layout.tsx で CSS 変数として注入（既定はルート配信） */
-  background-image: var(--app-bg-mobile, url('/images/mobile-bg.png'));
+  /* basePath 配下対応: URL は layout.tsx で CSS 変数として注入（既定はルート配信）。
+     mobile-bg.webp ではなく mobile-bg-838.webp を使う理由は layout.tsx のコメント参照。 */
+  background-image: var(--app-bg-mobile, url('/images/mobile-bg-838.webp'));
   background-size: 115% auto;
   background-position: center;
   background-repeat: no-repeat;
@@ -47,6 +48,6 @@ body::before {
 
 @media (min-width: 768px) {
   body::before {
-    background-image: var(--app-bg-pc, url('/images/pc-bg.png'));
+    background-image: var(--app-bg-pc, url('/images/pc-bg.webp'));
   }
 }
