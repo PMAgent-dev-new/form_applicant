@@ -15,12 +15,41 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+/**
+ * dual-run（並行稼働）中かどうか。
+ * 同じコードが2つの deployment に載っている:
+ *   BASE_PATH=/entry → https://ridejob.jp/entry/*（新・移管先）
+ *   BASE_PATH 未設定 → https://ridejob.pmagent.jp/*（旧・現に応募が流れている本番）
+ * 判定に新しい環境変数は増やさず、既存の BASE_PATH をそのままゾーンの識別に使う。
+ */
+const IS_ENTRY_ZONE = BASE_PATH !== "";
+
 export const metadata: Metadata = {
-  title: "タクシー運転手の転職ならライドジョブ｜応募フォーム",
+  // og:image などの相対パスを絶対URLへ解決する起点。未指定だと Next が Vercel の
+  // 環境変数から推測し、ridejob-entry.vercel.app という内部URLが og:image に漏れる。
+  metadataBase: new URL(
+    IS_ENTRY_ZONE ? "https://ridejob.jp" : "https://ridejob.pmagent.jp",
+  ),
+  // ルートの title に職種を入れない。以前はタクシー文言だったため、自前の metadata を
+  // 持たない /mechanic などが「タクシー運転手の転職なら…」を継承してしまっていた。
+  // 職種名は各ルートの page/layout 側で名乗る。
+  title: "ライドジョブ（RIDE JOB）｜応募フォーム",
   description: "未経験でもわかるドライバー業界の魅力発掘メディア。\nライドジョブは仕事のやりがいやリアルな声、キャリアの可能性など、ドライバー業界の魅力を発見・共有する情報発信プラットフォームです。経験者の声や成功事例、未経験からのキャリアスタートのヒントなど、幅広い情報をお届けします。",
   icons: {
     icon: `${BASE_PATH}/favicon.png`,
   },
+  // 並行稼働中は新ゾーンだけを検索対象から外し、正規URLを ridejob.jp/entry と明示する。
+  // これが無いと Google が両ゾーンを重複と判断し、旧 ridejob.pmagent.jp を
+  // ridejob.jp/entry の正規URLに選んでしまう（GSC: Duplicate without user-selected canonical）。
+  // ⚠️ 旧ゾーン側には絶対に付けない。旧を noindex にすると移管完了前に検索流入が消える。
+  ...(IS_ENTRY_ZONE
+    ? {
+        robots: { index: false, follow: false },
+        // ゾーン全体が noindex なので、いまは「旧ドメインを正規に選ばせない」ためだけの指定。
+        // 移管計画 §7 で noindex を外す際は、ルートごとの実URLへ分ける必要がある。
+        alternates: { canonical: "https://ridejob.jp/entry" },
+      }
+    : {}),
 };
 
 export default function RootLayout({

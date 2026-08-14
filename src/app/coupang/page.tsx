@@ -1,6 +1,12 @@
+import type { Metadata } from 'next';
 import { BASE_PATH } from '@/lib/basePath';
 import Image from '@/app/components/AppImage';
 import CoupangStepForm from '@/app/components/coupang-form/CoupangStepForm';
+
+export const metadata: Metadata = {
+  title: 'ロケットナウ求人特設フォーム｜ライドジョブ（RIDE JOB）',
+  description: 'ロケットナウの募集職種・仕事内容をご説明する説明会への参加お申し込みフォームです。',
+};
 
 export default function CoupangPage() {
   return (

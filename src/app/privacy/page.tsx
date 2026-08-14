@@ -1,5 +1,11 @@
+import type { Metadata } from 'next';
 import { BASE_PATH } from '@/lib/basePath';
 import Image from "@/app/components/AppImage";
+
+export const metadata: Metadata = {
+  title: 'プライバシーポリシー｜ライドジョブ（RIDE JOB）',
+  description: '株式会社PM Agentが運営するライドジョブにおける個人情報の取得・利用・共有についての方針です。',
+};
 
 export default function PrivacyPolicy() {
   return (

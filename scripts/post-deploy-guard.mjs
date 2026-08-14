@@ -41,9 +41,19 @@ const DRILL = FORCE_UNHEALTHY.trim().toLowerCase() === 'true';
 
 // project name -> production URL (custom domain / production alias, NOT the
 // immutable *.vercel.app deployment URL, which can be behind Deployment Protection).
+//
+// ⚠️ この対応づけは「どのプロジェクトを rollback するか」を決めるので、取り違えると
+// 健全な方を巻き戻す。実測での根拠:
+//   - ridejob-entry は basePath=/entry でビルドされており（/entry/api/health が 200、
+//     ルートの /api/health は 404）、Cloudflare Worker 経由で ridejob.jp/entry を出す。
+//     カスタムドメインが無いため og:image に ridejob-entry.vercel.app が出ていた。
+//   - ridejob.pmagent.jp 側は og:image が自ドメインで解決される＝カスタムドメイン保有。
+//     これが ridejob-form。
+// ヘルスチェックURLは2本とも生きているので、取り違えても ROLLBACK_ARMED=true に
+// なるまで表面化しない。
 const PROJECTS = [
-  { name: 'ridejob-entry', url: 'https://ridejob.pmagent.jp' },
-  { name: 'ridejob-form', url: 'https://ridejob.jp/entry' },
+  { name: 'ridejob-form', url: 'https://ridejob.pmagent.jp' },
+  { name: 'ridejob-entry', url: 'https://ridejob.jp/entry' },
 ];
 
 const HEALTH_ATTEMPTS = 6;
