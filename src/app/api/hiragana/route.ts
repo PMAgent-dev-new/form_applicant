@@ -79,14 +79,19 @@ export async function POST(request: NextRequest) {
   if (!kuroshiro) {
     // 変換できなくてもフォームは手入力で先へ進めるので、200 + 空文字で返す。
     // 呼び出し側はふりがなが空なら何もしない。
-    return NextResponse.json({ hiragana: '' });
+    // ただし失敗の種類はクライアントから区別できないため、理由を body で返す。
+    // （ヘッダだと将来API を別オリジンに出したとき CORS で黙って見えなくなる）
+    return NextResponse.json({ hiragana: '', reason: 'dict-unavailable' });
   }
 
   try {
     const converted = await kuroshiro.convert(trimmed, { to: 'hiragana', mode: 'normal' });
     return NextResponse.json({ hiragana: converted.replace(/\s+/g, '') });
   } catch (error) {
+    // 辞書は初期化できたが変換が落ちたケース。**正常系ではなく要調査**。
+    // kuroshiro は未知トークン（記号・英字・異体字）の表層をそのまま返すので、
+    // 非空の入力から空文字が返るのは実質この経路だけ。
     console.error('Failed to convert to hiragana:', error);
-    return NextResponse.json({ hiragana: '' });
+    return NextResponse.json({ hiragana: '', reason: 'convert-error' });
   }
 }
