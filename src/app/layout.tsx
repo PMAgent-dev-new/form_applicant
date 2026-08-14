@@ -33,10 +33,21 @@ export default function RootLayout({
   return (
     <html lang="ja">
       <head>
-        {/* basePath 配下では /public 画像が `${BASE_PATH}/...` で配信されるため、背景画像URLを注入する */}
+        {/* basePath 配下では /public 画像が `${BASE_PATH}/...` で配信されるため、背景画像URLを注入する。
+            PNG → WebP に変更し転送量を削減（mobile 814KB→146KB / pc 556KB→58KB）。
+
+            ⚠️ mobile は `mobile-bg-838.webp` を使う。既存の `mobile-bg.webp`(563x1233) は
+               PNG(838x1984)の変換版ではなく**別クリエイティブ**（webp=タクシー版 / png=整備士版）で、
+               参照すると全ルートのモバイル背景が差し替わってしまうため使わない。
+               `mobile-bg-838.webp` は現行 PNG を同一寸法で忠実に変換したもの＝見た目は不変。
+
+            image-set() は使わない。CSS変数経由だと構文非対応ブラウザ（iOS16以前のSafari／
+            同OSのアプリ内ブラウザ）で var() 置換後に不正値となり background-image が none に
+            落ちて背景が消える。かつ本リポジトリは他の画像を素の .webp で参照済みで、
+            PNGフォールバックの受益者は実質いない。 */}
         <style
           dangerouslySetInnerHTML={{
-            __html: `:root{--app-bg-mobile:url('${BASE_PATH}/images/mobile-bg.png');--app-bg-pc:url('${BASE_PATH}/images/pc-bg.png');}`,
+            __html: `:root{--app-bg-mobile:url('${BASE_PATH}/images/mobile-bg-838.webp');--app-bg-pc:url('${BASE_PATH}/images/pc-bg.webp');}`,
           }}
         />
 
