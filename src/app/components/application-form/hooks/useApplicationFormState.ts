@@ -121,9 +121,9 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
 
   const { convert: hiraganaConverter, warmUp: warmUpHiragana } = useHiraganaConverter();
 
-  // フォームに最初に触れた時点で、ふりがな辞書(約17MB)の読み込みを開始する。
-  // 氏名カードに着くまで20〜60秒あるので、blur までに間に合う。
-  // 何もせず離脱する訪問者（17MB浪費の主因）は1バイトも落とさない。
+  // フォームに最初に触れた時点で、サーバー側(/api/hiragana)の辞書初期化を起こす。
+  // 氏名カードに着くまで20〜60秒あるので、blur 時にはウォームになっている。
+  // 何もせず離脱する訪問者はリクエストを1本も出さない。
   useEffect(() => {
     if (isFormDirty) warmUpHiragana();
   }, [isFormDirty, warmUpHiragana]);
@@ -323,9 +323,9 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
       });
 
       if (name === 'fullName') {
-        // 氏名の入力が始まったら、ふりがな変換用の辞書(約17MB)の読み込みを開始する。
-        // 実際の変換は blur で走るので、入力している間にロードが進み待ちが出にくい。
-        // 冪等なので毎キーストロークで呼んで問題ない。
+        // 氏名の入力が始まったらサーバー側の辞書初期化を起こす（保険）。
+        // isFormDirty 起点で既に走っていることが多い。フック側で1回に絞っているので
+        // 毎キーストロークで呼んでもリクエストは1本しか出ない。
         warmUpHiragana();
       }
 
