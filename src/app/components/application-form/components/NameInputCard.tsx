@@ -105,6 +105,7 @@ export default function NameInputCard({
             type="text"
             id="fullName"
             name="fullName"
+            maxLength={100}
             placeholder="例: 田中 太郎"
             className={`flex-1 rounded border p-3 text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent ${errors.fullName ? 'border-red-500' : 'border-gray-300'}`}
             value={formData.fullName}
