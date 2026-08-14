@@ -2,72 +2,58 @@
 
 import { useCallback, useRef } from 'react';
 
-import { assetPath } from '@/lib/basePath';
-
-type KuroshiroInstance = import('kuroshiro').default;
+import { apiPath } from '@/lib/basePath';
 
 /**
- * 氏名からふりがなを生成する（kuroshiro + kuromoji）。
+ * 氏名 → ふりがな変換。
  *
- * ⚠️ kuromoji の辞書は `public/dict` で **約17MB** ある。
- * 以前はこのフックの `useEffect` がマウント時に無条件で `init` していたため、
- * **ふりがな欄に触れないユーザーを含む初回訪問者全員が、ページ表示直後に17MBを
- * ダウンロード**していた。広告クリックはほぼ初回訪問＝キャッシュ無し、
- * アプリ内ブラウザはキャッシュも分離されるため毎回発生していた。
+ * ⚠️ 以前はクライアントで kuroshiro を動かしており、kuromoji の辞書
+ * （`public/dict`・約17MB）を訪問者のブラウザにダウンロードさせていた。
+ * 広告クリックはほぼ初回訪問＝キャッシュ無し、アプリ内ブラウザは
+ * キャッシュも分離されるため毎回発生していた。
  *
- * そこで初期化を遅延させ、**氏名を入力し始めた時点**で先読みを開始する。
- * 実際の変換は氏名欄の blur で走るので、入力している間にロードが進み、
- * 体感の待ちはほぼ発生しない。
+ * 変換はサーバー（`/api/hiragana`）に寄せた。クライアントの転送は
+ * 数百バイトで済み、回線品質にも依存しない。
  *
- * - `warmUp()`: 初期化を開始する（冪等。何度呼んでも実体は1回）
- * - `convert()`: 変換する。未初期化なら自分で初期化を待つ（保険）
+ * - `convert()`: 変換する。失敗時は空文字（呼び出し側は何もしない）
+ * - `warmUp()`: サーバー側の辞書初期化を先に起こしておく。
+ *   コールドスタート時の初期化が重いため、氏名入力より前に叩いておくと
+ *   blur 時のレスポンスが速くなる。冪等。
  */
-/** 初期化の再試行上限。辞書が404等で恒久的に落ちる状況で、打鍵のたびに再取得しないための歯止め。 */
-const MAX_INIT_ATTEMPTS = 2;
-
 export function useHiraganaConverter() {
-  // 初期化の Promise を保持する。並行呼び出しでも実体は1回に集約される。
-  const initPromiseRef = useRef<Promise<KuroshiroInstance | null> | null>(null);
-  const attemptsRef = useRef(0);
+  // warmUp は氏名の毎キーストロークからも呼ばれるので、実際の発射は1回に絞る。
+  const warmedRef = useRef(false);
 
-  const warmUp = useCallback(() => {
-    if (initPromiseRef.current) return initPromiseRef.current;
-    if (attemptsRef.current >= MAX_INIT_ATTEMPTS) return Promise.resolve(null);
-    attemptsRef.current += 1;
-
-    initPromiseRef.current = (async () => {
-      try {
-        const Kuroshiro = (await import('kuroshiro')).default;
-        const KuromojiAnalyzer = (await import('kuroshiro-analyzer-kuromoji')).default;
-        const kuroshiro = new Kuroshiro();
-        await kuroshiro.init(new KuromojiAnalyzer({ dictPath: assetPath('/dict') }));
-        return kuroshiro;
-      } catch (error) {
-        console.error('Failed to initialize Kuroshiro:', error);
-        // 失敗を握ったままだと二度と再試行できないので、次回のために捨てる。
-        initPromiseRef.current = null;
-        return null;
-      }
-    })();
-
-    return initPromiseRef.current;
+  const convert = useCallback(async (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return '';
+    try {
+      const res = await fetch(apiPath('/api/hiragana'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: trimmed }),
+      });
+      if (!res.ok) return '';
+      const data = (await res.json()) as { hiragana?: string };
+      return typeof data.hiragana === 'string' ? data.hiragana : '';
+    } catch (error) {
+      console.error('Failed to convert to hiragana:', error);
+      return '';
+    }
   }, []);
 
-  const convert = useCallback(
-    async (text: string) => {
-      if (!text.trim()) return '';
-      const kuroshiro = await warmUp();
-      if (!kuroshiro) return '';
-      try {
-        const converted = await kuroshiro.convert(text, { to: 'hiragana', mode: 'normal' });
-        return converted.replace(/\s+/g, '');
-      } catch (error) {
-        console.error('Failed to convert to hiragana:', error);
-        return '';
-      }
-    },
-    [warmUp]
-  );
+  // サーバーの辞書初期化を先に起こす。空文字を投げるだけなので変換は走らない。
+  // 失敗しても握りつぶす（本番の変換時に改めて初期化される）。
+  const warmUp = useCallback(() => {
+    if (warmedRef.current) return;
+    warmedRef.current = true;
+    void fetch(apiPath('/api/hiragana'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: '' }),
+      keepalive: true,
+    }).catch(() => {});
+  }, []);
 
   return { convert, warmUp };
 }
