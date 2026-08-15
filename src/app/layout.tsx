@@ -38,18 +38,17 @@ export const metadata: Metadata = {
   icons: {
     icon: `${BASE_PATH}/favicon.png`,
   },
-  // 並行稼働中は新ゾーンだけを検索対象から外し、正規URLを ridejob.jp/entry と明示する。
-  // これが無いと Google が両ゾーンを重複と判断し、旧 ridejob.pmagent.jp を
-  // ridejob.jp/entry の正規URLに選んでしまう（GSC: Duplicate without user-selected canonical）。
+  // 並行稼働中は新ゾーンだけを検索対象から外す（移管計画 §5 の dual-run 設定）。
+  // 新ゾーンが index されない以上、両ゾーンが重複として競合すること自体が起きないので、
+  // GSC の「Duplicate without user-selected canonical」はこれで解消する。
+  //
+  // canonical は敢えて付けない。noindex のページは重複統合の対象にならないため効かず、
+  // Google が明示的に非推奨とする矛盾シグナルになる。さらに16ルート全部が layout を
+  // 継承するので、§7 で noindex を外したときに外し忘れると移管先が1ページに潰れる。
+  // 自己参照 canonical が要るのは §7 の最終切替時で、そのときルートごとに入れる。
+  //
   // ⚠️ 旧ゾーン側には絶対に付けない。旧を noindex にすると移管完了前に検索流入が消える。
-  ...(IS_ENTRY_ZONE
-    ? {
-        robots: { index: false, follow: false },
-        // ゾーン全体が noindex なので、いまは「旧ドメインを正規に選ばせない」ためだけの指定。
-        // 移管計画 §7 で noindex を外す際は、ルートごとの実URLへ分ける必要がある。
-        alternates: { canonical: "https://ridejob.jp/entry" },
-      }
-    : {}),
+  ...(IS_ENTRY_ZONE ? { robots: { index: false, follow: false } } : {}),
 };
 
 export default function RootLayout({
