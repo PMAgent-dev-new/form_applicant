@@ -73,7 +73,7 @@ if (url.pathname === '/entry' || url.pathname.startsWith('/entry/')) {
 
 ## 4. Vercel プロジェクト構成
 
-このリポジトリ（`Kei5665/form_applicant`）は **2つの Vercel プロジェクト**に接続されている。
+このリポジトリ（`PMAgent-dev-new/form_applicant`）は **2つの Vercel プロジェクト**に接続されている。
 どちらも **本番ブランチ = `main`**。
 
 | プロジェクト | 配信先 | basePath | 備考 |
@@ -130,6 +130,28 @@ Next.js は次の箇所に basePath を**自動補完しない**ため、明示�
 
 ---
 
+## 5.5 dual-run 中のメタデータ規約（PR #58 で導入・2026-08-14）
+
+`src/app/layout.tsx` が `IS_ENTRY_ZONE = BASE_PATH !== ""` でゾーンを判定し、**新ゾーンだけ**に付ける。
+
+| 項目 | `/entry` ゾーン | 旧 `ridejob.pmagent.jp` |
+|---|---|---|
+| robots | `noindex, nofollow` | **付けない** |
+| metadataBase | `https://ridejob.jp` | `https://ridejob.pmagent.jp` |
+| canonical | **敢えて付けない** | 付けない |
+| root の title | 職種を入れないブランド汎用（職種は各ルートが名乗る） | 同左 |
+
+- 完了ページ6本（`src/app/*/applicants/new/layout.tsx`）は**両ゾーンとも個別に noindex**。
+  検索から着地すると mount 時に `form_complete` が dataLayer へ push され、偽コンバージョンになるため。
+- canonical を付けないのは、noindex のページは重複統合の対象にならず効かないうえ、
+  16ルート全部が layout を継承するため、最終切替で外し忘れると移管先が1ページに潰れるから。
+  自己参照 canonical が要るのは §7 の最終切替時で、そのときルートごとに入れる。
+
+> ⚠️ **旧ゾーンに noindex を付けてはいけない。** 移管完了前に旧ドメインの検索流入が消える。
+> 本番実測（2026-08-14）: `ridejob.jp/entry` に noindex あり・`ridejob.pmagent.jp` に無し。
+
+---
+
 ## 6. Lark 通知・Base 登録の振り分け（`api/applicants/route.ts`）
 
 フォーム種別（`formOrigin` / referer）と本番判定（`NODE_ENV==='production'`）で webhook を選ぶ。
@@ -139,7 +161,16 @@ Next.js は次の箇所に basePath を**自動補完しない**ため、明示�
 | 用途 | 使う env（フォールバック順） |
 |---|---|
 | 通知チャンネル | `LARK_WEBHOOK_URL` → `LARK_WEBHOOK_URL_TEST` |
-| Base 登録 | `LARK_BASE_WEBHOOK_URL_PROD` → `LARK_BASE_WEBHOOK_URL` → `LARK_BASE_WEBHOOK_URL_TEST` |
+| Base 登録 | **Bitable API 直書きが主**（下記）。webhook はフォールバック |
+
+> ⚠️ **Base 登録は webhook ではなく Bitable API の直書きが主**（PR #31・2026-07-15）。
+> `route.ts` の `resolveDirectBaseWrite` → `createBaseRecord` が
+> `APP_ID_*` / `APP_SECRET_*` / `APP_TOKEN_*` のプロファイル方式で認証して直接書き込む。
+> `LARK_BASE_WEBHOOK_URL_*` 系が使われるのは **直書きに失敗したとき**と coupang だけ。
+> Base 未登録の障害を webhook 側から追うと原因にたどり着けない。
+>
+> 投入先は `formOrigin` で分岐する。`default` / `bus` / `truck` は同じ**求職者DB🚕**、
+> 別 Base に分かれるのは `mechanic` / `mechanic_newgrad` と `coupang` だけ。
 
 - `LARK_SEND_BASE_ONLY=true` のときは **通知をスキップ**し Base 登録のみ実行。
 - mechanic / coupang は専用 env（`..._MECHANIC[_PROD]` / `..._COUPANG[_PROD]`）を優先。
@@ -156,6 +187,28 @@ Next.js は次の箇所に basePath を**自動補完しない**ため、明示�
    - プレビューは Vercel 認証保護のため curl 不可。ブラウザ（Vercelログイン）で開く。
 3. マージ → 両プロジェクトが本番デプロイ。
 4. Worker / env を変えた場合のみ、別途 Cloudflare Worker 編集 or Vercel 再デプロイが必要。
+
+### post-deploy guard（自動ロールバックが武装している）
+
+`main` への push ごとに `.github/workflows/post-deploy.yml` が
+`scripts/post-deploy-guard.mjs` を走らせ、各本番URLの `/api/health` を叩く。
+
+**リポジトリ変数 `POST_DEPLOY_ROLLBACK_ARMED` は `true`（2026-07-13〜）で、
+`VERCEL_TOKEN` もある。** つまりヘルスチェックが失敗すると**実際に `vercel rollback` が走る**。
+
+```
+ridejob-form   → https://ridejob.pmagent.jp
+ridejob-entry  → https://ridejob.jp/entry
+```
+
+> ⚠️ この対応づけを取り違えると**健全な方を巻き戻す**。
+> 2026-08-14 まで実際に逆に書かれていた（PR #58 で是正）。
+> ヘルスチェックURLは2本とも200を返すため、取り違えても緑のままで気づけない。
+> `ridejob-entry` は basePath の関係で `/entry/api/health` が200・ルートの `/api/health` は404である点にも注意。
+
+依存の更新（Next.js のマイナー上げ等）は、まさにこのガードが発火しうる変更なので、
+低トラフィックの時間帯にマージし、反映直後に応募フローを1件通しで確認する
+（Lark Base の行作成 → SMS 送信 → eeasy 予約 → Meta CAPI）。
 
 ---
 
