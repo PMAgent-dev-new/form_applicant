@@ -104,8 +104,10 @@ export const FORM_PRESETS: Record<FormPreset, FormPresetConfig> = {
    *
    * こちらの共通フォーム経路は Meta Lead に content_name を載せないため、
    * ここに切り替えると **カスタムコンバージョン「RIDEJOB_クーパン応募」が静かに0件になる**。
+   * さらに GA4 側も useApplicationFormState の job_category が
+   * mechanic / truck / taxi の三択なので、**クーパン応募が 'taxi' として計上される**。
    * 使うなら、先に useApplicationFormState と /api/applicants の両方へ
-   * COUPANG_META_CONTENT_NAME を配線すること。
+   * COUPANG_META_CONTENT_NAME と job_category='coupang_sales' を配線すること。
    */
   coupang: {
     headerLogoSrc: '/images/ride_logo.svg',
