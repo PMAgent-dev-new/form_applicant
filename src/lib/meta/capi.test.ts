@@ -67,6 +67,15 @@ describe('sendMetaCapiLead のペイロード', () => {
     expect('event_source_url' in event).toBe(false);
   });
 
+  it('value / currency を custom_data に載せる', async () => {
+    const { sendMetaCapiLead } = await loadCapi();
+    await sendMetaCapiLead({ eventId: 'e5', value: 0, currency: 'JPY' });
+
+    const custom = sentEvent(fetchSpy).custom_data as Record<string, unknown>;
+    expect(custom.value).toBe(0);
+    expect(custom.currency).toBe('JPY');
+  });
+
   it('eventSourceUrl があればそのまま載せ、event_id と action_source も維持する', async () => {
     const { sendMetaCapiLead } = await loadCapi();
     await sendMetaCapiLead({ eventId: 'e4', eventSourceUrl: 'https://ridejob.jp/entry/coupang' });
@@ -76,5 +85,16 @@ describe('sendMetaCapiLead のペイロード', () => {
     expect(event.event_id).toBe('e4');
     expect(event.action_source).toBe('website');
     expect(event.event_name).toBe('Lead');
+  });
+});
+
+describe('Events Manager との契約', () => {
+  it('COUPANG_META_CONTENT_NAME は coupang_rocketnow から変えない', async () => {
+    // カスタムコンバージョン「RIDEJOB_クーパン応募」のルールはこの文字列の完全一致。
+    // コード側だけ変えるとCVが静かに0件になるため、値そのものを固定する。
+    const { COUPANG_META_CONTENT_NAME } = await import(
+      '../../app/components/coupang-form/constants'
+    );
+    expect(COUPANG_META_CONTENT_NAME).toBe('coupang_rocketnow');
   });
 });
