@@ -21,13 +21,21 @@ import { captureAttribution } from '@/lib/attribution';
  */
 export default function AttributionCapture() {
   useEffect(() => {
-    captureAttribution(
-      window.location.search,
-      window.location.pathname,
-      document.referrer,
-      new Date().toISOString(),
-      window.location.host,
-    );
+    // ⚠️ ここで例外を漏らすと、effect の未捕捉例外として React ツリーが落ちる。
+    // このアプリには error.tsx / global-error.tsx が無いため Next の既定エラー画面になり、
+    // **そのユーザーは応募フォームを一切使えなくなる**（原因が Cookie なのでリロードしても直らない）。
+    // 流入元の計測が取れないことより、応募が1件失われることの方が桁違いに重い。
+    try {
+      captureAttribution(
+        window.location.search,
+        window.location.pathname,
+        document.referrer,
+        new Date().toISOString(),
+        window.location.host,
+      );
+    } catch (e) {
+      console.warn('[attribution] 流入元の記録に失敗しました（応募フローは継続します）', e);
+    }
   }, []);
 
   return null;

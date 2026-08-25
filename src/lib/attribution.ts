@@ -26,11 +26,23 @@
  *
  * ⚠️ Cookie の path は必ず `/`。`/entry` にすると jobmadley と共有できなくなる。
  *
- * ## 有料の帰属は絶対に変えない
+ * ## 広告の帰属について（正確に書く）
  *
- * URLのUTMが最優先で、referrer 由来の値が広告の帰属を上書きすることはない。
- * 「既存の touch が無いときだけ referrer から補う」という一点だけを守る。
- * ここを崩すと広告のCPAが動いてしまう。
+ * **着地1件の解釈は変わらない。** URLにUTMがあればそれを丸ごと使い、Cookie や referrer が
+ * 混ざることはない。クリックIDだけの有料クリックも自然検索に化けないようガードしてある。
+ *
+ * **ただし応募1件の帰属は変わりうる。** 「広告をクリック（応募せず）→ 後日ブックマークや
+ * 検索で直接来て応募」が、従来の「直接アクセス」から「広告」に変わる。Cookie に残った
+ * lastTouch を使うようになるため。ridejob.jp/entry では jobmadley の EntryCtaLink 経由で
+ * 既にこの挙動が本番稼働しているが、**ridejob.pmagent.jp は今回が初**（main は
+ * document.cookie を一切触っていない）。
+ *
+ * 結果として、反映日を境に **Lark上の広告経由の応募数が増え、直接アクセスが減る**方向に
+ * 段差が出る。CPAは見かけ上改善する。施策の効果と読み違えないこと。
+ *
+ * 帰属窓は Cookie の 90日で、`touch.at` に取得時刻を持っているが**送信ボディには載せていない**。
+ * つまり集計側で「89日前のクリック」と「今日のクリック」を区別できない。窓を狭めるべきかは
+ * ビジネス判断なので、必要になったらここか集計側で切る。
  */
 
 export type AttributionTouch = {
@@ -78,7 +90,8 @@ export const UTM_KEYS = [
 export type UtmKey = (typeof UTM_KEYS)[number];
 export type UtmParams = Record<UtmKey, string>;
 
-const EMPTY_UTM: UtmParams = {
+/** 全キーが空の utm。解決に失敗したときのフォールバックにも使う。 */
+export const EMPTY_UTM_PARAMS: UtmParams = {
   utm_source: '',
   utm_medium: '',
   utm_campaign: '',
@@ -100,13 +113,30 @@ const SEARCH_ENGINE_HOSTS: ReadonlyArray<[RegExp, string]> = [
 ];
 
 /**
+ * ネイティブアプリからの遷移は `android-app://<パッケージ名>` で来る。
+ *
+ * ⚠️ ここを特別扱いしないと、パッケージ名がそのままホスト名として扱われ、
+ * `com.google.android.youtube` が検索エンジン判定の `/(^|\.)google\./` に
+ * **マッチしてしまう**（実測で確認）。つまり Android の YouTube アプリからの流入が
+ * 「Google自然検索」として記録される。このモジュールが計測しようとしている当の流入が、
+ * 自然検索KPIを汚染する側に回るという最悪の形になる。
+ *
+ * YouTube は PC ブラウザ経由と同じ `youtube.com` に寄せる。値が割れると集計で行が分かれる。
+ */
+const APP_PACKAGE_SOURCES: Record<string, { source: string; medium: string }> = {
+  'com.google.android.youtube': { source: 'youtube.com', medium: 'referral' },
+  'com.google.android.googlequicksearchbox': { source: 'google', medium: 'organic' },
+  'com.google.android.gm': { source: 'gmail', medium: 'referral' },
+};
+
+/**
  * UTM が無い着地で、document.referrer から touch を推定する。
+ * - ネイティブアプリ（android-app:// 等）→ パッケージ名から判定（上の表）
  * - 検索エンジン → { source: "google" 等, medium: "organic" }
  * - 自サイト内遷移 / referrer 無し → undefined（direct のまま。既存挙動を変えない）
  * - その他の外部サイト → { source: ホスト名, medium: "referral" }
  *
- * ⚠️ jobmadley の同名関数と挙動を一致させること（同じ Cookie に書くため）。
- * ホスト名を "youtube" のような短縮名へ正規化したくなるが、ここではやらない。
+ * ⚠️ ホスト名を "youtube" のような短縮名へ正規化しない。
  * 表示名への変換は API 側（getMediaName）の仕事で、そちらなら Cookie の値を汚さない。
  */
 export const touchFromReferrer = (
@@ -114,13 +144,20 @@ export const touchFromReferrer = (
   currentHost: string,
 ): Partial<AttributionTouch> | undefined => {
   if (!referrer) return undefined;
-  let host: string;
+  let url: URL;
   try {
-    host = new URL(referrer).hostname.toLowerCase();
+    url = new URL(referrer);
   } catch {
     return undefined;
   }
+  const host = url.hostname.toLowerCase();
   if (!host) return undefined;
+
+  // http(s) 以外はホスト名がドメインではないので、検索エンジンの正規表現に通さない。
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    const known = APP_PACKAGE_SOURCES[host];
+    return known ? { ...known } : { source: host, medium: 'referral' };
+  }
 
   // 自ドメイン（サブドメイン含む）からの遷移は流入ではない。
   // これが無いと、フォーム内のページ遷移（/taxi → /taxi/applicants/new）が
@@ -149,7 +186,16 @@ const parseCookies = (): Record<string, string> => {
       if (idx === -1) return acc;
       const key = cookie.slice(0, idx);
       const value = cookie.slice(idx + 1);
-      if (key) acc[key] = decodeURIComponent(value);
+      if (!key) return acc;
+      // ⚠️ decode は1本ずつ try で囲む。`%` を生で含む Cookie が1つでもあると
+      // decodeURIComponent が URIError を投げ、**このドメインの全 Cookie の読み取りが失敗する**。
+      // ridejob.jp には GTM 経由の計測タグが多数あり、Cookie を書く主体はこのアプリだけではない。
+      // 他人が書いた1本のせいで応募フォームが使えなくなる、という壊れ方をさせない。
+      try {
+        acc[key] = decodeURIComponent(value);
+      } catch {
+        acc[key] = value;
+      }
       return acc;
     },
     {} as Record<string, string>,
@@ -262,13 +308,9 @@ export function captureAttribution(
 /**
  * 送信時に載せる utm を決める。優先順は **query → Cookie → referrer**。
  *
- * - query に utm_source があれば、その1件の着地を丸ごと正とする（広告の帰属を壊さない）
- * - 無ければ Cookie の lastTouch（回遊してから応募した経路・jobmadley が書いた値も含む）
- * - Cookie も無ければ referrer から推定（Cookie がブロックされている環境の保険）
- *
- * ⚠️ query に utm_source がある場合、Cookie で「部分的に穴埋め」してはいけない。
- * 広告のUTMと過去の自然検索のUTMが混ざった、実在しない組み合わせのレコードができる。
- * utm_id / utm_creative は広告固有なので Cookie 側には存在せず、query からのみ入る。
+ * 大原則: **3つの出所を混ぜない。** どれか1つを丸ごと採用する。
+ * 混ぜると「先週の自然検索の source」と「今日のリンクの medium」が同じレコードに並ぶ、
+ * 実在しない組み合わせができる。数字を見た人はそれを本物の流入として読む。
  */
 export function resolveUtmParams(
   search: string,
@@ -277,31 +319,43 @@ export function resolveUtmParams(
   currentHost: string,
 ): UtmParams {
   const params = new URLSearchParams(search);
-  const fromQuery = { ...EMPTY_UTM };
+  const fromQuery = { ...EMPTY_UTM_PARAMS };
   for (const k of UTM_KEYS) fromQuery[k] = params.get(k)?.trim() || '';
 
+  // 1. query に utm_source があれば、その着地を丸ごと正とする。
+  //    ここが広告の帰属を守る要。Cookie で穴埋めもしない。
   if (fromQuery.utm_source) return fromQuery;
 
+  // 2. クリックIDだけが付いた有料クリック。
+  //    Google広告の「自動タグ設定」は既定で **gclid だけを付けて utm_* を付けない**。
+  //    その着地の referrer は検索結果ページ（google.com）なので、下の referrer 推定に
+  //    落とすと **有料クリックが utm_medium=organic として記録される**。
+  //    自然検索の応募数はSEO成果の判断に使う数字なので、そこに有料が混ざるのは最悪。
+  //    旧挙動（＝直接アクセス）のまま返して、少なくとも嘘はつかない。
+  //    ※ captureAttribution 側は既に clickid を「意味のある着地」として扱っており、
+  //      ここに同じガードが無いのは片手落ちだった。
+  if (params.get('gclid')?.trim() || params.get('fbclid')?.trim()) return fromQuery;
+
+  // 3. Cookie に保存された touch（サイト内を回遊してから応募した経路。
+  //    ridejob.jp と同一オリジンなので jobmadley が書いた値もここに入る）。
   const touch = attribution.lastTouch ?? attribution.firstTouch;
   if (touch?.source) {
     return {
-      ...fromQuery,
+      ...EMPTY_UTM_PARAMS,
       utm_source: touch.source,
-      utm_medium: fromQuery.utm_medium || touch.medium || '',
-      utm_campaign: fromQuery.utm_campaign || touch.campaign || '',
-      utm_term: fromQuery.utm_term || touch.term || '',
-      utm_content: fromQuery.utm_content || touch.content || '',
+      utm_medium: touch.medium || '',
+      utm_campaign: touch.campaign || '',
+      utm_term: touch.term || '',
+      utm_content: touch.content || '',
     };
   }
 
+  // 4. Cookie が無い場合の保険（Cookie がブロックされている環境・初回着地で保存前に送信）。
   const derived = touchFromReferrer(referrer, currentHost);
   if (derived?.source) {
-    return {
-      ...fromQuery,
-      utm_source: derived.source,
-      utm_medium: fromQuery.utm_medium || derived.medium || '',
-    };
+    return { ...EMPTY_UTM_PARAMS, utm_source: derived.source, utm_medium: derived.medium || '' };
   }
 
+  // 5. どれも無い＝従来どおり直接アクセス。query の断片があればそのまま返す（旧挙動と同一）。
   return fromQuery;
 }
