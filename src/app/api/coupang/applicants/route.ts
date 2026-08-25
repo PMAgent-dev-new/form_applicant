@@ -8,6 +8,8 @@ import {
 import { getCoupangStep1Options } from '../step1-options/options';
 import { resolveAdImageUrl, isLikelyAdId } from '@/lib/meta/resolveAdImage';
 import { sendMetaCapiLead } from '@/lib/meta/capi';
+import { sendApplicationConfirmationEmail } from '@/lib/email/send-application-confirmation';
+import { sendApplicationSms } from '@/lib/sms/send-application-sms';
 import { BASE_PATH } from '@/lib/basePath';
 
 /**
@@ -202,6 +204,67 @@ export async function POST(request: NextRequest) {
               console.error(`Failed to send to Lark Base Webhook (${resp.status}): ${errorBody}`);
             } else {
               console.log('Lark Base webhook triggered successfully');
+            }
+          })()
+        );
+      }
+
+      // 自動返信メール — 非致命。クーパン専用の文面(COUPANG_CONTENT)を使う。
+      // 共通ルートの実行時リスト SUPPORTED_ORIGINS は経由しない（専用ルートからの直接呼び出し）。
+      //
+      // ⚠️ **既定OFF。** `COUPANG_EMAIL_ENABLED=true` で点火する。
+      // 文面はクライアント・運用側の確認待ちで、確認前にマージ＝自動デプロイされると
+      // その瞬間から実送信が始まってしまう。既存の ENABLE_EMAIL_NOTIFICATION は
+      // 全職種共通のグローバルスイッチで、止めるとタクシー・整備士の稼働中メールまで
+      // 道連れになるため、クーパン単体で止められる口をここに用意する。
+      if (formData.email && process.env.COUPANG_EMAIL_ENABLED === 'true') {
+        const recipientEmail = formData.email;
+        tasks.push(
+          (async () => {
+            const result = await sendApplicationConfirmationEmail({
+              to: recipientEmail,
+              applicantName: formData.fullName || '',
+              applicantNameKana: formData.fullNameKana,
+              phoneNumber: formData.phoneNumber,
+              email: recipientEmail,
+              formOrigin: 'coupang',
+            });
+            if (result.sent) {
+              console.log('Confirmation email sent:', { messageId: result.messageId, formOrigin: 'coupang' });
+            } else if (result.reason === 'error') {
+              console.error('Confirmation email failed:', { error: result.error, formOrigin: 'coupang' });
+            } else {
+              console.log('Confirmation email skipped:', { reason: result.reason, formOrigin: 'coupang' });
+            }
+          })()
+        );
+      }
+
+      // 面談予約リンクのSMS — 非致命。文面と予約リンク先は eeasy(leomeet) 側が持つ。
+      // media は共通ルートと同じ正規化（生の utm_source を渡すと eeasy 側の表記が揃わない）。
+      //
+      // ⚠️ **既定OFF。** eeasy 側に 'coupang' チャネルを登録し、その文面と
+      // 予約リンク(`/book/cpj`)を確認してから `COUPANG_SMS_ENABLED=true` で点火する。
+      // 未登録のまま送ると、eeasy 側が既定チャネルへフォールバックする実装だった場合に
+      // **営業職の応募者へタクシー転職の文面が届く**（応募者から見える誤送信）。
+      // こちら側からは eeasy の挙動を検証できないため、確認を人手のゲートにする。
+      if (formData.phoneNumber && process.env.COUPANG_SMS_ENABLED === 'true') {
+        const media = (utmParams?.utm_source || 'form').toLowerCase().slice(0, 32);
+        tasks.push(
+          (async () => {
+            const r = await sendApplicationSms({
+              channel: 'coupang',
+              phone: formData.phoneNumber,
+              applicantName: formData.fullName,
+              media,
+            });
+            if (r.sent) {
+              console.log('Application SMS sent:', { order: r.deliveryOrderId, ref: r.ref, channel: 'coupang', media });
+            } else if (r.reason === 'disabled' || r.reason === 'dry_run' || r.reason === 'no_phone') {
+              // 意図的にスキップした場合だけ info。それ以外は無言不達になりうるので error。
+              console.log('Application SMS skipped:', { reason: r.reason, channel: 'coupang', media });
+            } else {
+              console.error('Application SMS not delivered:', { reason: r.reason, error: r.error, channel: 'coupang', media });
             }
           })()
         );

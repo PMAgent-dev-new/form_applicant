@@ -37,6 +37,17 @@ const samples = [
       formOrigin: 'mechanic',
     },
   },
+  {
+    label: 'coupang (ロケットナウ 営業職)',
+    file: 'preview-coupang.html',
+    input: {
+      applicantName: 'テスト　太郎',
+      applicantNameKana: 'てすとたろう',
+      phoneNumber: '090-1234-5678',
+      email: 'coupang.applicant@example.com',
+      formOrigin: 'coupang',
+    },
+  },
 ];
 
 const out = tmpdir();
