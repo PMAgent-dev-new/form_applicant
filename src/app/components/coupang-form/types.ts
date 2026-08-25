@@ -27,11 +27,6 @@ export type Age =
   | '39'
   | '40';
 
-export type SeminarSlot = {
-  date: string;
-  url: string;
-};
-
 export type CoupangFormData = {
   // 求職者情報
   email: string;
@@ -50,18 +45,4 @@ export type CoupangFormData = {
 
 export type CoupangFormErrors = {
   [K in keyof CoupangFormData]?: string;
-};
-
-export type JobListing = {
-  id: string;
-  title: string;
-  company: string;
-  location: string;
-  salary: string;
-  salaryDetail: string[];
-  highlights: string[];
-  jobType: string;
-  workStyle: string;
-  url: string;
-  updatedAt: string;
 };

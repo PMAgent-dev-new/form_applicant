@@ -1,3 +1,11 @@
+/**
+ * セミナー日程取得API（GAS連携）。
+ *
+ * ⚠️ **現行のクーパンLPからは呼ばれていない。** 唯一の消費者だった useSeminarSlots は
+ * 2026-08-25 に削除済みで、このエンドポイントは孤立している。
+ * すぐ消さないのは、外部（GAS側の別スクリプト等）から叩かれていないかの確認が
+ * まだ取れていないため。確認が取れ次第、このファイルごと削除する。
+ */
 import { NextResponse } from 'next/server';
 
 const GAS_API_URL = 'https://script.google.com/macros/s/AKfycbzDNerH9-MnemIZHyWgbdeRJ2TEL6U3ThTVjUH9rm4eB_GHl8SxrwJcpDiLLb7vWeIe/exec';
