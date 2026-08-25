@@ -17,7 +17,7 @@ export default function CoupangApplicationComplete() {
     if (typeof window !== 'undefined' && window.dataLayer) {
       window.dataLayer.push({
         event: 'form_complete',
-        form_name: 'ridejob_application'
+        form_name: 'coupang_rocketnow_application'
       });
     }
   }, []);
