@@ -12,9 +12,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
  * 共通ルートと同じガードをこちらにも用意する。
  *
  * 限界(意図的):
- * - Gmail 送信は google-auth-library 経由で global.fetch を通らないため観測できない。
- *   宛先(googleapis.com)はライブラリ内で固定。テストでは EMAIL_DRY_RUN=true にして
- *   Gmail 経路を手前で止める。
+ * - Gmail 送信は EMAIL_DRY_RUN=true で送信手前で止めている。**global fetch は通る**
+ *   （gmail-client.ts が gmail.googleapis.com を fetch する。google-auth-library 経由なのは
+ *   トークン取得のみ）。将来 dry-run を外すなら googleapis.com を許可リストに足すこと。
  * - ランタイムテストなので、与えた入力で実行される経路しかカバーしない。
  */
 
@@ -49,6 +49,9 @@ const ALLOWLISTED_ENV: Record<string, string> = {
   META_CAPI_ACCESS_TOKEN: 'test-capi-token',
   GMAIL_SENDER_EMAIL: 'support_team@pmagent.jp',
   EMAIL_DRY_RUN: 'true',
+  // クーパンのメール/SMSは既定OFF。経路を実際に通すためテストでは点火する。
+  COUPANG_EMAIL_ENABLED: 'true',
+  COUPANG_SMS_ENABLED: 'true',
 };
 
 function makeRequest(body: unknown) {
@@ -134,6 +137,37 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     expect(body.channel).toBe('coupang');
     // media は生の utm_source ではなく正規化した値
     expect(body.media).toBe('ig');
+  });
+
+  it('script.google.com へは env で指定したURLに GET でしか触らない', async () => {
+    // script.google.com は誰でもエンドポイントを公開できるホストなので、
+    // ホスト名の許可だけでは「攻撃者のGASへ個人情報をPOST」を防げない。
+    // 正当な用途は選択肢マスタの取得(GET・URL完全一致)だけなので、そこまで縛る。
+    const { POST } = await import('./route');
+    await POST(makeRequest(coupangBody));
+
+    const gasCalls = fetchSpy.mock.calls.filter((call) => hostOf(call[0]) === 'script.google.com');
+    expect(gasCalls.length).toBeGreaterThan(0);
+    for (const [input, init] of gasCalls) {
+      const url = typeof input === 'string' ? input : String((input as { url?: string })?.url ?? input);
+      expect(url).toBe(ALLOWLISTED_ENV.GAS_COUPANG_STEP1_OPTIONS_API_URL);
+      const method = ((init as RequestInit | undefined)?.method ?? 'GET').toUpperCase();
+      expect(method).toBe('GET');
+    }
+  });
+
+  it('フラグOFFならメールもSMSも送らない(既定の安全側)', async () => {
+    vi.stubEnv('COUPANG_EMAIL_ENABLED', 'false');
+    vi.stubEnv('COUPANG_SMS_ENABLED', 'false');
+    vi.resetModules();
+    const { POST } = await import('./route');
+    await POST(makeRequest(coupangBody));
+
+    const hosts = new Set(fetchSpy.mock.calls.map((call) => hostOf(call[0])));
+    expect(hosts.has('leomeet.pmagent.jp')).toBe(false);
+    // Lark と CAPI は従来どおり動く（フラグは応募者への送信2経路だけを止める）
+    expect(hosts.has('open.larksuite.com')).toBe(true);
+    expect(hosts.has('graph.facebook.com')).toBe(true);
   });
 
   it('許可リストの判定自体が機能する', () => {
