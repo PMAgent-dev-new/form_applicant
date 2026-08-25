@@ -43,7 +43,7 @@ export default function CoupangApplicationComplete() {
           <p>{currentMonth}から求人の問い合わせが急増しており、ご希望日時に面談枠をご用意できないことがあります。</p>
           <p>空き枠があるうちに、以下より日程をご予約ください。</p>
         </div>
-        <BookingEmbed slug="cpj" />
+        <BookingEmbed slug="cpj" height={800} />
       </div>
 
       {/* Footer */}

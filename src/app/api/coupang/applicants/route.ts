@@ -8,6 +8,8 @@ import {
 import { getCoupangStep1Options } from '../step1-options/options';
 import { resolveAdImageUrl, isLikelyAdId } from '@/lib/meta/resolveAdImage';
 import { sendMetaCapiLead } from '@/lib/meta/capi';
+import { sendApplicationConfirmationEmail } from '@/lib/email/send-application-confirmation';
+import { sendApplicationSms } from '@/lib/sms/send-application-sms';
 import { BASE_PATH } from '@/lib/basePath';
 
 /**
@@ -202,6 +204,53 @@ export async function POST(request: NextRequest) {
               console.error(`Failed to send to Lark Base Webhook (${resp.status}): ${errorBody}`);
             } else {
               console.log('Lark Base webhook triggered successfully');
+            }
+          })()
+        );
+      }
+
+      // 自動返信メール — 非致命。営業職向けの専用文面(COUPANG_CONTENT)を使う。
+      // 共通ルートの実行時リスト SUPPORTED_ORIGINS は経由しない（専用ルートからの直接呼び出し）。
+      if (formData.email) {
+        const recipientEmail = formData.email;
+        tasks.push(
+          (async () => {
+            const result = await sendApplicationConfirmationEmail({
+              to: recipientEmail,
+              applicantName: formData.fullName || '',
+              applicantNameKana: formData.fullNameKana,
+              phoneNumber: formData.phoneNumber,
+              email: recipientEmail,
+              formOrigin: 'coupang',
+            });
+            if (result.sent) {
+              console.log('Confirmation email sent:', { messageId: result.messageId, formOrigin: 'coupang' });
+            } else if (result.reason === 'error') {
+              console.error('Confirmation email failed:', { error: result.error, formOrigin: 'coupang' });
+            } else {
+              console.log('Confirmation email skipped:', { reason: result.reason, formOrigin: 'coupang' });
+            }
+          })()
+        );
+      }
+
+      // 面談予約リンクのSMS — 非致命。文面と予約リンク先は eeasy(leomeet) 側が持つ。
+      // ⚠️ eeasy 側に 'coupang' チャネルが未登録だと skipped で**無言で送られない**。
+      // media は共通ルートと同じ正規化（生の utm_source を渡すと eeasy 側の表記が揃わない）。
+      if (formData.phoneNumber) {
+        const media = (utmParams?.utm_source || 'form').toLowerCase().slice(0, 32);
+        tasks.push(
+          (async () => {
+            const r = await sendApplicationSms({
+              channel: 'coupang',
+              phone: formData.phoneNumber,
+              applicantName: formData.fullName,
+              media,
+            });
+            if (r.sent) {
+              console.log('Application SMS sent:', { order: r.deliveryOrderId, ref: r.ref, channel: 'coupang', media });
+            } else {
+              console.log('Application SMS skipped/failed:', { reason: r.reason, error: r.error, channel: 'coupang', media });
             }
           })()
         );
