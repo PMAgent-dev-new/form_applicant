@@ -10,6 +10,7 @@ import {
   validateAllSteps,
 } from '../utils/coupangValidators';
 import { genEventId, trackMeta } from '@/lib/meta/pixel';
+import { COUPANG_META_CONTENT_NAME } from '../constants';
 
 declare global {
   interface Window {
@@ -194,8 +195,8 @@ export function useCoupangFormState() {
           utm_campaign: urlParams.get('utm_campaign') || undefined,
           utm_term: urlParams.get('utm_term') || undefined,
           utm_creative: urlParams.get('utm_creative') || undefined,
-          utm_content: urlParams.get('utm_content') || undefined, // Meta広告: {{ad.name}}（広告名）
-          utm_id: urlParams.get('utm_id') || undefined, // Meta広告: {{ad.id}}（広告ID）
+          utm_content: urlParams.get('utm_content') || undefined, // Meta広告(v3): CR-ID固定値（例 CR-2608-30）
+          utm_id: urlParams.get('utm_id') || undefined, // Meta広告(v3): {{ad.id}}（広告ID）
         };
 
         // GTMイベント送信
@@ -228,8 +229,22 @@ export function useCoupangFormState() {
         await response.json();
         setIsFormDirty(false);
 
-        // 送信成功時に Meta Lead を発火（サーバーCAPIと同一 eventId で重複排除）
-        trackMeta('Lead', { value: 0, currency: 'JPY' }, metaEventId);
+        // 送信成功時に Meta Lead を発火（サーバーCAPIと同一 eventId で重複排除）。
+        // contentName はカスタムコンバージョン「RIDEJOB_クーパン応募」の唯一のルール。
+        trackMeta(
+          'Lead',
+          { value: 0, currency: 'JPY', contentName: COUPANG_META_CONTENT_NAME },
+          metaEventId
+        );
+        // GA4 側にも応募完了を送る。form_name は共通フォームと同じ固定値にし、
+        // 職種の分離は job_category で行う（GTMのトリガーが form_name で絞っている場合に
+        // クーパンだけCVが落ちるのを避けるため）。
+        trackEvent('generate_lead', {
+          form_name: 'ridejob_application',
+          job_category: 'coupang_sales',
+          currency: 'JPY',
+          value: 0,
+        });
 
         // サンクスページへ遷移
         router.push('/coupang/applicants/new');

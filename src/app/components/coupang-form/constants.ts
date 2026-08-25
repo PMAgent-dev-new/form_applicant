@@ -1,5 +1,13 @@
 import type { JobPosition, DesiredLocation, Age, JobListing } from './types';
 
+/**
+ * Meta の Lead に載せる識別子。ブラウザ Pixel と サーバー CAPI の両方で同じ値を送る。
+ * Events Manager のカスタムコンバージョン「RIDEJOB_クーパン応募」は
+ * `content_name` がこの値と等しいことだけをルールにしているため、
+ * **値を変えるとクーパンのCVが計上されなくなる**。変更するときはEvents Manager側も同時に直すこと。
+ */
+export const COUPANG_META_CONTENT_NAME = 'coupang_rocketnow';
+
 export const JOB_POSITION_LABELS: Record<JobPosition, string> = {
   field_sales: 'フィールドセールス',
   account_manager: 'アカウントマネージャー',
