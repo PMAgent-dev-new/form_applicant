@@ -43,7 +43,10 @@ const STEPS = [
 
 export default function CoupangPage() {
   return (
-    <div className="min-h-[100dvh] bg-[#fff7ed]">
+    // overflow-hidden: ステップフォームの非アクティブなカードは absolute で重ねてあり、
+    // 高さの違う分がページ下端からはみ出して「何も無いのにスクロールできる」領域を作る。
+    // 旧デザインではこの領域に body::before のタクシー背景が見えていた。
+    <div className="min-h-[100dvh] overflow-hidden bg-[#fff7ed]">
       {/* ヒーロー */}
       <header className="bg-[#f97316] px-4 pb-10 pt-12 text-white">
         <div className="mx-auto max-w-2xl">
