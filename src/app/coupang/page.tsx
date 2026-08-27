@@ -1,45 +1,68 @@
 import type { Metadata } from 'next';
 import { BASE_PATH } from '@/lib/basePath';
 import CoupangStepForm from '@/app/components/coupang-form/CoupangStepForm';
+import { getCoupangStep1Options } from '@/app/api/coupang/step1-options/options';
+
+/**
+ * 勤務地を選択肢マスタ(GAS)から出しているため、ビルド時に固定されると
+ * マスタ更新に追随できない。1時間ごとに取り直す。
+ */
+export const revalidate = 3600;
 
 export const metadata: Metadata = {
-  title: 'ロケットナウ 営業・店舗サポート職の募集｜ライドジョブ（RIDE JOB）',
+  title: 'ロケットナウ フィールドセールスの募集｜ライドジョブ（RIDE JOB）',
   description:
-    'フードデリバリー「ロケットナウ」（CP One Japan 合同会社）のフィールドセールス／アカウントマネージャーの募集です。ご応募後、30分のWeb面談または電話面談で仕事内容をご案内します。',
+    'フードデリバリー「ロケットナウ」（CP One Japan 合同会社）のフィールドセールス（飲食店への法人営業）の募集です。月給320,000円〜・未経験OK。ご応募後、30分のWeb面談または電話面談でご案内します。',
 };
 
 /**
  * クーパン（ロケットナウ）営業職LP。
  *
- * ⚠️ **記載できる事実の範囲について**（2026-08-27 時点）
- * 給与・待遇・具体的な業務内容は、クライアント確認が取れるまで**書かない**。
- * 理由: 求人ページ(ridejob.jp/job/uyl1oq5g4_7)は404で参照できず、社内に残っていた
- * 求人データは2025-11更新の死にコードだった。裏取りのない条件を出すと求人広告として
- * 不適切になるため、ここには一次確認が取れている事実だけを置いている。
- *   - 職種2種と勤務地: GASの選択肢マスタ（稼働中・フォームと同じソース）
- *   - 面談30分・Web/電話: 予約システム(leomeet /book/cpj)の実表示
- *   - 年齢の上限40歳: 応募フォームの入力条件
- *     （下限はLPに書かない。例外事由3号のイで設定できるのは上限のみで、
- *      下限には別の根拠が要るため）
+ * **記載内容の裏取り**（2026-08-27）
+ * 給与・条件は自社サイトに公開中の求人票（jobs-feed.xml で60件確認）に基づく。
+ *   - 固定残業代の内訳はクライアント回答（2026-08-27）:
+ *     基本給244,850円＋固定残業代75,150円（約35時間分）＝月給320,000円。
+ *     **求人票側にはこの内訳が無いため、求人票の是正も別途必要。**
  *
- * 職種の呼び方: アカウントマネージャーを「営業職」と断定しない。過去LPでは
- * 「営業サポート事務」と訴求されており、事務職のつもりで応募した人と齟齬が出る。
- * 自動返信メール(COUPANG_CONTENT)でも同じ判断を採っている。
+ *     ⚠️ 超過分の条項は「**固定残業時間を超える**」と書き、時間数の数字に依存させない。
+ *     LPに載せた勤務条件（実働8時間・完全週休2日・土日祝休み・年末年始休暇）から
+ *     月平均所定労働時間を約160〜163時間として計算すると、75,150円は
+ *     **約40時間分**に一致し、回答の「約35時間分」と数理的に合わない。
+ *     35時間分なら法定を上回る単価で支給していることになり違法ではないが、
+ *     実際が40時間分だった場合に「35時間を超える分は別途支給」と書くと
+ *     35〜40時間帯の残業代を過大に約束することになる。
+ *     どちらでも真になる書き方にして、時間数の確定は求人票の是正時に行う。
+ *   - 求人票の構造化データ上の上限350,000円は**根拠の説明が無い**ため書かない
+ *     （本文の記載は基本給320,000円のみ）。
+ *   - **雇用形態は契約社員**（60件中53件が contract）。明示する。
+ *   - 面談30分・Web/電話: 予約システム(leomeet /book/cpj)の実表示
+ *
+ * ⚠️ **年齢はLPに書かない**（2026-08-27 三木さん判断）。「40歳以下」の根拠に使える
+ * 例外事由3号のイ（長期勤続によるキャリア形成）は**無期雇用が要件**で、主力求人が
+ * 有期雇用である以上この理由は使えない。年齢の絞り込みは Meta のターゲティング
+ * （18-40・Advantage+オーディエンスはOFF）とフォームの入力制限で行う。
+ *
+ * ⚠️ **勤務地は「配信対象の8エリア」**。フォームの選択肢マスタ(GAS)とは一致していない。
+ * 愛媛はマスタに無く**現状フォームで選択できない**ため、配信ONの前にマスタへ追加が要る。
  * 条件が確認できたら §募集職種 のカードに追記する。
  */
 
-const JOB_POSITIONS = [
-  {
-    name: 'フィールドセールス',
-    summary: '飲食店さまへロケットナウの導入をご提案する、外に出る営業です。',
-    areas: '北海道・宮城・埼玉・千葉・東京・神奈川・静岡・京都・大阪・広島',
-  },
-  {
-    name: 'アカウントマネージャー',
-    summary: '導入いただいた店舗さまを継続的にサポートするポジションです。',
-    areas: '東京',
-  },
-] as const;
+const JOB_DETAIL = {
+  name: 'フィールドセールス',
+  summary:
+    '飲食店さまへロケットナウの導入をご提案する営業です。未経験からのスタートを歓迎しています（業界・経験年数は不問）。',
+  rows: [
+    {
+      label: '給与',
+      value:
+        '月給 320,000円 〜\n（基本給 244,850円 ＋ 固定残業代 75,150円／時間外労働 約35時間分）\n※固定残業時間を超える時間外労働、および休日・深夜労働分は別途支給します\n入社後3ヶ月間の獲得件数に応じて、最大100万円の一時金（条件あり）',
+    },
+    { label: '雇用形態', value: '契約社員（正社員登用制度あり）' },
+    { label: '勤務時間', value: '10:00 〜 19:00（実働8時間）' },
+    { label: '休日', value: '完全週休2日制（土日祝休み）／年末年始・有給休暇あり' },
+    { label: 'その他', value: '各種社会保険完備／通勤手当（上限30,000円／月）／社用PC・携帯貸与' },
+  ],
+} as const;
 
 const STEPS = [
   { no: '01', title: 'このページから応募', body: '所要2〜3分。履歴書は不要です。' },
@@ -47,7 +70,29 @@ const STEPS = [
   { no: '03', title: '30分の面談', body: 'Web面談または電話面談。募集職種の詳細と選考の進め方をご案内します。' },
 ] as const;
 
-export default function CoupangPage() {
+/**
+ * 勤務地はフォームの選択肢マスタ（GAS）と**同じソース**から出す。
+ * ここを静的に列挙すると、マスタを更新したときにフォームだけ変わってLPが黙って
+ * 古くなる。さらに、LPに載っている勤務地がフォームで選べないと応募者が行き止まりになる。
+ * GASが落ちた場合はフォールバックが空になるため、その時は勤務地の行ごと出さない。
+ */
+async function getFieldSalesAreas(): Promise<string[]> {
+  // ISRで取る。既定の no-store のまま呼ぶとページが dynamic 化し、
+  // 広告クリックのたびにGASの応答待ちになる（実測2.7〜12.8秒・30秒タイムアウトあり）。
+  const options = await getCoupangStep1Options({ next: { revalidate: 3600 } });
+  const areas = options.combinations
+    .filter((c) => c.jobPosition === JOB_DETAIL.name)
+    .map((c) => c.desiredLocation);
+  return areas.length > 0 ? areas : options.desiredLocations;
+}
+
+export default async function CoupangPage() {
+  const areas = await getFieldSalesAreas();
+  const rows = [
+    ...JOB_DETAIL.rows,
+    ...(areas.length > 0 ? [{ label: '勤務地', value: areas.join('・') }] : []),
+  ];
+
   return (
     // overflow-clip: ステップフォームの非アクティブなカードは absolute で重ねてあり、
     // 高さの違う分がページ下端からはみ出して「何も無いのにスクロールできる」領域を作る。
@@ -66,12 +111,12 @@ export default function CoupangPage() {
           <h1 className="mt-2 text-3xl font-bold leading-tight sm:text-4xl">
             ロケットナウ
             <span className="mt-1 block text-xl font-bold sm:text-2xl">
-              営業・店舗サポート職の募集
+              フィールドセールスの募集
             </span>
           </h1>
           <p className="mt-4 text-sm leading-relaxed text-white/95 sm:text-base">
             フードデリバリー「ロケットナウ」を運営する CP One Japan 合同会社の募集です。
-            フィールドセールスとアカウントマネージャーの2職種があります。
+            飲食店さまへロケットナウの導入をご提案する、フィールドセールスを募集しています。
           </p>
           <a
             href="#entry"
@@ -88,25 +133,20 @@ export default function CoupangPage() {
           <h2 className="border-l-4 border-[#f97316] pl-3 text-xl font-bold text-gray-900">
             募集職種
           </h2>
-          <div className="mt-4 space-y-4">
-            {JOB_POSITIONS.map((job) => (
-              <div
-                key={job.name}
-                className="rounded-xl border border-orange-100 bg-white p-5 shadow-sm"
-              >
-                <h3 className="text-lg font-bold text-gray-900">{job.name}</h3>
-                <p className="mt-2 text-sm leading-relaxed text-gray-700">{job.summary}</p>
-                <dl className="mt-4 border-t border-gray-100 pt-3 text-sm">
-                  <div className="flex gap-3">
-                    <dt className="shrink-0 font-bold text-gray-500">勤務地</dt>
-                    <dd className="text-gray-800">{job.areas}</dd>
-                  </div>
-                </dl>
-              </div>
-            ))}
+          <div className="mt-4 rounded-xl border border-orange-100 bg-white p-5 shadow-sm">
+            <h3 className="text-lg font-bold text-gray-900">{JOB_DETAIL.name}</h3>
+            <p className="mt-2 text-sm leading-relaxed text-gray-700">{JOB_DETAIL.summary}</p>
+            <dl className="mt-4 space-y-3 border-t border-gray-100 pt-4 text-sm">
+              {rows.map((row) => (
+                <div key={row.label} className="flex gap-3">
+                  <dt className="w-20 shrink-0 font-bold text-gray-500">{row.label}</dt>
+                  <dd className="whitespace-pre-line text-gray-800">{row.value}</dd>
+                </div>
+              ))}
+            </dl>
           </div>
           <p className="mt-3 text-xs leading-relaxed text-gray-500">
-            ※給与・待遇などの詳細は、面談時にご案内します。
+            ※求人により条件は異なります。詳細は面談時にご案内します。
           </p>
         </section>
 
@@ -137,8 +177,11 @@ export default function CoupangPage() {
             応募条件
           </h2>
           <ul className="mt-4 space-y-2 rounded-xl border border-orange-100 bg-white p-5 text-sm leading-relaxed text-gray-800 shadow-sm">
-            <li>・40歳以下の方（長期勤続によるキャリア形成を図るため）</li>
-            <li>・上記いずれかの勤務地で働ける方</li>
+            <li>・新しい市場の開拓に意欲を持ち、成長を楽しめる方</li>
+            {areas.length > 0 && <li>・上記いずれかの勤務地で働ける方</li>}
+            <li className="pt-1 text-gray-600">
+              ・営業や飛び込み営業のご経験がある方は歓迎します（業界・経験年数は不問）
+            </li>
           </ul>
         </section>
 
@@ -166,8 +209,12 @@ export default function CoupangPage() {
               プライバシーポリシー
             </a>
           </div>
-          <p className="mt-4 text-center text-xs text-white/80">
+          <p className="mt-4 text-center text-xs leading-relaxed text-white/80">
             募集企業: CP One Japan 合同会社（ロケットナウ）
+            <br />
+            本募集は株式会社PM Agentの有料職業紹介事業（許可番号 13-ユ-313375）によるご案内です。
+            <br />
+            ご応募後は株式会社PM Agentの担当者よりご連絡します。
           </p>
           <p className="mt-1 text-center text-xs text-white/60">© 2025 株式会社PMAgent</p>
         </div>
