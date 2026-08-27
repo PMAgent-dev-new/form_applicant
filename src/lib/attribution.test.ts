@@ -196,6 +196,15 @@ describe('クリックIDだけの有料クリック（レビュー指摘1の回�
     expect(r.utm_source).toBe('');
   });
 
+  test('opprefのみのChatGPT広告が「ChatGPT自然流入」に化けない', () => {
+    // ChatGPT広告のクリックは oppref が自動付与される。UTMを付け忘れた／中間リダイレクトで
+    // 脱落した場合、referrer は chatgpt.com なので推定に落とすと自然流入として記録され、
+    // 広告費がAIOの成果に混入する。
+    const r = resolveUtmParams('?oppref=gAAAAAb123', {}, 'https://chatgpt.com/', HOST);
+    expect(r.utm_source).toBe('');
+    expect(r.utm_medium).toBe('');
+  });
+
   test('utm_source があれば従来どおりそれが勝つ（gclid併用でも）', () => {
     const r = resolveUtmParams('?utm_source=google&utm_medium=cpc&gclid=X', {}, '', HOST);
     expect(r.utm_source).toBe('google');
