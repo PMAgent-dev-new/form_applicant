@@ -4,6 +4,7 @@ import Script from "next/script";
 import "./globals.css";
 
 import { BASE_PATH } from "@/lib/basePath";
+import AttributionCapture from "./components/AttributionCapture";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -126,6 +127,9 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
           </noscript>
         )}
         {/* End Meta Pixel (noscript) */}
+
+        {/* 着地時点の流入元を Cookie に取り込む（UI なし）。詳細は lib/attribution.ts */}
+        <AttributionCapture />
 
         {children}
       </body>

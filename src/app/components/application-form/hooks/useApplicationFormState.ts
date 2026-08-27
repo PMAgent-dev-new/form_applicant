@@ -13,6 +13,7 @@ import { genEventId, trackMeta } from '@/lib/meta/pixel';
 import { isValidEmail, isValidPhoneNumber, validateBirthDateCard, validateCard2, validateDesiredIncome, validateFinalStep, validateJobTiming, validateMechanicQualification, validateNameFields, validateTruckLicenses } from '../utils/validators';
 import { fetchJobCount, type JobCountParams } from '../utils/fetchJobCount';
 import { notifyInvalidPhoneNumber } from '../utils/notifyInvalidPhoneNumber';
+import { EMPTY_UTM_PARAMS, readAttribution, resolveUtmParams, type UtmParams } from '@/lib/attribution';
 
 type UseApplicationFormStateParams = {
   showLoadingScreen: boolean;
@@ -639,16 +640,31 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
       trackEvent('form_submit', { form_name: 'ridejob_application' });
 
       try {
-        const urlParams = new URLSearchParams(window.location.search);
-        const utmParams = {
-          utm_source: urlParams.get('utm_source') || '',
-          utm_medium: urlParams.get('utm_medium') || '',
-          utm_campaign: urlParams.get('utm_campaign') || '',
-          utm_term: urlParams.get('utm_term') || '',
-          utm_creative: urlParams.get('utm_creative') || '',
-          utm_content: urlParams.get('utm_content') || '', // Meta広告: {{ad.name}}（広告名）
-          utm_id: urlParams.get('utm_id') || '', // Meta広告: {{ad.id}}（広告ID）
-        };
+        // 流入元は query → Cookie → referrer の順で決める。
+        //
+        // 以前は query だけを見ていたため、UTMを持たない流入（自社YouTube・自然検索・
+        // 他サイトからのリンク）が全部「直接アクセス」に落ちていた。
+        // query があるときはそれを丸ごと正とするので、広告の帰属は一切変わらない。
+        // 詳細と判断の根拠は lib/attribution.ts のコメントを参照。
+        //
+        // utm_content / utm_id は Meta広告の {{ad.name}} / {{ad.id}} が入る（query 経由のみ）。
+        //
+        // ⚠️ 例外を外へ出さない。ここは送信処理の try の中なので、throw すると catch が
+        // 「ネットワーク接続を確認してください」という**事実と違う**alertを出して送信を中止する。
+        // 全項目を入力し終えた応募者を、計測用コードの都合で失うことになる。
+        // 流入元が取れなくても応募は必ず通す。
+        let utmParams: UtmParams;
+        try {
+          utmParams = resolveUtmParams(
+            window.location.search,
+            readAttribution(),
+            document.referrer,
+            window.location.host,
+          );
+        } catch (e) {
+          console.warn('[attribution] 流入元の解決に失敗しました（送信は継続します）', e);
+          utmParams = EMPTY_UTM_PARAMS;
+        }
 
         const birthDateString = formData.birthDate.length === 8
           ? `${formData.birthDate.slice(0, 4)}-${formData.birthDate.slice(4, 6)}-${formData.birthDate.slice(6, 8)}`

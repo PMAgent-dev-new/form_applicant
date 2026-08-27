@@ -258,8 +258,30 @@ function calculateAge(birthDate?: string): string | null {
   return `${age}歳`;
 }
 
+/**
+ * referrer から推定した流入元は「ホスト名」で入ってくる（youtube.com 等）。
+ * 表示名の語彙は utm_source ベース（youtube 等）で作られているので、ここで寄せる。
+ *
+ * ⚠️ 正規化は表示のこの1箇所だけで行う。Cookie(rj_attr) に書く値を短縮名にすると
+ * ridejob.jp 本体（jobmadley）と同じ Cookie を共有しているため値がズレる。
+ * 表に出ないホストは default 節でそのまま出す（嘘をつくよりホスト名の方がよい）。
+ */
+const REFERRER_HOST_ALIASES: Record<string, string> = {
+  'youtube.com': 'youtube',
+  'm.youtube.com': 'youtube',
+  'youtu.be': 'youtube',
+};
+
+/** 表示用に source を正規化する。Base列とチャット通知で同じ名前になるよう必ず両方で通す。 */
+function displaySource(utmSource?: string): string | undefined {
+  if (!utmSource) return utmSource;
+  return REFERRER_HOST_ALIASES[utmSource.toLowerCase()] ?? utmSource;
+}
+
 function getMediaName(utmParams: { utm_source?: string; utm_medium?: string }): string {
-  const { utm_source, utm_medium } = utmParams;
+  const { utm_medium } = utmParams;
+  const rawSource = utmParams.utm_source;
+  const utm_source = displaySource(rawSource);
   
   console.log('getMediaName input:', { utm_source, utm_medium });
   
@@ -455,8 +477,10 @@ export async function POST(request: NextRequest) {
           ? '整備士の応募がありました！'
           : isCoupang ? 'クーパンの応募がありました！'
           : isTruck ? 'トラックドライバーの応募がありました！' : '新しい応募がありました！';
+        // Base列（getMediaName）と同じ正規化を通す。片方だけ生値だと、同じ応募が
+        // 通知では「youtube.com(referral)」・Baseでは「YouTube」と別名で出る。
         const utmDisplay = utmParams?.utm_source
-          ? `${utmParams.utm_source}${utmParams.utm_medium ? `(${utmParams.utm_medium})` : ''}`
+          ? `${displaySource(utmParams.utm_source)}${utmParams.utm_medium ? `(${utmParams.utm_medium})` : ''}`
           : 'RIDEJOB HP';
         const locationDisplay = formData.prefectureName || formData.municipalityName || formData.townName
           ? `${formData.prefectureName || ''} ${formData.municipalityName || ''} ${formData.townName || ''}`.replace(/\s+/g, ' ').trim()
