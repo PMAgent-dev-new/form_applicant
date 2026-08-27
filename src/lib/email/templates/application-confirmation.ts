@@ -192,12 +192,43 @@ const MECHANIC_CONTENT: MailContent = {
   ctaButtonLabel: '新しい一歩を踏み出す（30分カジュアル面談）',
 };
 
+// ─── クーパン / ロケットナウ (営業職) ───────────────────
+// ⚠️ **文面は未確定。** 運用側(小笠原さん)とクライアント確認を通してから本番投入すること。
+//
+// 既存3種の流用は不可。すべてドライバー転職訴求（件名例「あなたに合ったドライバーの
+// 『好条件求人』を…」）で、営業職に応募した人に送ると文脈が壊れる。
+//
+// 給与・勤務地・選考フローの具体値は**あえて書いていない**。2026年1〜3月の配信当時の
+// 条件（初月64万・月給32万〜等）がいま有効かがクライアント未確認のため
+// （設計書「クーパンLP_最新化設計」§7 B1）。確認が取れたら訴求を足す。
+const COUPANG_CONTENT: MailContent = {
+  brandName: 'RIDE JOB',
+  fromName: 'RIDE JOB',
+  subject: '【ご応募ありがとうございます】ロケットナウ営業職・面談日程のご案内',
+  bookingUrl: 'https://leomeet.pmagent.jp/book/cpj',
+  // 「営業職」と断定しない。アカウントマネージャーは過去LPで「営業サポート事務」と
+  // 訴求されており、事務職のつもりで応募した人との齟齬が出るため。
+  greetingLine:
+    'ロケットナウ（CP One Japan 合同会社）の募集職種へご応募いただきありがとうございます。',
+  bodyParagraphs: [
+    'ご応募を確かに受け付けました。この後、担当者よりお電話またはオンラインで、ご応募いただいた職種の詳細と選考の進め方をご案内します。',
+    '募集の背景や実際の働き方、どんな方が活躍されているかは、求人票だけでは伝わりにくい部分です。お話ししながら、ご希望と合うかを一緒に確認させてください。',
+  ],
+  ctaHeading:
+    'ご都合の良い日時を、あらかじめお選びいただけます。',
+  ctaSubheading:
+    '所要時間は30分程度です。履歴書のご用意は不要です。\n下のリンクから、ご希望の日時をお選びください。',
+  ctaButtonLabel: '【1分で完了】面談の日時を選ぶ',
+  phone: '03-6692-0477',
+};
+
 const CONTENT_BY_ORIGIN: Record<EmailFormOrigin, MailContent> = {
   default: RIDEJOB_CONTENT,
   bus: RIDEJOB_CONTENT,
   truck: TRUCK_CONTENT,
   mechanic: MECHANIC_CONTENT,
   mechanic_newgrad: MECHANIC_CONTENT,
+  coupang: COUPANG_CONTENT,
 };
 
 /**

@@ -40,6 +40,8 @@ export type MetaCapiLeadInput = {
   clientIpAddress?: string;
   clientUserAgent?: string;
   contentIds?: string[];
+  /** custom_data.content_name。職種別にカスタムコンバージョンで切り出すための識別子。 */
+  contentName?: string;
   value?: number;
   currency?: string;
 };
@@ -65,22 +67,24 @@ export async function sendMetaCapiLead(input: MetaCapiLeadInput): Promise<{ ok: 
     customData.content_ids = input.contentIds;
     customData.content_type = 'product';
   }
+  if (input.contentName) customData.content_name = input.contentName;
   if (typeof input.value === 'number') customData.value = input.value;
   if (input.currency) customData.currency = input.currency;
 
-  const body: Record<string, unknown> = {
-    data: [
-      {
-        event_name: 'Lead',
-        event_time: Math.floor(Date.now() / 1000),
-        event_id: input.eventId,
-        action_source: 'website',
-        event_source_url: input.eventSourceUrl,
-        user_data: userData,
-        custom_data: customData,
-      },
-    ],
+  const event: Record<string, unknown> = {
+    event_name: 'Lead',
+    event_time: Math.floor(Date.now() / 1000),
+    event_id: input.eventId,
+    action_source: 'website',
+    user_data: userData,
+    custom_data: customData,
   };
+  // eventSourceUrl は referer 由来で、取れないと空文字になる。
+  // website イベントで event_source_url に空文字を送るとイベントごと弾かれうるため、
+  // 値が無いときはキー自体を落とす（呼び出し側でフォールバックURLを渡すのが望ましい）。
+  if (input.eventSourceUrl) event.event_source_url = input.eventSourceUrl;
+
+  const body: Record<string, unknown> = { data: [event] };
   if (TEST_EVENT_CODE) body.test_event_code = TEST_EVENT_CODE;
 
   try {

@@ -1,5 +1,5 @@
 /**
- * 新規応募SMS送信の高レベル API(ライド/メカのフォーム応募者向け・流入元不問)。
+ * 新規応募SMS送信の高レベル API(ライド/メカ/クーパンのフォーム応募者向け・流入元不問)。
  *
  * 送信本体は eeasy(leomeet) の共通エンドポイント /api/sms/send に委譲する
  * (文面・事業部マッピング・CPaaS送信・効果測定記録は eeasy 側に一元化)。
@@ -15,7 +15,12 @@
  *   META_SMS_DRY_RUN    'true' でドライラン(任意)
  */
 
-export type SmsChannel = 'ridejob' | 'mechanic';
+/**
+ * eeasy(leomeet) 側に登録されたチャネル名。文面と予約リンク先は eeasy 側が持つ。
+ * ⚠️ eeasy 側に未登録のチャネルを渡すと、レスポンスが skipped になり**無言で送られない**。
+ * 新しいチャネルを足すときは eeasy 側の登録を先に済ませること。
+ */
+export type SmsChannel = 'ridejob' | 'mechanic' | 'coupang';
 
 export type SmsSendResult = {
   sent: boolean;
