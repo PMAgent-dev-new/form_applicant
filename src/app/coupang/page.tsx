@@ -3,9 +3,9 @@ import { BASE_PATH } from '@/lib/basePath';
 import CoupangStepForm from '@/app/components/coupang-form/CoupangStepForm';
 
 export const metadata: Metadata = {
-  title: 'ロケットナウ 営業職の募集｜ライドジョブ（RIDE JOB）',
+  title: 'ロケットナウ 営業・店舗サポート職の募集｜ライドジョブ（RIDE JOB）',
   description:
-    '韓国発スタートアップ「ロケットナウ」（CP One Japan 合同会社）の営業職（フィールドセールス／アカウントマネージャー）の募集です。ご応募後、30分のWeb面談または電話面談で仕事内容をご案内します。',
+    'フードデリバリー「ロケットナウ」（CP One Japan 合同会社）のフィールドセールス／アカウントマネージャーの募集です。ご応募後、30分のWeb面談または電話面談で仕事内容をご案内します。',
 };
 
 /**
@@ -18,7 +18,13 @@ export const metadata: Metadata = {
  * 不適切になるため、ここには一次確認が取れている事実だけを置いている。
  *   - 職種2種と勤務地: GASの選択肢マスタ（稼働中・フォームと同じソース）
  *   - 面談30分・Web/電話: 予約システム(leomeet /book/cpj)の実表示
- *   - 年齢18〜40歳: 応募フォームの入力条件
+ *   - 年齢の上限40歳: 応募フォームの入力条件
+ *     （下限はLPに書かない。例外事由3号のイで設定できるのは上限のみで、
+ *      下限には別の根拠が要るため）
+ *
+ * 職種の呼び方: アカウントマネージャーを「営業職」と断定しない。過去LPでは
+ * 「営業サポート事務」と訴求されており、事務職のつもりで応募した人と齟齬が出る。
+ * 自動返信メール(COUPANG_CONTENT)でも同じ判断を採っている。
  * 条件が確認できたら §募集職種 のカードに追記する。
  */
 
@@ -30,7 +36,7 @@ const JOB_POSITIONS = [
   },
   {
     name: 'アカウントマネージャー',
-    summary: '導入いただいた店舗さまを継続的にサポートする、社内中心の営業です。',
+    summary: '導入いただいた店舗さまを継続的にサポートするポジションです。',
     areas: '東京',
   },
 ] as const;
@@ -43,23 +49,29 @@ const STEPS = [
 
 export default function CoupangPage() {
   return (
-    // overflow-hidden: ステップフォームの非アクティブなカードは absolute で重ねてあり、
+    // overflow-clip: ステップフォームの非アクティブなカードは absolute で重ねてあり、
     // 高さの違う分がページ下端からはみ出して「何も無いのにスクロールできる」領域を作る。
     // 旧デザインではこの領域に body::before のタクシー背景が見えていた。
-    <div className="min-h-[100dvh] overflow-hidden bg-[#fff7ed]">
+    // ⚠️ overflow-hidden にしてはいけない。hidden は要素を**スクロールコンテナにする**ため、
+    //    #entry へのアンカー移動が祖先ごとスクロールし、ラッパーが約380pxずれて
+    //    ヒーローが二度と見られなくなる（ユーザー操作では戻せない）。
+    //    clip はスクロールコンテナにならないので、はみ出しだけを消せる。
+    <div className="min-h-[100dvh] overflow-clip bg-[#fff7ed]">
       {/* ヒーロー */}
       <header className="bg-[#f97316] px-4 pb-10 pt-12 text-white">
         <div className="mx-auto max-w-2xl">
           <p className="text-sm font-bold tracking-wider text-white/90">
-            韓国発スタートアップ
+            韓国発クーパングループ
           </p>
           <h1 className="mt-2 text-3xl font-bold leading-tight sm:text-4xl">
             ロケットナウ
-            <span className="mt-1 block text-xl font-bold sm:text-2xl">営業職の募集</span>
+            <span className="mt-1 block text-xl font-bold sm:text-2xl">
+              営業・店舗サポート職の募集
+            </span>
           </h1>
           <p className="mt-4 text-sm leading-relaxed text-white/95 sm:text-base">
-            フードデリバリー「ロケットナウ」を運営する CP One Japan 合同会社の営業職です。
-            フィールドセールスとアカウントマネージャーの2職種で募集しています。
+            フードデリバリー「ロケットナウ」を運営する CP One Japan 合同会社の募集です。
+            フィールドセールスとアカウントマネージャーの2職種があります。
           </p>
           <a
             href="#entry"
@@ -125,7 +137,7 @@ export default function CoupangPage() {
             応募条件
           </h2>
           <ul className="mt-4 space-y-2 rounded-xl border border-orange-100 bg-white p-5 text-sm leading-relaxed text-gray-800 shadow-sm">
-            <li>・18歳〜40歳の方（長期勤続によるキャリア形成を図るため）</li>
+            <li>・40歳以下の方（長期勤続によるキャリア形成を図るため）</li>
             <li>・上記いずれかの勤務地で働ける方</li>
           </ul>
         </section>
