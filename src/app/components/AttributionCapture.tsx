@@ -16,8 +16,9 @@ import { captureAttribution } from '@/lib/attribution';
  * 入れ忘れるとビルドが落ちる。effect はクライアントでしか走らないので
  * `window.location` を直接読めば十分で、依存も増えない。
  *
- * 詳細な設計判断（Cookie を jobmadley と共有していること、
- * 有料の帰属を動かさないこと）は attribution.ts のコメントを参照。
+ * 詳細な設計判断（Cookie を jobmadley と共有していること、有料の流入を
+ * 自然検索に化けさせないこと、反映日に出る集計上の段差）は
+ * attribution.ts の docコメントを参照。
  */
 export default function AttributionCapture() {
   useEffect(() => {

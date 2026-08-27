@@ -3,10 +3,14 @@ import { describe, expect, test } from 'vitest';
 import { captureAttribution, readAttribution, resolveUtmParams, touchFromReferrer, type Attribution } from './attribution';
 
 /**
- * ここで守りたいのは2つだけ。
+ * ここで守りたいのは3つ。
  *  1. UTMを持たない流入（YouTube・自然検索）が「直接アクセス」に落ちないこと
- *  2. 広告の帰属を1ミリも動かさないこと
- * 2が壊れるとCPAの数字が変わるので、こちらの方が事故として重い。
+ *  2. 有料の流入が「自然検索」に化けないこと
+ *  3. 出所（query / Cookie / referrer）を混ぜて、実在しない流入を作らないこと
+ *
+ * 2と3が壊れると、SEO成果の判断に使う自然検索の数字が汚れる。1が取れないより重い。
+ * なお「広告の帰属が変わらない」のは**着地1件の解釈**の話で、応募1件の帰属は
+ * Cookie のぶん変わりうる（詳細は attribution.ts の docコメント）。
  */
 
 const HOST = 'ridejob.jp';
