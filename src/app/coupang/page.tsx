@@ -1,11 +1,18 @@
 import type { Metadata } from 'next';
 import { BASE_PATH } from '@/lib/basePath';
 import CoupangStepForm from '@/app/components/coupang-form/CoupangStepForm';
+import { getCoupangStep1Options } from '@/app/api/coupang/step1-options/options';
+
+/**
+ * 勤務地を選択肢マスタ(GAS)から出しているため、ビルド時に固定されると
+ * マスタ更新に追随できない。1時間ごとに取り直す。
+ */
+export const revalidate = 3600;
 
 export const metadata: Metadata = {
   title: 'ロケットナウ フィールドセールスの募集｜ライドジョブ（RIDE JOB）',
   description:
-    'フードデリバリー「ロケットナウ」（CP One Japan 合同会社）のフィールドセールス（飲食店への法人営業）の募集です。月給320,000円〜・未経験OK・直行直帰OK。ご応募後、30分のWeb面談または電話面談でご案内します。',
+    'フードデリバリー「ロケットナウ」（CP One Japan 合同会社）のフィールドセールス（飲食店への法人営業）の募集です。月給320,000円〜・未経験OK。ご応募後、30分のWeb面談または電話面談でご案内します。',
 };
 
 /**
@@ -31,20 +38,16 @@ export const metadata: Metadata = {
 const JOB_DETAIL = {
   name: 'フィールドセールス',
   summary:
-    '飲食店さまへロケットナウの導入をご提案する営業です。未経験OK・直行直帰OKで、社会人経験の有無は問いません。',
+    '飲食店さまへロケットナウの導入をご提案する営業です。未経験からのスタートを歓迎しています（業界・経験年数は不問）。',
   rows: [
     {
       label: '給与',
       value:
-        '月給 320,000円 〜 350,000円（固定残業代を含む）\nインセンティブ制度あり（獲得件数の条件を満たした場合、最大100万円）',
+        '月給 320,000円 〜 350,000円（固定残業代を含む）\n入社後3ヶ月間の獲得件数に応じて、最大100万円の一時金（条件あり）',
     },
     { label: '雇用形態', value: '契約社員（正社員登用制度あり）' },
     { label: '勤務時間', value: '10:00 〜 19:00（実働8時間）' },
     { label: '休日', value: '完全週休2日制（土日祝休み）／年末年始・有給休暇あり' },
-    {
-      label: '勤務地',
-      value: '北海道・東京都・千葉県・埼玉県・静岡県・京都府・広島県・愛媛県',
-    },
     { label: 'その他', value: '各種社会保険完備／通勤手当（上限30,000円／月）／社用PC・携帯貸与' },
   ],
 } as const;
@@ -55,7 +58,27 @@ const STEPS = [
   { no: '03', title: '30分の面談', body: 'Web面談または電話面談。募集職種の詳細と選考の進め方をご案内します。' },
 ] as const;
 
-export default function CoupangPage() {
+/**
+ * 勤務地はフォームの選択肢マスタ（GAS）と**同じソース**から出す。
+ * ここを静的に列挙すると、マスタを更新したときにフォームだけ変わってLPが黙って
+ * 古くなる。さらに、LPに載っている勤務地がフォームで選べないと応募者が行き止まりになる。
+ * GASが落ちた場合はフォールバックが空になるため、その時は勤務地の行ごと出さない。
+ */
+async function getFieldSalesAreas(): Promise<string[]> {
+  const options = await getCoupangStep1Options();
+  const areas = options.combinations
+    .filter((c) => c.jobPosition === JOB_DETAIL.name)
+    .map((c) => c.desiredLocation);
+  return areas.length > 0 ? areas : options.desiredLocations;
+}
+
+export default async function CoupangPage() {
+  const areas = await getFieldSalesAreas();
+  const rows = [
+    ...JOB_DETAIL.rows,
+    ...(areas.length > 0 ? [{ label: '勤務地', value: areas.join('・') }] : []),
+  ];
+
   return (
     // overflow-clip: ステップフォームの非アクティブなカードは absolute で重ねてあり、
     // 高さの違う分がページ下端からはみ出して「何も無いのにスクロールできる」領域を作る。
@@ -100,7 +123,7 @@ export default function CoupangPage() {
             <h3 className="text-lg font-bold text-gray-900">{JOB_DETAIL.name}</h3>
             <p className="mt-2 text-sm leading-relaxed text-gray-700">{JOB_DETAIL.summary}</p>
             <dl className="mt-4 space-y-3 border-t border-gray-100 pt-4 text-sm">
-              {JOB_DETAIL.rows.map((row) => (
+              {rows.map((row) => (
                 <div key={row.label} className="flex gap-3">
                   <dt className="w-20 shrink-0 font-bold text-gray-500">{row.label}</dt>
                   <dd className="whitespace-pre-line text-gray-800">{row.value}</dd>
@@ -172,8 +195,12 @@ export default function CoupangPage() {
               プライバシーポリシー
             </a>
           </div>
-          <p className="mt-4 text-center text-xs text-white/80">
+          <p className="mt-4 text-center text-xs leading-relaxed text-white/80">
             募集企業: CP One Japan 合同会社（ロケットナウ）
+            <br />
+            本募集は株式会社PM Agentの有料職業紹介事業（許可番号 13-ユ-313375）によるご案内です。
+            <br />
+            ご応募後は株式会社PM Agentの担当者よりご連絡します。
           </p>
           <p className="mt-1 text-center text-xs text-white/60">© 2025 株式会社PMAgent</p>
         </div>
