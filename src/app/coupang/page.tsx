@@ -68,7 +68,9 @@ const STEPS = [
  * GASが落ちた場合はフォールバックが空になるため、その時は勤務地の行ごと出さない。
  */
 async function getFieldSalesAreas(): Promise<string[]> {
-  const options = await getCoupangStep1Options();
+  // ISRで取る。既定の no-store のまま呼ぶとページが dynamic 化し、
+  // 広告クリックのたびにGASの応答待ちになる（実測2.7〜12.8秒・30秒タイムアウトあり）。
+  const options = await getCoupangStep1Options({ next: { revalidate: 3600 } });
   const areas = options.combinations
     .filter((c) => c.jobPosition === JOB_DETAIL.name)
     .map((c) => c.desiredLocation);
@@ -167,7 +169,7 @@ export default async function CoupangPage() {
           </h2>
           <ul className="mt-4 space-y-2 rounded-xl border border-orange-100 bg-white p-5 text-sm leading-relaxed text-gray-800 shadow-sm">
             <li>・新しい市場の開拓に意欲を持ち、成長を楽しめる方</li>
-            <li>・上記いずれかの勤務地で働ける方</li>
+            {areas.length > 0 && <li>・上記いずれかの勤務地で働ける方</li>}
             <li className="pt-1 text-gray-600">
               ・営業や飛び込み営業のご経験がある方は歓迎します（業界・経験年数は不問）
             </li>
