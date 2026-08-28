@@ -21,6 +21,11 @@ export const metadata: Metadata = {
  * イラスト）の**地色だけを青(#1d4ed8)に差し替えたもの**。イラストはそのまま。
  * 元ファイルは他で参照していないが、比較用に残してある。
  *
+ * 生成方法: `magick coupang_bg.webp -fuzz 8% -fill "#1d4ed8" -opaque "srgb(253,105,21)"`
+ * イラスト境界にアンチエイリアス由来の暖色が1〜2px残るが、**これ以上詰めてはいけない**。
+ * fuzz を20%まで上げる／フラッドフィル＋膨張でマスクを広げる、はどちらも試したが、
+ * ロケットの赤いフィンが欠け、本体に青い斑点が入るなど**イラストが壊れた**。
+ *
  * ⚠️ 条件を再びLPに載せるときは、給与に**固定残業代の内訳**（金額・充当時間数・
  * 超過分の別途支給）が必要になる。詳細は Drive「クーパンLP」の実行計画を参照。
  *
@@ -36,7 +41,6 @@ export default function CoupangPage() {
         alt=""
         fill
         className="object-cover"
-        quality={85}
         priority
       />
       <div className="relative z-10">
@@ -46,8 +50,8 @@ export default function CoupangPage() {
             <Image
               src="/images/coupang_banner.webp"
               alt="ロケットナウ求人特設フォーム"
-              width={640}
-              height={180}
+              width={864}
+              height={488}
               className="h-auto w-full rounded-lg"
               priority
             />
