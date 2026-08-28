@@ -77,7 +77,7 @@ export default function CoupangPersonalInfoCard({
         <button
           type="submit"
           disabled={isSubmitting}
-          className="w-2/3 bg-[#ff6b35] hover:bg-[#e55a2b] text-white font-bold py-4 px-6 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          className="w-2/3 bg-[#1d4ed8] hover:bg-[#1e40af] text-white font-bold py-4 px-6 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {isSubmitting ? '送信中...' : '送信する'}
         </button>

@@ -68,7 +68,7 @@ export default function CoupangApplicationInfoCard({
         <button
           type="button"
           onClick={onNext}
-          className="w-full bg-[#ff6b35] hover:bg-[#e55a2b] text-white font-bold py-4 px-6 rounded-lg transition-colors"
+          className="w-full bg-[#1d4ed8] hover:bg-[#1e40af] text-white font-bold py-4 px-6 rounded-lg transition-colors"
         >
           次へ
         </button>
