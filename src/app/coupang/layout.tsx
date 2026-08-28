@@ -14,7 +14,7 @@ export default function CoupangLayout({ children }: { children: React.ReactNode 
   return (
     <>
       <style>{`
-        body { background-image: none !important; background-color: #fff7ed !important; }
+        body { background-image: none !important; background-color: #eff6ff !important; }
         body::before { display: none !important; content: none !important; }
       `}</style>
       {children}

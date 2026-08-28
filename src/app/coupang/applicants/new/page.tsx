@@ -23,10 +23,10 @@ export default function CoupangApplicationComplete() {
   }, []);
 
   return (
-    <div className="mx-auto max-w-2xl px-4 bg-[#f1f9fa] min-h-screen">
+    <div className="mx-auto max-w-2xl px-4 bg-[#eff6ff] min-h-screen">
       {/* Header Section */}
       <div className="text-center pt-8 pb-4">
-        <h1 className="text-2xl font-bold text-[#ff6b35] leading-relaxed">
+        <h1 className="text-2xl font-bold text-[#1d4ed8] leading-relaxed">
           この度はお申込みいただき<br />ありがとうございました！
         </h1>
         <p className="mt-3 text-lg text-gray-700 leading-relaxed">
@@ -36,7 +36,7 @@ export default function CoupangApplicationComplete() {
 
       {/* eeasy Reservation Section */}
       <div className="bg-white rounded-lg p-6 shadow-md mb-8">
-        <h2 className="text-lg font-bold text-gray-900 mb-4 border-l-4 border-[#ff6b35] pl-3">
+        <h2 className="text-lg font-bold text-gray-900 mb-4 border-l-4 border-[#1d4ed8] pl-3">
           【重要】面談予約はお早めに
         </h2>
         <div className="text-base text-gray-700 space-y-2 mb-6">
@@ -47,7 +47,7 @@ export default function CoupangApplicationComplete() {
       </div>
 
       {/* Footer */}
-      <footer className="text-white py-5 mt-8 bg-[#212e4a]">
+      <footer className="text-white py-5 mt-8 bg-[#1e3a8a]">
         <div className="container mx-auto px-4">
           <div className="flex flex-col md:flex-row justify-around items-center text-center md:text-left text-xs mb-3 space-y-2 md:space-y-0">
             <a href="https://pmagent.jp/" className="text-white hover:underline">運営会社について</a>
