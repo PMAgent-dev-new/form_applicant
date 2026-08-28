@@ -47,7 +47,7 @@ export default function CoupangApplicationComplete() {
       </div>
 
       {/* Footer */}
-      <footer className="text-white py-5 mt-8 bg-[#212e4a]">
+      <footer className="text-white py-5 mt-8 bg-[#1e3a8a]">
         <div className="container mx-auto px-4">
           <div className="flex flex-col md:flex-row justify-around items-center text-center md:text-left text-xs mb-3 space-y-2 md:space-y-0">
             <a href="https://pmagent.jp/" className="text-white hover:underline">運営会社について</a>

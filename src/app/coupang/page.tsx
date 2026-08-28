@@ -18,6 +18,10 @@ export const metadata: Metadata = {
  *
  * ⚠️ 条件を再びLPに載せるときは、給与に**固定残業代の内訳**（金額・充当時間数・
  * 超過分の別途支給）が必要になる。詳細は Drive「クーパンLP」の実行計画を参照。
+ *
+ * ⚠️ **配信ON前の未解決事項**: 配信対象8エリアのうち**愛媛が選択肢マスタ(GAS)に無い**。
+ * このまま愛媛へ配信すると、愛媛の応募者はフォームで勤務地を選べず応募できない。
+ * マスタへの追加が必要（シートの所在が未特定・矢野さんへ確認中）。
  */
 export default function CoupangPage() {
   return (
@@ -54,6 +58,8 @@ export default function CoupangPage() {
               募集企業: CP One Japan 合同会社（ロケットナウ）
               <br />
               本募集は株式会社PM Agentの有料職業紹介事業（許可番号 13-ユ-313375）によるご案内です。
+              <br />
+              ご応募後は株式会社PM Agentの担当者よりご連絡します。
             </p>
             <p className="mt-2 text-center text-xs text-white/60">© 2025 株式会社PMAgent</p>
           </div>
