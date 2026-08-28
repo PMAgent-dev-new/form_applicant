@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { BASE_PATH } from '@/lib/basePath';
+import Image from '@/app/components/AppImage';
 import CoupangStepForm from '@/app/components/coupang-form/CoupangStepForm';
 
 export const metadata: Metadata = {
@@ -11,10 +12,14 @@ export const metadata: Metadata = {
 /**
  * クーパン（ロケットナウ）応募フォームLP。
  *
- * **フォームだけのシンプルな構成にしている**（2026-08-28 三木さん指示）。
- * タクシー導線（`/` `/taxi`）が ApplicationForm 1本で完結しているのと同じ考え方。
- * 一時期は募集職種・条件・選考の流れを載せていたが、情報量が多く分かりにくいとの
- * 判断で撤去した。条件の提示は広告クリエイティブと、応募後の面談で行う。
+ * **元のデザイン（背景イラスト＋バナー＋フォーム）を踏襲した、フォームだけの構成**
+ * （2026-08-28 三木さん指示）。一時期は募集職種・条件・選考の流れを載せていたが、
+ * 情報量が多く分かりにくいとの判断で撤去した。条件の提示は広告クリエイティブと
+ * 応募後の面談で行う。
+ *
+ * 背景 `coupang_bg_blue.webp` は元の `coupang_bg.webp`（オレンジ地＋ロケット・料理の
+ * イラスト）の**地色だけを青(#1d4ed8)に差し替えたもの**。イラストはそのまま。
+ * 元ファイルは他で参照していないが、比較用に残してある。
  *
  * ⚠️ 条件を再びLPに載せるときは、給与に**固定残業代の内訳**（金額・充当時間数・
  * 超過分の別途支給）が必要になる。詳細は Drive「クーパンLP」の実行計画を参照。
@@ -25,45 +30,54 @@ export const metadata: Metadata = {
  */
 export default function CoupangPage() {
   return (
-    <div className="min-h-[100dvh] overflow-clip bg-[#eff6ff]">
-      <div className="mx-auto max-w-2xl px-4 py-8">
-        {/* バナー */}
-        <div className="mb-6 rounded-lg bg-[#1d4ed8] px-6 py-7 text-center text-white">
-          <p className="text-sm font-bold tracking-wider text-white/90">
-            韓国発クーパングループ
-          </p>
-          <h1 className="mt-2 text-2xl font-bold leading-tight sm:text-3xl">
-            ロケットナウ
-            <span className="mt-1 block text-base font-bold sm:text-lg">
-              フィールドセールス 応募フォーム
-            </span>
-          </h1>
-        </div>
-
-        {/* ステップフォーム */}
-        <CoupangStepForm />
-
-        {/* フッター */}
-        <footer className="mt-8 rounded-lg bg-[#1e3a8a] py-5 text-white">
-          <div className="container mx-auto px-4">
-            <div className="mb-3 flex flex-col items-center justify-around space-y-2 text-center text-xs md:flex-row md:space-y-0 md:text-left">
-              <a href="https://pmagent.jp/" className="text-white hover:underline">
-                運営会社について
-              </a>
-              <a href={`${BASE_PATH}/privacy`} className="text-white hover:underline">
-                プライバシーポリシー
-              </a>
-            </div>
-            <p className="mt-3 text-center text-[11px] leading-relaxed text-white/80">
-              募集企業: CP One Japan 合同会社（ロケットナウ）
-              <br />
-              本募集は株式会社PM Agentの有料職業紹介事業（許可番号 13-ユ-313375）によるご案内です。
-              <br />
-              ご応募後は株式会社PM Agentの担当者よりご連絡します。
-            </p>
-            <p className="mt-2 text-center text-xs text-white/60">© 2025 株式会社PMAgent</p>
+    <div className="relative min-h-[100dvh] overflow-clip bg-[#1d4ed8]">
+      <Image
+        src="/images/coupang_bg_blue.webp"
+        alt=""
+        fill
+        className="object-cover"
+        quality={85}
+        priority
+      />
+      <div className="relative z-10">
+        <div className="mx-auto max-w-2xl px-4 py-8">
+          {/* バナー画像 */}
+          <div className="mb-6">
+            <Image
+              src="/images/coupang_banner.webp"
+              alt="ロケットナウ求人特設フォーム"
+              width={640}
+              height={180}
+              className="h-auto w-full rounded-lg"
+              priority
+            />
           </div>
-        </footer>
+
+          {/* ステップフォーム */}
+          <CoupangStepForm />
+
+          {/* Footer */}
+          <footer className="mt-8 rounded-lg bg-[#1e3a8a]/95 py-5 text-white backdrop-blur-sm">
+            <div className="container mx-auto px-4">
+              <div className="mb-3 flex flex-col items-center justify-around space-y-2 text-center text-xs md:flex-row md:space-y-0 md:text-left">
+                <a href="https://pmagent.jp/" className="text-white hover:underline">
+                  運営会社について
+                </a>
+                <a href={`${BASE_PATH}/privacy`} className="text-white hover:underline">
+                  プライバシーポリシー
+                </a>
+              </div>
+              <p className="mt-3 text-center text-[11px] leading-relaxed text-white/80">
+                募集企業: CP One Japan 合同会社（ロケットナウ）
+                <br />
+                本募集は株式会社PM Agentの有料職業紹介事業（許可番号 13-ユ-313375）によるご案内です。
+                <br />
+                ご応募後は株式会社PM Agentの担当者よりご連絡します。
+              </p>
+              <p className="mt-2 text-center text-xs text-white/60">© 2025 株式会社PMAgent</p>
+            </div>
+          </footer>
+        </div>
       </div>
     </div>
   );
