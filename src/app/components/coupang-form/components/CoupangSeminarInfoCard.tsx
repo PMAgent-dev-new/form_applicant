@@ -80,7 +80,7 @@ export default function CoupangSeminarInfoCard({
         <button
           type="button"
           onClick={onNext}
-          className="w-2/3 bg-[#ff6b35] hover:bg-[#e55a2b] text-white font-bold py-4 px-6 rounded-lg transition-colors"
+          className="w-2/3 bg-[#1d4ed8] hover:bg-[#1e40af] text-white font-bold py-4 px-6 rounded-lg transition-colors"
         >
           次へ
         </button>

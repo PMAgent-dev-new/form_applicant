@@ -30,7 +30,7 @@ export function SelectInput({
         name={name}
         value={value}
         onChange={onChange}
-        className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#ff6b35] ${
+        className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] ${
           error ? 'border-red-500' : 'border-gray-300'
         } ${!value ? 'text-gray-500' : 'text-gray-900'}`}
       >
