@@ -60,6 +60,12 @@ export type Attribution = {
   lastTouch?: AttributionTouch;
   fbclid?: string;
   gclid?: string;
+  /**
+   * ChatGPT広告のクリック識別子。OpenAI が着地URLへ自動付与する（例 `?oppref=gAAAAA...`）。
+   * 現時点で送信先は無いが、後から Pixel / Conversions API を入れても
+   * **保存していなかった期間は遡って紐づけられない**ため、先に保存だけしておく。
+   */
+  oppref?: string;
   /** 初回接触時のランディングパス（origin なし） */
   landing?: string;
   /** 初回接触時の document.referrer */
@@ -264,10 +270,14 @@ export function captureAttribution(
   const touchParams = readTouchParams(params);
   const fbclid = params.get('fbclid')?.trim() || undefined;
   const gclid = params.get('gclid')?.trim() || undefined;
+  const oppref = params.get('oppref')?.trim() || undefined;
 
   const current = readAttribution();
 
-  if (!isMeaningful(touchParams) && !fbclid && !gclid) {
+  // oppref をここに含めないと、UTMが欠けた広告クリック（付け忘れ・中間リダイレクトでの脱落）が
+  // referrer 推定に落ちて chatgpt.com → 「ChatGPT（自然流入）」として記録される。
+  // 広告費が自然流入KPIに混入するので、クリックIDがある限り referrer 推定へは行かせない。
+  if (!isMeaningful(touchParams) && !fbclid && !gclid && !oppref) {
     if (current.lastTouch || current.firstTouch) return current;
 
     const host = currentHost ?? (typeof window !== 'undefined' ? window.location.host : '');
@@ -294,6 +304,7 @@ export function captureAttribution(
     lastTouch: isMeaningful(touchParams) ? touch : current.lastTouch,
     fbclid: fbclid ?? current.fbclid,
     gclid: gclid ?? current.gclid,
+    oppref: oppref ?? current.oppref,
     landing: current.landing ?? path,
     referrer: current.referrer ?? (referrer || undefined),
   };
@@ -334,7 +345,12 @@ export function resolveUtmParams(
   //    旧挙動（＝直接アクセス）のまま返して、少なくとも嘘はつかない。
   //    ※ captureAttribution 側は既に clickid を「意味のある着地」として扱っており、
   //      ここに同じガードが無いのは片手落ちだった。
-  if (params.get('gclid')?.trim() || params.get('fbclid')?.trim()) return fromQuery;
+  //    ChatGPT広告の oppref も同じ扱い。こちらは referrer が chatgpt.com になるため、
+  //    referrer 推定に落ちると「ChatGPT（自然流入）」＝AIOの成果として数えられてしまう。
+  //    広告費が自然流入KPIに混入する方向なので、gclid/fbclid と同列に止める。
+  if (params.get('gclid')?.trim() || params.get('fbclid')?.trim() || params.get('oppref')?.trim()) {
+    return fromQuery;
+  }
 
   // 3. Cookie に保存された touch（サイト内を回遊してから応募した経路。
   //    ridejob.jp と同一オリジンなので jobmadley が書いた値もここに入る）。
