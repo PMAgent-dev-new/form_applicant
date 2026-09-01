@@ -38,7 +38,7 @@ export type BaseWriteContext = {
   isCoupang: boolean;
   isTruck: boolean;
   isBus: boolean;
-  // タクシーLP（`/` と `/taxi`）からの応募。formOrigin が明示的に 'default' のときだけ true。
+  // タクシーLP（`/`・`/taxi`・`/people-b`）からの応募。formOrigin が明示的に 'default' のときだけ true。
   // default は formOrigin 未指定時のフォールバックも兼ねるため、推測では立てない。
   isTaxi: boolean;
   truckLicensesLabel: string;

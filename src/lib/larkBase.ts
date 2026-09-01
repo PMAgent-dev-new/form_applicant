@@ -37,9 +37,17 @@ const tokenCacheByProfile = new Map<LarkProfile, TokenCache>();
 // 応募1件あたり4リクエスト増える。応募の待ち時間に直結するのでプロセス内で短時間だけ持つ。
 // 選択肢を足した直後はこの時間だけ古い一覧を見るが、解決できなければそのフィールドを落とすだけで応募は通る。
 const MASTER_CACHE_TTL_MS = 10 * 60 * 1000;
+
+// リンク解決に使ってよい合計時間。レコード作成1回あたりの上限で、リンクフィールドが増えても伸びない。
+// 個々のリクエストは5秒で切れるが、Lark API が遅いときに直列で積み上がると応募APIごと
+// Vercel の実行時間上限に当たり、Webhook フォールバックにも入れないまま応募を落としかねない。
+// 超えた分は解決を諦めてフィールドを空欄にする（応募そのものは通す）。
+const LINK_RESOLVE_BUDGET_MS = 6000;
+
 type CacheEntry<T> = { value: T; expiresAt: number };
 type LinkedRecord = { record_id?: string; fields?: Record<string, unknown> };
-const linkedTableIdCache = new Map<string, CacheEntry<string>>();
+type TableField = Record<string, unknown>;
+const tableFieldsCache = new Map<string, CacheEntry<TableField[]>>();
 const linkedRecordsCache = new Map<string, CacheEntry<LinkedRecord[]>>();
 
 function readCache<T>(cache: Map<string, CacheEntry<T>>, key: string): T | undefined {
@@ -146,14 +154,14 @@ function containsText(value: unknown, expected: string): boolean {
   return false;
 }
 
-async function fetchLinkedTableId(
+// テーブル単位でキャッシュする。同じテーブルのリンクフィールドが複数あっても取得は1回で済む。
+async function fetchTableFields(
   cfg: LarkBaseConfig,
   token: string,
-  tableId: string,
-  fieldName: string
-): Promise<string> {
-  const cacheKey = `${cfg.appToken}/${tableId}/${fieldName}`;
-  const cached = readCache(linkedTableIdCache, cacheKey);
+  tableId: string
+): Promise<TableField[]> {
+  const cacheKey = `${cfg.appToken}/${tableId}`;
+  const cached = readCache(tableFieldsCache, cacheKey);
   if (cached) return cached;
 
   const fieldsResponse = await getJson(
@@ -161,13 +169,23 @@ async function fetchLinkedTableId(
     token,
     `/open-apis/bitable/v1/apps/${cfg.appToken}/tables/${tableId}/fields?page_size=100`
   );
-  const fields = ((fieldsResponse.data as { items?: Array<Record<string, unknown>> } | undefined)?.items) ?? [];
+  const fields = ((fieldsResponse.data as { items?: TableField[] } | undefined)?.items) ?? [];
+  writeCache(tableFieldsCache, cacheKey, fields);
+  return fields;
+}
+
+async function fetchLinkedTableId(
+  cfg: LarkBaseConfig,
+  token: string,
+  tableId: string,
+  fieldName: string
+): Promise<string> {
+  const fields = await fetchTableFields(cfg, token, tableId);
   const field = fields.find((item) => item.field_name === fieldName);
   const linkedTableId = (field?.property as { table_id?: string } | undefined)?.table_id;
   if (!linkedTableId) {
     throw new Error(`リンクフィールド「${fieldName}」のリンク先テーブルを取得できません`);
   }
-  writeCache(linkedTableIdCache, cacheKey, linkedTableId);
   return linkedTableId;
 }
 
@@ -232,9 +250,13 @@ export async function createBaseRecord(
 
   let token = await fetchTenantAccessToken(cfg, profile);
   const cleaned: Record<string, LarkFieldValue> = {};
+  const linkResolveDeadline = Date.now() + LINK_RESOLVE_BUDGET_MS;
   for (const [k, v] of Object.entries(fields)) {
     if (v && typeof v === "object" && !Array.isArray(v) && "linkedRecordName" in v) {
       try {
+        if (Date.now() >= linkResolveDeadline) {
+          throw new Error(`リンク解決の制限時間(${LINK_RESOLVE_BUDGET_MS}ms)を超えました`);
+        }
         cleaned[k] = [await resolveLinkedRecordId(cfg, token, tableId, k, v.linkedRecordName)];
       } catch (e) {
         // リンク解決に失敗しても、そのフィールドを落としてレコード作成は続ける。

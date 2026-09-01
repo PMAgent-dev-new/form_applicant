@@ -35,6 +35,12 @@ describe('resolveApplicationSourceMasterName', () => {
     expect(resolveApplicationSourceMasterName({ utm_medium: 'referral' })).toBe('RIDEJOB HP');
   });
 
+  // Meta のオーガニックは配置別（fb/ig/th）で持っており、マスタに meta(organic) は存在しない。
+  it('マスタに存在しないオーガニック名は作らない', () => {
+    expect(resolveApplicationSourceMasterName({ utm_source: 'meta', utm_medium: 'organic' })).toBeUndefined();
+    expect(resolveApplicationSourceMasterName({ utm_source: 'fb', utm_medium: 'organic' })).toBe('fb(organic)');
+  });
+
   it('未知の流入元・未知のmediumは undefined（空欄のまま残す）', () => {
     expect(resolveApplicationSourceMasterName({ utm_source: 'e2e-test', utm_medium: 'test' })).toBeUndefined();
     // 求人ボックスからのreferralは kbox/feed と kbox/採用ボード のどちらか判別できないため書かない。

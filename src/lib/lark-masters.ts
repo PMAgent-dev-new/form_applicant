@@ -43,6 +43,13 @@ const AD_SOURCE_PREFIXES: Record<string, string> = {
   google: 'google',
 };
 
+/**
+ * `<接頭辞>(organic)` がマスタに実在する媒体。
+ * Meta は配置別（fb / ig / th）でオーガニックを持っており、`meta(organic)` というレコードは無い。
+ * ここに無い媒体の organic 流入は undefined（空欄）にする。
+ */
+const ORGANIC_PREFIXES = new Set(['fb', 'ig', 'th', 'tiktok', 'google']);
+
 /** utm_source → マスタ名が固定で決まるもの（広告/オーガニックの区別が無い媒体）。 */
 const FIXED_SOURCE_NAMES: Record<string, string> = {
   stanby: 'スタンバイ',
@@ -56,7 +63,7 @@ const text = (value?: string): string => (value ?? '').trim().toLowerCase();
  *
  * - utm_source なし … 自社サイト・直接流入なので `RIDEJOB HP`
  * - 広告媒体 × 広告medium … `fb(ad)` 等
- * - 広告媒体 × organic … `fb(organic)` 等
+ * - 広告媒体 × organic … `fb(organic)` 等（マスタに実在する媒体だけ）
  * - スタンバイ … `スタンバイ`
  * - それ以外（未知のsource、求人ボックス等からのreferral）… undefined（空欄のまま）
  */
@@ -72,7 +79,7 @@ export function resolveApplicationSourceMasterName(utm: MasterNameUtm): string |
 
   const medium = text(utm.utm_medium);
   if (AD_MEDIUMS.has(medium)) return `${prefix}(ad)`;
-  if (medium === 'organic') return `${prefix}(organic)`;
+  if (medium === 'organic' && ORGANIC_PREFIXES.has(prefix)) return `${prefix}(organic)`;
   return undefined;
 }
 

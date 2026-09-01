@@ -154,7 +154,7 @@ describe('resolveDirectBaseWrite (truck)', () => {
     expect(target?.fields.保有資格).toBeUndefined();
   });
 
-  // formOrigin 未指定の応募も default 扱いで届くが、タクシーLPとは限らないので職種を紐付けない。
+  // formOrigin を明示してこない応募はタクシーLPとは限らないので、職種を紐付けない（isTaxi=false）。
   it('formOrigin未指定(isTaxi=false)の応募は職種を紐付けない', () => {
     const target = resolveDirectBaseWrite({
       ...truckContext(),
@@ -218,6 +218,18 @@ describe('resolveDirectBaseWrite (応募経由マスタ)', () => {
     });
 
     expect(target?.fields['応募経由(マスタ連動)']).toBeUndefined();
+  });
+
+  // coupang は直書き対象外。null を返して Base Webhook 経路に落とす従来動作を保つ。
+  it('クーパン応募は直書きせず従来どおりWebhookへ回す', () => {
+    const target = resolveDirectBaseWrite({
+      ...truckContext(),
+      isTruck: false,
+      isCoupang: true,
+      utm: { utm_source: 'fb', utm_medium: 'ad' },
+    });
+
+    expect(target).toBeNull();
   });
 
   it('整備士応募も応募経由マスタへ紐付ける', () => {
