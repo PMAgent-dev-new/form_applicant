@@ -8,6 +8,7 @@ function mechanicContext(): BaseWriteContext {
     isCoupang: false,
     isTruck: false,
     isBus: false,
+    isTaxi: false,
     truckLicensesLabel: '',
     mediaName: 'RIDE JOB Mechanic',
     utm: {},
@@ -76,6 +77,7 @@ function truckContext(): BaseWriteContext {
     isCoupang: false,
     isTruck: true,
     isBus: false,
+    isTaxi: false,
     truckLicensesLabel: '中型免許（8t限定含む）、大型免許',
     mediaName: 'Meta広告',
     utm: {},
@@ -152,8 +154,8 @@ describe('resolveDirectBaseWrite (truck)', () => {
     expect(target?.fields.保有資格).toBeUndefined();
   });
 
-  // default は formOrigin 未指定時のフォールバックも兼ねるため職種を紐付けない。
-  it('タクシー(default)応募は職種を紐付けず、メモは従来どおり転職時期のみ', () => {
+  // formOrigin を明示してこない応募はタクシーLPとは限らないので、職種を紐付けない（isTaxi=false）。
+  it('formOrigin未指定(isTaxi=false)の応募は職種を紐付けない', () => {
     const target = resolveDirectBaseWrite({
       ...truckContext(),
       isTruck: false,
@@ -164,5 +166,79 @@ describe('resolveDirectBaseWrite (truck)', () => {
     expect(target?.fields['マスタ-応募職種']).toBeUndefined();
     expect(target?.fields.保有資格).toBeUndefined();
     expect(target?.fields.対応履歴メモ).toBe('転職時期: 決まれば早く転職したい');
+  });
+
+  it('タクシーLPの応募はタクシードライバーへ紐付ける', () => {
+    const target = resolveDirectBaseWrite({
+      ...truckContext(),
+      isTruck: false,
+      isTaxi: true,
+      truckLicensesLabel: '',
+      utm: { utm_creative: 'CR-2607-18_TAXI_人間関係ストレス訴求' },
+    });
+
+    expect(target?.fields['マスタ-応募職種']).toEqual({ linkedRecordName: 'タクシードライバー' });
+  });
+
+  // タクシーLPは1本でハイヤー転向の訴求も受けている。どちらの求人として扱うかはクリエイティブで決まる。
+  it('ハイヤー訴求クリエイティブ経由はハイヤー/役員専属運転手へ紐付ける', () => {
+    const target = resolveDirectBaseWrite({
+      ...truckContext(),
+      isTruck: false,
+      isTaxi: true,
+      truckLicensesLabel: '',
+      utm: { utm_creative: 'CR-2607-02_TAXI_ハイヤー転向' },
+    });
+
+    expect(target?.fields['マスタ-応募職種']).toEqual({ linkedRecordName: 'ハイヤー/役員専属運転手' });
+  });
+});
+
+describe('resolveDirectBaseWrite (応募経由マスタ)', () => {
+  it('広告流入は応募経由マスタへ配置別に紐付ける', () => {
+    const target = resolveDirectBaseWrite({
+      ...truckContext(),
+      utm: { utm_source: 'ig', utm_medium: 'cpc' },
+    });
+
+    expect(target?.fields['応募経由(マスタ連動)']).toEqual({ linkedRecordName: 'ig(ad)' });
+  });
+
+  it('utmが無い応募は RIDEJOB HP へ紐付ける', () => {
+    const target = resolveDirectBaseWrite(truckContext());
+
+    expect(target?.fields['応募経由(マスタ連動)']).toEqual({ linkedRecordName: 'RIDEJOB HP' });
+  });
+
+  // 誤った経由が入ると集計まで汚れるので、判定できない流入元は空欄のまま残す。
+  it('判定できない流入元は空欄のまま残す', () => {
+    const target = resolveDirectBaseWrite({
+      ...truckContext(),
+      utm: { utm_source: 'e2e-test', utm_medium: 'test' },
+    });
+
+    expect(target?.fields['応募経由(マスタ連動)']).toBeUndefined();
+  });
+
+  // coupang は直書き対象外。null を返して Base Webhook 経路に落とす従来動作を保つ。
+  it('クーパン応募は直書きせず従来どおりWebhookへ回す', () => {
+    const target = resolveDirectBaseWrite({
+      ...truckContext(),
+      isTruck: false,
+      isCoupang: true,
+      utm: { utm_source: 'fb', utm_medium: 'ad' },
+    });
+
+    expect(target).toBeNull();
+  });
+
+  it('整備士応募も応募経由マスタへ紐付ける', () => {
+    const target = resolveDirectBaseWrite({
+      ...mechanicContext(),
+      utm: { utm_source: 'fb', utm_medium: 'ad' },
+    });
+
+    expect(target?.profile).toBe('mechanic');
+    expect(target?.fields['応募経由(マスタ連動)']).toEqual({ linkedRecordName: 'fb(ad)' });
   });
 });
