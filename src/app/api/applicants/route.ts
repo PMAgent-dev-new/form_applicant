@@ -16,6 +16,7 @@ import {
 } from '@/lib/lark-masters';
 import { resolveAdImageUrl, isLikelyAdId } from '@/lib/meta/resolveAdImage';
 import { sendMetaCapiLead } from '@/lib/meta/capi';
+import { sendOpenAiConversion } from '@/lib/openai/capi';
 import {
   createBaseRecord,
   isLarkBaseConfigured,
@@ -258,6 +259,8 @@ type ApplicantSubmission = ApplicantFormData & {
   experiment?: ExperimentInfo;
   formOrigin?: 'coupang' | 'default' | 'bus' | 'mechanic' | 'mechanic_newgrad' | 'truck';
   metaEventId?: string;
+  /** ChatGPT広告のクリック識別子。OpenAI Conversions API の突合キー。 */
+  oppref?: string;
 };
 
 // UTM parameters to media name mapping function
@@ -616,6 +619,9 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
       if (typeof submissionData.metaEventId === 'string' && submissionData.metaEventId) {
         const capiUserAgent = request.headers.get('user-agent') || '';
         const capiClientIp = (request.headers.get('x-forwarded-for') || '').split(',')[0]?.trim() || '';
+        const capiHost = request.headers.get('x-forwarded-host') || request.headers.get('host') || '';
+        const capiProto = request.headers.get('x-forwarded-proto') || 'https';
+        const capiFallbackSourceUrl = capiHost ? `${capiProto}://${capiHost}` : undefined;
         tasks.push(
           sendMetaCapiLead({
             eventId: submissionData.metaEventId,
@@ -624,6 +630,23 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
             phone: formData.phoneNumber,
             fbp: request.cookies.get('_fbp')?.value,
             fbc: request.cookies.get('_fbc')?.value,
+            clientIpAddress: capiClientIp || undefined,
+            clientUserAgent: capiUserAgent || undefined,
+          }).then(() => {})
+        );
+
+        // OpenAI（ChatGPT広告）Conversions API — 非致命。
+        // oppref が無い応募（＝広告クリック由来でない）は lib 側で送信をスキップする。
+        tasks.push(
+          sendOpenAiConversion({
+            eventId: submissionData.metaEventId,
+            oppref: typeof submissionData.oppref === 'string' ? submissionData.oppref : undefined,
+            // action_source=web では source_url が必須。Referer を送らない環境
+            // （プライバシー拡張・no-referrer のアプリ内ブラウザ等）でも欠落させないよう、
+            // ホストヘッダから組み立てた値へフォールバックする。
+            sourceUrl: referer || capiFallbackSourceUrl,
+            email: formData.email,
+            phone: formData.phoneNumber,
             clientIpAddress: capiClientIp || undefined,
             clientUserAgent: capiUserAgent || undefined,
           }).then(() => {})
