@@ -33,6 +33,29 @@ interface TokenCache {
 // tenant_access_token はアプリ（プロファイル）単位で払い出されるためプロファイル別にキャッシュする。
 const tokenCacheByProfile = new Map<LarkProfile, TokenCache>();
 
+// マスタ（応募経由・応募職種）はほぼ変わらないのに、リンク解決のたびに fields と records を取りに行くと
+// 応募1件あたり4リクエスト増える。応募の待ち時間に直結するのでプロセス内で短時間だけ持つ。
+// 選択肢を足した直後はこの時間だけ古い一覧を見るが、解決できなければそのフィールドを落とすだけで応募は通る。
+const MASTER_CACHE_TTL_MS = 10 * 60 * 1000;
+type CacheEntry<T> = { value: T; expiresAt: number };
+type LinkedRecord = { record_id?: string; fields?: Record<string, unknown> };
+const linkedTableIdCache = new Map<string, CacheEntry<string>>();
+const linkedRecordsCache = new Map<string, CacheEntry<LinkedRecord[]>>();
+
+function readCache<T>(cache: Map<string, CacheEntry<T>>, key: string): T | undefined {
+  const hit = cache.get(key);
+  if (!hit) return undefined;
+  if (hit.expiresAt <= Date.now()) {
+    cache.delete(key);
+    return undefined;
+  }
+  return hit.value;
+}
+
+function writeCache<T>(cache: Map<string, CacheEntry<T>>, key: string, value: T): void {
+  cache.set(key, { value, expiresAt: Date.now() + MASTER_CACHE_TTL_MS });
+}
+
 function readConfig(profile: LarkProfile): LarkBaseConfig | null {
   const suffix = profile.toUpperCase();
   const domain = (process.env[`LARK_DOMAIN_${suffix}`] || "https://open.larksuite.com").replace(/\/+$/, "");
@@ -123,13 +146,16 @@ function containsText(value: unknown, expected: string): boolean {
   return false;
 }
 
-async function resolveLinkedRecordId(
+async function fetchLinkedTableId(
   cfg: LarkBaseConfig,
   token: string,
   tableId: string,
-  fieldName: string,
-  recordName: string
+  fieldName: string
 ): Promise<string> {
+  const cacheKey = `${cfg.appToken}/${tableId}/${fieldName}`;
+  const cached = readCache(linkedTableIdCache, cacheKey);
+  if (cached) return cached;
+
   const fieldsResponse = await getJson(
     cfg,
     token,
@@ -141,7 +167,20 @@ async function resolveLinkedRecordId(
   if (!linkedTableId) {
     throw new Error(`リンクフィールド「${fieldName}」のリンク先テーブルを取得できません`);
   }
+  writeCache(linkedTableIdCache, cacheKey, linkedTableId);
+  return linkedTableId;
+}
 
+async function fetchLinkedRecords(
+  cfg: LarkBaseConfig,
+  token: string,
+  linkedTableId: string
+): Promise<LinkedRecord[]> {
+  const cacheKey = `${cfg.appToken}/${linkedTableId}`;
+  const cached = readCache(linkedRecordsCache, cacheKey);
+  if (cached) return cached;
+
+  const items: LinkedRecord[] = [];
   let pageToken = "";
   do {
     const query = new URLSearchParams({ page_size: "500" });
@@ -152,15 +191,29 @@ async function resolveLinkedRecordId(
       `/open-apis/bitable/v1/apps/${cfg.appToken}/tables/${linkedTableId}/records?${query}`
     );
     const data = recordsResponse.data as {
-      items?: Array<{ record_id?: string; fields?: Record<string, unknown> }>;
+      items?: LinkedRecord[];
       has_more?: boolean;
       page_token?: string;
     } | undefined;
-    const match = data?.items?.find((record) => containsText(record.fields, recordName));
-    if (match?.record_id) return match.record_id;
+    items.push(...(data?.items ?? []));
     pageToken = data?.has_more ? (data.page_token || "") : "";
   } while (pageToken);
 
+  writeCache(linkedRecordsCache, cacheKey, items);
+  return items;
+}
+
+async function resolveLinkedRecordId(
+  cfg: LarkBaseConfig,
+  token: string,
+  tableId: string,
+  fieldName: string,
+  recordName: string
+): Promise<string> {
+  const linkedTableId = await fetchLinkedTableId(cfg, token, tableId, fieldName);
+  const records = await fetchLinkedRecords(cfg, token, linkedTableId);
+  const match = records.find((record) => containsText(record.fields, recordName));
+  if (match?.record_id) return match.record_id;
   throw new Error(`リンク先に「${recordName}」のレコードが見つかりません`);
 }
 
@@ -181,7 +234,14 @@ export async function createBaseRecord(
   const cleaned: Record<string, LarkFieldValue> = {};
   for (const [k, v] of Object.entries(fields)) {
     if (v && typeof v === "object" && !Array.isArray(v) && "linkedRecordName" in v) {
-      cleaned[k] = [await resolveLinkedRecordId(cfg, token, tableId, k, v.linkedRecordName)];
+      try {
+        cleaned[k] = [await resolveLinkedRecordId(cfg, token, tableId, k, v.linkedRecordName)];
+      } catch (e) {
+        // リンク解決に失敗しても、そのフィールドを落としてレコード作成は続ける。
+        // ここで throw すると呼び出し側が Base Webhook にフォールバックし、utm・広告ID・保有資格など
+        // 他の全フィールドまで失われる（2026-08-12 に欠損レコードが実際に発生した）。
+        console.error(`Lark Base リンク解決に失敗したため「${k}」を省略します:`, e);
+      }
     } else if (v !== undefined && v !== "") {
       cleaned[k] = v as LarkFieldValue;
     }

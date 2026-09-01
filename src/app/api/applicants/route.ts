@@ -10,6 +10,10 @@ import {
 } from '@/lib/email/send-application-confirmation';
 import { sendApplicationSms } from '@/lib/sms/send-application-sms';
 import { describeMedia, getMediaName } from '@/lib/media-name';
+import {
+  resolveApplicationSourceMasterName,
+  resolveJobCategoryMasterName,
+} from '@/lib/lark-masters';
 import { resolveAdImageUrl, isLikelyAdId } from '@/lib/meta/resolveAdImage';
 import { sendMetaCapiLead } from '@/lib/meta/capi';
 import {
@@ -34,6 +38,9 @@ export type BaseWriteContext = {
   isCoupang: boolean;
   isTruck: boolean;
   isBus: boolean;
+  // タクシーLP（`/` と `/taxi`）からの応募。formOrigin が明示的に 'default' のときだけ true。
+  // default は formOrigin 未指定時のフォールバックも兼ねるため、推測では立てない。
+  isTaxi: boolean;
   truckLicensesLabel: string;
   mediaName: string;
   utm: UTMParams;
@@ -58,11 +65,16 @@ type DirectBaseWrite = {
 
 // 流入元(origin)に応じて、直書き先テーブルと日本語カラムへのマッピングを決める。
 // coupang は今回対象外なので null（＝呼び出し側で Base Webhook にフォールバック）。
-// media_name の「応募経由(マスタ連動)」リンクは張らず、utm系＋クリエイティブ等のテキストのみ書き込む方針。
+// 「応募経由(マスタ連動)」「マスタ-応募職種」はマスタへのリンク。名前の決め方は lark-masters.ts を参照。
+// 判定できない入力は undefined を返して空欄のまま残す（誤った経由・職種を書かない）。
 export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite | null {
   if (ctx.isCoupang) return null;
 
   const address = [ctx.form.municipalityName, ctx.form.townName].filter(Boolean).join('') || undefined;
+  const applicationSourceName = resolveApplicationSourceMasterName(ctx.utm);
+  const applicationSourceLink = applicationSourceName
+    ? { linkedRecordName: applicationSourceName }
+    : undefined;
 
   if (ctx.isMechanic) {
     // 経験者フォームの転職時期／資格は Base の専用 Select に保存する。
@@ -114,6 +126,9 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
         ad_image_url: ctx.adImageUrl,
         LP_URL: ctx.pageUrl,
         '流入媒体（自動判定）': ctx.mediaName,
+        // 整備士Baseの応募経由マスタは tblzMUVSWmTzmGfA。リンク先はフィールド定義から解決するので
+        // テーブルIDはここに書かない。職種は専用の Select「登録職種」で持っているため対象外。
+        '応募経由(マスタ連動)': applicationSourceLink,
       },
     };
   }
@@ -124,9 +139,14 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
     ctx.jobTimingLabel ? `転職時期: ${ctx.jobTimingLabel}` : '',
   ].filter(Boolean).join(' / ') || undefined;
 
-  // 応募職種マスタ側のレコード名。default（タクシーLP）は formOrigin 未指定時のフォールバック
-  // 値も兼ねており、想定外の導線からの応募に職種が付いてしまうため紐付けない。
-  const jobCategoryName = ctx.isTruck ? 'トラックドライバー' : ctx.isBus ? 'バスドライバー' : undefined;
+  // 応募職種マスタ側のレコード名。タクシーLPは1本で「タクシー」と「ハイヤー転向」の両方を受けるため、
+  // どちらの求人として扱うかはクリエイティブで振り分ける（lark-masters.ts）。
+  const jobCategoryName = resolveJobCategoryMasterName({
+    isTaxi: ctx.isTaxi,
+    isTruck: ctx.isTruck,
+    isBus: ctx.isBus,
+    utmCreative: ctx.utm.utm_creative,
+  });
   return {
     profile: 'ridejob',
     tableId: RIDEJOB_TABLE_ID,
@@ -158,6 +178,7 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
       ad_image_url: ctx.adImageUrl,
       LP_URL: ctx.pageUrl,
       '流入媒体（自動判定）': ctx.mediaName,
+      '応募経由(マスタ連動)': applicationSourceLink,
     },
   };
 }
@@ -281,6 +302,9 @@ export async function POST(request: NextRequest) {
     const isMechanic = formOrigin === 'mechanic' || /\/mechanic(\?|$|\/)?.*/.test(referer) || isMechanicNewgrad;
     const isTruck = formOrigin === 'truck';
     const isBus = formOrigin === 'bus';
+    // 'default' が明示的に送られてきたときだけタクシーLPと見なす。referer からは推測しない
+    // （formOrigin 未指定の想定外リクエストにタクシー職種が付いてしまうため）。
+    const isTaxi = formOrigin === 'default';
 
     // Determine the appropriate Lark webhook URLs based on environment (with sensible fallbacks)
     const larkWebhookUrlCommon = isProduction
@@ -380,6 +404,7 @@ export async function POST(request: NextRequest) {
       isCoupang,
       isTruck,
       isBus,
+      isTaxi,
       truckLicensesLabel,
       mediaName,
       utm: utmParams || {},
