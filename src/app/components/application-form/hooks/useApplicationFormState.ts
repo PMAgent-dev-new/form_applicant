@@ -666,6 +666,19 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
           utmParams = EMPTY_UTM_PARAMS;
         }
 
+        // ChatGPT広告のクリック識別子。OpenAI の Conversions API は oppref を自前で拾って
+        // 渡さないとクリックと突合できない（公式仕様）。query 優先、無ければ Cookie に残った値。
+        // ここも例外を外に出さない。取れなくても応募は通す。
+        let oppref: string | undefined;
+        try {
+          oppref =
+            new URLSearchParams(window.location.search).get('oppref')?.trim() ||
+            readAttribution().oppref;
+        } catch (e) {
+          console.warn('[attribution] oppref の取得に失敗しました（送信は継続します）', e);
+          oppref = undefined;
+        }
+
         const birthDateString = formData.birthDate.length === 8
           ? `${formData.birthDate.slice(0, 4)}-${formData.birthDate.slice(4, 6)}-${formData.birthDate.slice(6, 8)}`
           : '';
@@ -696,6 +709,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
           municipalityName,
           townName,
           utmParams,
+          oppref,
           experiment: { name: 'people_image', variant },
           formOrigin,
           metaEventId,
