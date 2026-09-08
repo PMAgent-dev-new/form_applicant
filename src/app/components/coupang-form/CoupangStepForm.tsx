@@ -40,7 +40,7 @@ export default function CoupangStepForm({
     handlePreviousStep,
     handleSubmit,
   } = useCoupangFormState();
-  const { jobPositionOptions, locationOptions, locationOptionsByJobPosition } = useCoupangStep1Options();
+  const { locationOptions, locationOptionsByJobPosition } = useCoupangStep1Options();
 
   const ageOptions = AGE_OPTIONS;
   const filteredLocationOptions = useMemo(() => {
@@ -58,7 +58,6 @@ export default function CoupangStepForm({
           stepImageSrc={stepImageSrcs.step1!}
           formData={formData}
           errors={errors}
-          jobPositionOptions={jobPositionOptions}
           locationOptions={filteredLocationOptions}
           onChange={handleChange}
           onNext={handleNextStep1}

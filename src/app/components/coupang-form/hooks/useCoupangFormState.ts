@@ -10,7 +10,7 @@ import {
   validateAllSteps,
 } from '../utils/coupangValidators';
 import { genEventId, trackMeta } from '@/lib/meta/pixel';
-import { COUPANG_META_CONTENT_NAME } from '../constants';
+import { COUPANG_META_CONTENT_NAME, COUPANG_FIXED_JOB_POSITION } from '../constants';
 
 declare global {
   interface Window {
@@ -23,7 +23,7 @@ const initialFormData: CoupangFormData = {
   fullName: '',
   fullNameKana: '',
   phoneNumber: '',
-  jobPosition: '',
+  jobPosition: COUPANG_FIXED_JOB_POSITION,
   desiredLocation: '',
   age: '',
   birthDate: '',

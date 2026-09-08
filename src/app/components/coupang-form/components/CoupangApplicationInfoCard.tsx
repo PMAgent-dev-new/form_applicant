@@ -3,13 +3,12 @@
 import Image from '@/app/components/AppImage';
 import FormCard from '../../application-form/components/FormCard';
 import { SelectInput } from './SelectInput';
-import type { CoupangFormData, CoupangFormErrors, JobPosition, DesiredLocation } from '../types';
+import type { CoupangFormData, CoupangFormErrors, DesiredLocation } from '../types';
 
 type CoupangApplicationInfoCardProps = {
   stepImageSrc: string;
   formData: CoupangFormData;
   errors: CoupangFormErrors;
-  jobPositionOptions: { value: JobPosition | ''; label: string }[];
   locationOptions: { value: DesiredLocation | ''; label: string }[];
   onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => void;
   onNext: () => void;
@@ -20,7 +19,6 @@ export default function CoupangApplicationInfoCard({
   stepImageSrc,
   formData,
   errors,
-  jobPositionOptions,
   locationOptions,
   onChange,
   onNext,
@@ -45,15 +43,6 @@ export default function CoupangApplicationInfoCard({
       </div>
 
       <div className="space-y-6">
-        <SelectInput
-          name="jobPosition"
-          label="希望職種"
-          value={formData.jobPosition}
-          onChange={onChange}
-          error={errors.jobPosition}
-          options={jobPositionOptions}
-        />
-
         <SelectInput
           name="desiredLocation"
           label="希望勤務地"
