@@ -1,3 +1,4 @@
+import { format } from 'node:util';
 import { NextRequest } from 'next/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -58,7 +59,8 @@ const ALLOWLISTED_ENV: Record<string, string> = {
   COUPANG_SMS_ENABLED: 'true',
 };
 
-function makeRequest(body: unknown) {
+/** 本文を文字列のまま渡す（壊れた JSON を送るため）。 */
+function makeRawRequest(rawBody: string) {
   // ハンドラが request.cookies を読むため、素の Request では落ちる。
   return new NextRequest('https://ridejob.jp/entry/api/coupang/applicants', {
     method: 'POST',
@@ -67,8 +69,35 @@ function makeRequest(body: unknown) {
       referer: 'https://ridejob.jp/entry/coupang',
       'user-agent': 'vitest',
     },
-    body: JSON.stringify(body),
+    body: rawBody,
   });
+}
+
+function makeRequest(body: unknown) {
+  return makeRawRequest(JSON.stringify(body));
+}
+
+function jsonResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+type ConsoleSpy = { mock: { calls: unknown[][] } };
+
+const SUMMARY_PREFIX = '[coupang] submission settled:';
+
+/** 応募1件ごとに出るサマリ行（`[coupang] submission settled:` ＋ 1行の JSON）の中身。 */
+function settledSummaries(logSpy: ConsoleSpy) {
+  return logSpy.mock.calls
+    .filter((call) => call[0] === SUMMARY_PREFIX)
+    .map((call) => JSON.parse(String(call[1])) as Record<string, unknown>);
+}
+
+/** console に実際に出る文字列（Error はスタック込み、オブジェクトは inspect 済み）に直す。 */
+function printed(...spies: ConsoleSpy[]) {
+  return spies.flatMap((spy) => spy.mock.calls.map((call) => format(call[0], ...call.slice(1))));
 }
 
 const coupangBody = {
@@ -105,6 +134,7 @@ describe('coupang applicants POST — outbound host allowlist', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   it('許可リスト外のホストへ送信しない', async () => {
@@ -227,5 +257,204 @@ describe('coupang applicants POST — outbound host allowlist', () => {
   it('許可リストの判定自体が機能する', () => {
     expect(ALLOWED_HOSTS.has('evil.example.com')).toBe(false);
     expect(hostOf('https://open.larksuite.com/x')).toBe('open.larksuite.com');
+  });
+
+  /**
+   * 副作用の失敗をサマリの failed に載せる。throw だけでなく HTTP エラーも数えないと、
+   * サマリ行が「失敗0件」と嘘をつく。共通ルート（`/api/applicants`）の同種のテストと同じ狙い。
+   */
+  describe('副作用の失敗を集計する', () => {
+    const allOk = () => jsonResponse({ ok: true, code: 0, StatusCode: 0 });
+
+    it('Meta CAPI が HTTP エラーなら meta-capi を失敗として集計する', async () => {
+      // sendMetaCapiLead は HTTP エラーでも throw せず ok:false を返す。戻り値を見ないと数えられない。
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      fetchSpy.mockImplementation(async (input: unknown) =>
+        hostOf(input) === 'graph.facebook.com'
+          ? jsonResponse({ error: { message: 'Invalid parameter' } }, 400)
+          : allOk(),
+      );
+      const { POST } = await import('./route');
+      const res = await POST(makeRequest(coupangBody));
+
+      expect(res.status).toBe(200);
+      expect(settledSummaries(logSpy)[0]?.failed).toEqual(['meta-capi']);
+    });
+
+    it('Meta CAPI が未設定ならスキップ扱いで、失敗に数えない', async () => {
+      // 未設定なら自動スキップする付加機能（src/app/api/health/route.ts）。数えると、
+      // 未設定の環境（プレビュー等）では全応募が failed になり、サマリが読まれなくなる。
+      vi.stubEnv('META_CAPI_ACCESS_TOKEN', '');
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const { POST } = await import('./route');
+      await POST(makeRequest(coupangBody));
+
+      expect(settledSummaries(logSpy)[0]?.failed).toEqual([]);
+      expect(fetchSpy.mock.calls.some((call) => hostOf(call[0]) === 'graph.facebook.com')).toBe(false);
+    });
+
+    it('Base Webhook が HTTP エラーなら lark-base-webhook を失敗として集計し、応答本文はログに出さない', async () => {
+      // 相手が送った応募データを引用して返す場合に備え、応答は code と msg だけを出す。
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      fetchSpy.mockImplementation(async (input: unknown) =>
+        String(input).includes('/anycross/trigger/')
+          ? jsonResponse({ code: 1254302, msg: 'permission denied', data: { full_name: coupangBody.fullName } }, 403)
+          : allOk(),
+      );
+      const { POST } = await import('./route');
+      const res = await POST(makeRequest(coupangBody));
+
+      expect(res.status).toBe(200);
+      const logged = printed(errorSpy).join('\n');
+      expect(logged).toContain('Failed to send to Lark Base Webhook (http=403 code=1254302');
+      expect(logged).not.toContain(coupangBody.fullName);
+      expect(settledSummaries(logSpy)[0]?.failed).toEqual(['lark-base-webhook']);
+    });
+
+    it('Base Webhook が HTTP200 で code≠0 を返しても失敗には数えず、警告だけ残す', async () => {
+      // Base 自動化 Webhook（anycross）が成功時に何を返すかは一次情報が無い。決めつけると誤警報になりうるので、
+      // HTTP ステータスで判定し（PR #79・#80 と同じ）、code は警告として見えるようにする。
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      fetchSpy.mockImplementation(async (input: unknown) =>
+        String(input).includes('/anycross/trigger/')
+          ? jsonResponse({ code: 1254302, msg: 'permission denied' })
+          : allOk(),
+      );
+      const { POST } = await import('./route');
+      await POST(makeRequest(coupangBody));
+
+      expect(printed(warnSpy).join('\n')).toContain('code=1254302');
+      expect(settledSummaries(logSpy)[0]?.failed).toEqual([]);
+    });
+
+    it('Lark 通知の本文を読んでいる途中でタイムアウトしたら、成功扱いにせず失敗として集計する', async () => {
+      // ヘッダだけ返して本文が止まる相手。本文の読み取り失敗を握りつぶすと、code を確かめないまま
+      // HTTP 200 だけで「sent successfully」と記録される。
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      fetchSpy.mockImplementation(async (input: unknown) => {
+        if (!String(input).includes('/bot/v2/hook/')) return allOk();
+        const stalled = new ReadableStream({
+          start(controller) {
+            controller.error(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+          },
+        });
+        return new Response(stalled, { status: 200, headers: { 'content-type': 'application/json' } });
+      });
+      const { POST } = await import('./route');
+      const res = await POST(makeRequest(coupangBody));
+
+      expect(res.status).toBe(200);
+      expect(printed(errorSpy).join('\n')).toContain('lark-notification threw and was swallowed: TimeoutError');
+      expect(printed(logSpy).join('\n')).not.toContain('Lark notification sent successfully');
+      expect(settledSummaries(logSpy)[0]?.failed).toEqual(['lark-notification']);
+    });
+  });
+
+  describe('サマリ行', () => {
+    it('応募1件につき1行（JSON）で出す（全経路が成功なら failed は空）', async () => {
+      // オブジェクトのまま渡すと util.inspect が複数行に折り返し、行単位の grep で failed が見えなくなる。
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const { POST } = await import('./route');
+      await POST(makeRequest(coupangBody));
+
+      const lines = printed(logSpy).filter((line) => line.startsWith(SUMMARY_PREFIX));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).not.toContain('\n');
+      expect(settledSummaries(logSpy)[0]).toMatchObject({ mode: 'full', failed: [] });
+    });
+
+    it('Baseのみ経路（LARK_SEND_BASE_ONLY=true）でも1行出し、Base の失敗も載せる', async () => {
+      vi.stubEnv('LARK_SEND_BASE_ONLY', 'true');
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      fetchSpy.mockImplementation(async () => jsonResponse({ code: 1254302, msg: 'permission denied' }, 403));
+      const { POST } = await import('./route');
+      const res = await POST(makeRequest(coupangBody));
+
+      expect(res.status).toBe(200);
+      const lines = printed(logSpy).filter((line) => line.startsWith(SUMMARY_PREFIX));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).not.toContain('\n');
+      expect(settledSummaries(logSpy)[0]).toMatchObject({
+        mode: 'base-only',
+        tasks: 1,
+        failed: ['lark-base-webhook'],
+      });
+      // 通知・メール・SMS・CAPI は送らない
+      expect(fetchSpy.mock.calls.every((call) => String(call[0]).includes('/anycross/trigger/'))).toBe(true);
+    });
+  });
+
+  describe('ログに個人情報を出さない', () => {
+    // V8 の JSON の SyntaxError は message 自体に入力の断片を載せる（Node v25.3.0 で実測）。
+    // エラーを丸ごと（あるいは name と message だけでも）ログに出すと、そのまま漏れる。
+    const brokenBody = '{"fullName":TANAKA TARO,"email":"taro@example.com"}';
+    const engineEchoesJsonInput = (() => {
+      try {
+        JSON.parse(brokenBody);
+      } catch (e) {
+        return e instanceof Error && e.message.includes('TANAKA');
+      }
+      return false;
+    })();
+
+    // 断片を載せない処理系では、この経路の漏れ自体が起きない。空振りで通すと気づけないので skip で見せる
+    // （CI は Node 20）。処理系の文言に依存しない確認は、下の「副作用が SyntaxError を投げても」で行う。
+    it.skipIf(!engineEchoesJsonInput)('応募本文の JSON が壊れていても、氏名などの断片をログに出さない', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const { POST } = await import('./route');
+      const res = await POST(makeRawRequest(brokenBody));
+
+      expect(res.status).toBe(500);
+      const logged = printed(errorSpy).join('\n');
+      expect(logged).toContain('SyntaxError');
+      expect(logged).not.toContain('TANAKA');
+    });
+
+    it('副作用が SyntaxError を投げても、message（入力の断片を含みうる）をログに出さない', async () => {
+      // name と message に絞っても、断片は message 側に残る。処理系の文言に依存しないよう、
+      // 断片入りの SyntaxError をこちらで作って投げる。
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      fetchSpy.mockImplementation(async (input: unknown) => {
+        if (String(input).includes('/bot/v2/hook/')) {
+          throw new SyntaxError(
+            `Unexpected token, "${coupangBody.fullName} ${coupangBody.phoneNumber}"... is not valid JSON`,
+          );
+        }
+        return jsonResponse({ ok: true, code: 0, StatusCode: 0 });
+      });
+      const { POST } = await import('./route');
+      const res = await POST(makeRequest(coupangBody));
+
+      expect(res.status).toBe(200);
+      const logged = printed(errorSpy).join('\n');
+      expect(logged).toContain('lark-notification threw and was swallowed: SyntaxError');
+      expect(logged).not.toContain(coupangBody.fullName);
+      expect(logged).not.toContain(coupangBody.phoneNumber);
+      expect(settledSummaries(logSpy)[0]?.failed).toEqual(['lark-notification']);
+    });
+
+    it('通常の応募で、応募者の氏名・メール・電話をログに出さない', async () => {
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { POST } = await import('./route');
+      await POST(makeRequest(coupangBody));
+
+      const lines = printed(logSpy, errorSpy, warnSpy)
+        // メール送信ライブラリのドライランは宛先確認のために宛先を出す（本番では EMAIL_DRY_RUN を立てない）。
+        .filter((line) => !line.startsWith('[EMAIL_DRY_RUN]'));
+      // 空振り防止: サマリ行まで到達している
+      expect(lines.some((line) => line.startsWith(SUMMARY_PREFIX))).toBe(true);
+      for (const pii of [coupangBody.email, coupangBody.phoneNumber, coupangBody.fullName]) {
+        expect(lines.filter((line) => line.includes(pii)), `ログに ${pii} が出ている`).toEqual([]);
+      }
+    });
   });
 });

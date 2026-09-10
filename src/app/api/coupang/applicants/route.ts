@@ -10,6 +10,12 @@ import { sendMetaCapiLead } from '@/lib/meta/capi';
 import { sendApplicationConfirmationEmail } from '@/lib/email/send-application-confirmation';
 import { sendApplicationSms } from '@/lib/sms/send-application-sms';
 import { BASE_PATH } from '@/lib/basePath';
+import {
+  createTaskTracker,
+  describeError,
+  LARK_FETCH_TIMEOUT_MS,
+  readLarkResult,
+} from '@/lib/side-effects';
 
 /**
  * referer が取れないときに CAPI へ渡す既定の event_source_url。
@@ -19,12 +25,6 @@ import { BASE_PATH } from '@/lib/basePath';
 const COUPANG_EVENT_SOURCE_URL = BASE_PATH
   ? 'https://ridejob.jp/entry/coupang'
   : 'https://ridejob.pmagent.jp/coupang';
-
-/**
- * Lark（IM通知・Base Webhook）への送信タイムアウト。
- * 既存の `src/app/api/entry-bp/route.ts` に合わせて 5 秒。
- */
-const LARK_FETCH_TIMEOUT_MS = 5000;
 
 type UTMParams = {
   utm_source?: string;
@@ -41,6 +41,37 @@ type CoupangSubmission = CoupangFormData & {
   metaEventId?: string;
 };
 
+/**
+ * Base 自動化 Webhook へ送る（通常経路・Baseのみ経路の両方で使う）。
+ * 失敗は HTTP ステータスで判定する。HTTP 200 で code が 0 でない応答は、Base 自動化 Webhook が
+ * 成功時に何を返すかの一次情報が無く、失敗と決めつけると誤警報になりうるので警告だけ残す（共通ルートと同じ）。
+ * 応答本文はログに出さない（readLarkResult が code と msg に絞る）。
+ * 例外（タイムアウト・通信エラー）は呼び出し側へそのまま投げる。
+ */
+async function sendToBaseWebhook(
+  url: string,
+  payload: Record<string, unknown>,
+  markFailed: (label: string) => void
+): Promise<void> {
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
+  });
+  const result = await readLarkResult(resp);
+  if (!resp.ok) {
+    markFailed('lark-base-webhook');
+    console.error(`[coupang] Failed to send to Lark Base Webhook (${result.detail})`);
+    return;
+  }
+  if (!result.ok) {
+    console.warn(
+      `[coupang] Lark Base Webhook: HTTP ${resp.status} だが code が 0 ではない（${result.detail}）。応答形式が未確認のため失敗には数えない`
+    );
+  }
+  console.log('[coupang] Lark Base webhook triggered successfully');
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -119,6 +150,12 @@ export async function POST(request: NextRequest) {
       console.log('Resolved Meta ad image (coupang):', { adId, adImageUrl: adImageUrl ? '(取得済)' : '(なし)', adCreativeId });
     }
 
+    // 副作用（Lark通知・Base送信・メール・SMS・CAPI）の失敗を1箇所に集める（src/lib/side-effects.ts）。
+    // throw だけでなく **HTTPエラーやLarkの非0コードも** markFailed で入れる。入れないと、
+    // サマリ行が「失敗0件」と嘘をつく。
+    const { failures: taskFailures, markFailed, trackTask } = createTaskTracker('[coupang]');
+    let taskCount = 0;
+
     // 並列送信
     if (!sendBaseOnly) {
       const tasks: Promise<void>[] = [];
@@ -128,29 +165,7 @@ export async function POST(request: NextRequest) {
       // allSettled は握りつぶし **ログが1行も出ない**。
       // 2026-09-10 のE2Eで、Lark通知もBase送信も無言のまま飛んでいないことが判明した
       // （SMSのログだけが出て、通知系は成功ログも失敗ログも出ていなかった）。
-      // 例外を必ず記録し、最後にまとめて可視化する。
-      const taskFailures: string[] = [];
-      // 失敗を1箇所に集約する。throw だけでなく **HTTPエラーやLarkの非0コードも**
-      // ここへ入れないと、サマリ行が「失敗0件」と嘘をつく。
-      const markFailed = (label: string) => {
-        if (!taskFailures.includes(label)) taskFailures.push(label);
-      };
-      // run() は同期 throw しうるので Promise.resolve().then() でくるむ。
-      // 直接 run().then(...) にすると同期 throw が外側 catch まで飛び、
-      // 応募そのものを500で落としてしまう。
-      const trackTask = (label: string, run: () => Promise<unknown>): Promise<void> =>
-        Promise.resolve()
-          .then(run)
-          .then(
-            () => undefined,
-            (e: unknown) => {
-              markFailed(label);
-              // undici の fetch 失敗は message が 'fetch failed' としか出ないので cause まで出す。
-              const detail = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
-              const cause = e instanceof Error && e.cause ? ` cause=${String((e.cause as { code?: string })?.code ?? e.cause)}` : '';
-              console.error(`[coupang] ${label} threw and was swallowed: ${detail}${cause}`);
-            }
-          );
+      // 各タスクは trackTask でくるみ、例外を必ず記録する。
 
       // Lark 送信タスク
       if (larkWebhookUrl) {
@@ -186,19 +201,15 @@ export async function POST(request: NextRequest) {
               body: JSON.stringify(larkPayload),
               // タイムアウトが無いと、Lark 側が応答しないときに Promise.allSettled が
               // 張り付いたまま関数が実行上限で落ち、ログが1行も残らない。
-              // 既存の entry-bp ルートと同じ 5 秒に揃える。
               signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
             });
             // Lark の Webhook は **HTTP 200 でも body の code が非0なら失敗**（bot除外・トークン失効など）。
             // 200 だけ見て成功扱いにすると、届いていないのに「sent successfully」と記録される。
-            const result = (await resp.json().catch(() => ({}))) as { code?: number; msg?: string };
-            const larkRejected =
-              typeof result?.code !== 'undefined' && result.code !== 0;
-            if (!resp.ok || larkRejected) {
+            // 本文の読み取り中のタイムアウトも readLarkResult が握りつぶさずに投げる。
+            const result = await readLarkResult(resp);
+            if (!result.ok) {
               markFailed('lark-notification');
-              console.error(
-                `[coupang] Failed to send notification to Lark (http=${resp.status} code=${result?.code ?? 'n/a'} msg=${result?.msg ?? 'n/a'})`
-              );
+              console.error(`[coupang] Failed to send notification to Lark (${result.detail})`);
             } else {
               console.log('[coupang] Lark notification sent successfully');
             }
@@ -239,21 +250,7 @@ export async function POST(request: NextRequest) {
         } as Record<string, unknown>;
 
         tasks.push(
-          trackTask('lark-base-webhook', async () => {
-            const resp = await fetch(baseWebhookUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(basePayload),
-              signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
-            });
-            if (!resp.ok) {
-              markFailed('lark-base-webhook');
-              const errorBody = await resp.text().catch(() => '');
-              console.error(`[coupang] Failed to send to Lark Base Webhook (${resp.status}): ${errorBody.slice(0, 300)}`);
-            } else {
-              console.log('[coupang] Lark Base webhook triggered successfully');
-            }
-          })
+          trackTask('lark-base-webhook', () => sendToBaseWebhook(baseWebhookUrl, basePayload, markFailed))
         );
       }
 
@@ -328,8 +325,8 @@ export async function POST(request: NextRequest) {
         // クロージャに入ると typeof による絞り込みが効かないので、ここで確定させる。
         const capiEventId = submissionData.metaEventId;
         tasks.push(
-          trackTask('meta-capi', () =>
-            sendMetaCapiLead({
+          trackTask('meta-capi', async () => {
+            const r = await sendMetaCapiLead({
               eventId: capiEventId,
               // referer が取れない場合でも website イベントとして成立させる。
               eventSourceUrl: capiReferer || COUPANG_EVENT_SOURCE_URL,
@@ -343,25 +340,20 @@ export async function POST(request: NextRequest) {
               fbc: request.cookies.get('_fbc')?.value,
               clientIpAddress: capiClientIp || undefined,
               clientUserAgent: capiUserAgent || undefined,
-            })
-          )
+            });
+            // 送信失敗（HTTPエラー・通信エラー）はライブラリがログを出して ok:false を返す。
+            // throw しないので、ここで数えないとサマリが「失敗0件」になる。
+            // 未設定（skipped）は数えない。未設定なら自動スキップする付加機能なので（health/route.ts）、
+            // 数えるとその環境では全応募が failed になり、サマリが読まれなくなる。
+            if (!r.ok && !r.skipped) markFailed('meta-capi');
+          })
         );
       }
 
       await Promise.allSettled(tasks);
-
-      // 応募1件につき必ず1行出す。無言で壊れていることを検知するための足跡。
-      console.log('[coupang] submission settled:', {
-        mode: 'full',
-        tasks: tasks.length,
-        failed: taskFailures,
-        larkWebhookConfigured: Boolean(larkWebhookUrl),
-        baseWebhookConfigured: Boolean(baseWebhookUrl),
-        emailEnabled: process.env.COUPANG_EMAIL_ENABLED === 'true',
-        smsEnabled: process.env.COUPANG_SMS_ENABLED === 'true',
-      });
+      taskCount = tasks.length;
     } else {
-      // Baseのみ送信（テストモード）
+      // Baseのみ送信（テストモード）。例外（タイムアウト等）は従来どおり外側 catch で500にする。
       if (baseWebhookUrl) {
         const userAgent = request.headers.get('user-agent') || '';
         const clientIp = (request.headers.get('x-forwarded-for') || '').split(',')[0]?.trim() || '';
@@ -393,29 +385,31 @@ export async function POST(request: NextRequest) {
           form_origin: 'coupang_rocketnow',
         } as Record<string, unknown>;
 
-        const resp = await fetch(baseWebhookUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(basePayload),
-          signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
-        });
-        if (!resp.ok) {
-          const errorBody = await resp.text().catch(() => '');
-          console.error(`[coupang] Failed to send to Lark Base Webhook (${resp.status}): ${errorBody.slice(0, 300)}`);
-        } else {
-          console.log('[coupang] Lark Base webhook triggered successfully');
-        }
-        // Baseのみ経路でも必ず足跡を残す（この行が無い＝無言の失敗、と読めるようにする）
-        console.log('[coupang] submission settled:', {
-          mode: 'base-only',
-          baseWebhookConfigured: true,
-        });
+        await sendToBaseWebhook(baseWebhookUrl, basePayload, markFailed);
+        taskCount = 1;
       }
     }
 
+    // 応募1件につき必ず1行出す（Baseのみ経路も含む）。無言で壊れていることを検知するための足跡。
+    // この行が無い応募は、途中で例外に落ちたか、必須の Webhook URL が未設定で 500 を返したか
+    // （どちらも専用の error ログが出る）、実行上限で打ち切られている。
+    // オブジェクトのまま渡すと util.inspect が複数行に折り返し、行単位の grep で failed が見えなくなる。
+    // JSON にして物理的に1行にする。
+    console.log('[coupang] submission settled:', JSON.stringify({
+      mode: sendBaseOnly ? 'base-only' : 'full',
+      tasks: taskCount,
+      failed: taskFailures,
+      larkWebhookConfigured: Boolean(larkWebhookUrl),
+      baseWebhookConfigured: Boolean(baseWebhookUrl),
+      emailEnabled: process.env.COUPANG_EMAIL_ENABLED === 'true',
+      smsEnabled: process.env.COUPANG_SMS_ENABLED === 'true',
+    }));
+
     return NextResponse.json({ message: 'Application submitted successfully!' }, { status: 200 });
   } catch (error) {
-    console.error('Error processing Coupang application:', error);
+    // エラーオブジェクトを丸ごと渡さない。応募本文の JSON が壊れていると、
+    // SyntaxError の message に氏名・メール・電話の断片が載る（describeError 参照）。
+    console.error('Error processing Coupang application:', describeError(error));
     return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
   }
 }
