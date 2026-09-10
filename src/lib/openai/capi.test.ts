@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildConversionEvent, hashEmail, hashPhone } from './capi';
 
 const BASE = { eventId: 'evt-1', timestampMs: 1773892800000 };
@@ -53,5 +53,32 @@ describe('ハッシュ化の正規化', () => {
     expect(hashPhone('123')).toBeUndefined();
     expect(hashPhone('0912345678901234567')).toBeUndefined();
     expect(hashPhone('')).toBeUndefined();
+  });
+});
+
+describe('sendOpenAiConversion の失敗ログ', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it('通信エラーでは ok: false を返し、エラーオブジェクトではなく1行の文字列（describeError）でログに出す', async () => {
+    // PIXEL_ID・API_KEY はモジュール読み込み時に取り込まれるので、env を立ててから読み直す。
+    vi.stubEnv('OPENAI_ADS_PIXEL_ID', 'test-pixel');
+    vi.stubEnv('OPENAI_ADS_CAPI_KEY', 'test-key');
+    vi.resetModules();
+    const cause = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('fetch failed', { cause });
+      }),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { sendOpenAiConversion } = await import('./capi');
+
+    await expect(sendOpenAiConversion({ eventId: 'e1', oppref: 'gAAAAAb123' })).resolves.toEqual({ ok: false });
+    expect(errorSpy.mock.calls).toEqual([['[OpenAI CAPI] 送信でエラー', 'TypeError: fetch failed cause=ECONNRESET']]);
   });
 });

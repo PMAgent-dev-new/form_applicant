@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import { describeError } from '../describe-error';
 
 /**
  * OpenAI（ChatGPT広告）Conversions API。サーバー側から応募完了を送る。
@@ -144,7 +145,8 @@ export async function sendOpenAiConversion(
     console.log('[OpenAI CAPI] 送信成功', event.id, event.oppref ? 'oppref=あり' : 'oppref=なし');
     return { ok: true, status: res.status };
   } catch (e) {
-    console.error('[OpenAI CAPI] 送信でエラー', e);
+    // エラーオブジェクトを丸ごと渡さない（describeError 参照）。タイムアウトは 'TimeoutError: ...' になる。
+    console.error('[OpenAI CAPI] 送信でエラー', describeError(e));
     return { ok: false };
   }
 }
