@@ -4,6 +4,8 @@
 // LARK_DOMAIN_<PROFILE> を読む（例: MECHANIC, RIDEJOB）。
 // Webhook 方式と異なり、フィールドを直接指定して書けるのが利点。
 
+import { describeError } from "./describe-error";
+
 // 認証プロファイル。投入先 Base（Bitable アプリ）ごとに異なるアプリ資格情報を使う。
 //   mechanic … 求職者DB👷‍♂️ / IDOM_新卒2027 等（既存 APP_*_MECHANIC）
 //   ridejob  … 求職者DB🚕 等（APP_*_RIDEJOB）
@@ -262,7 +264,8 @@ export async function createBaseRecord(
         // リンク解決に失敗しても、そのフィールドを落としてレコード作成は続ける。
         // ここで throw すると呼び出し側が Base Webhook にフォールバックし、utm・広告ID・保有資格など
         // 他の全フィールドまで失われる（2026-08-12 に欠損レコードが実際に発生した）。
-        console.error(`Lark Base リンク解決に失敗したため「${k}」を省略します:`, e);
+        // エラーオブジェクトは丸ごと渡さない（describeError 参照）。
+        console.error(`Lark Base リンク解決に失敗したため「${k}」を省略します:`, describeError(e));
       }
     } else if (v !== undefined && v !== "") {
       cleaned[k] = v as LarkFieldValue;
