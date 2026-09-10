@@ -15,6 +15,8 @@ describe('resolveApplicationSourceMasterName', () => {
     ['google', 'cpc', 'google(ad)'],
     ['google', 'search', 'google(ad)'],
     ['google', 'organic', 'google(organic)'],
+    ['openai', 'cpc', 'openai(ad)'],
+    ['openai', 'ad', 'openai(ad)'],
     ['stanby', 'cpc', 'スタンバイ'],
   ])('utm_source=%s / utm_medium=%s → %s', (utm_source, utm_medium, expected) => {
     expect(resolveApplicationSourceMasterName({ utm_source, utm_medium })).toBe(expected);
@@ -39,6 +41,14 @@ describe('resolveApplicationSourceMasterName', () => {
   it('マスタに存在しないオーガニック名は作らない', () => {
     expect(resolveApplicationSourceMasterName({ utm_source: 'meta', utm_medium: 'organic' })).toBeUndefined();
     expect(resolveApplicationSourceMasterName({ utm_source: 'fb', utm_medium: 'organic' })).toBe('fb(organic)');
+  });
+
+  // ChatGPT広告は utm、回答内引用からの自然流入は referrer で拾う（media-name.ts）。
+  // マスタに openai(organic) は無いので、organic は空欄のまま残す。
+  it('ChatGPT広告は openai(ad)、organic はマスタに無いので空欄', () => {
+    expect(resolveApplicationSourceMasterName({ utm_source: 'openai', utm_medium: 'cpc' })).toBe('openai(ad)');
+    expect(resolveApplicationSourceMasterName({ utm_source: ' OpenAI ', utm_medium: ' CPC ' })).toBe('openai(ad)');
+    expect(resolveApplicationSourceMasterName({ utm_source: 'openai', utm_medium: 'organic' })).toBeUndefined();
   });
 
   it('未知の流入元・未知のmediumは undefined（空欄のまま残す）', () => {
