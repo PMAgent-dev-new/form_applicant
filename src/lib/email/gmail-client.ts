@@ -13,6 +13,14 @@
  */
 
 import { JWT } from 'google-auth-library';
+import { describeError } from '../describe-error';
+
+/**
+ * Gmail への1リクエストあたりのタイムアウト（トークン取得・送信のそれぞれに効く）。
+ * 他の外部送信（Lark・OpenAI CAPI）と同じ 5 秒。応募APIは全タスクを await してからレスポンスを返すため、
+ * 無いと相手が応答しないときに Promise.allSettled が張り付き、サマリ行も出ないまま実行上限で打ち切られる。
+ */
+const GMAIL_TIMEOUT_MS = 5000;
 
 type ServiceAccountKey = {
   client_email: string;
@@ -67,6 +75,14 @@ function getJwtClient(impersonateEmail: string): JWT {
     key: key.private_key,
     scopes: ['https://www.googleapis.com/auth/gmail.send'],
     subject: impersonateEmail,
+    // トークン取得（oauth2.googleapis.com）は google-auth-library 内部の gaxios が行い、既定では
+    // タイムアウトが無い。相手が応答しないと getAccessToken() が返らず、取得中のリクエストは
+    // ライブラリがまとめるため、同じインスタンスの後続の応募もそれを待ち続ける（2026-09-10 に手元で実測）。
+    // 無応答はこの時間で打ち切られ、再試行されない（gaxios が Node では node-fetch を使うため。
+    // ネイティブ fetch を使う形に変わると、無応答も再試行されて最大3回になる）。接続断・5xx は既定どおり再試行する。
+    // 再試行は前の試行の締切が残っていればそれを引き継ぎ、過ぎていれば新たにこの時間で切れる
+    // （合計の上限は、毎回締切の直前に 5xx が返る極端な場合で約22秒）。
+    transporterOptions: { timeout: GMAIL_TIMEOUT_MS },
   });
   cachedJwtSubject = impersonateEmail;
   return cachedJwtClient;
@@ -154,7 +170,7 @@ export function buildMimeMessage(opts: {
 
 /**
  * Gmail API の users.messages.send を呼んでメールを送信する。
- * 失敗時は throw する(呼び出し側で握り潰す前提)。
+ * 失敗時は throw する(呼び出し側で握り潰す前提)。トークン取得・送信とも GMAIL_TIMEOUT_MS で打ち切る。
  */
 export async function sendGmailMessage(opts: {
   to: string;
@@ -168,8 +184,16 @@ export async function sendGmailMessage(opts: {
   htmlBody: string;
 }): Promise<{ messageId?: string }> {
   const auth = getJwtClient(opts.from);
-  const tokenResp = await auth.getAccessToken();
-  const accessToken = tokenResp.token;
+  let accessToken: string | null | undefined;
+  try {
+    const tokenResp = await auth.getAccessToken();
+    accessToken = tokenResp.token;
+  } catch (e) {
+    // gaxios の打ち切りは 'The operation was aborted.' としか出ず、どこで止まったか分からない。
+    // 送信側のタイムアウト（TimeoutError）と区別できるよう、トークン取得の失敗だと分かる文言にする。
+    // gaxios は応答本文が JSON でないと本文をそのまま message に入れる（HTML のエラーページ等）ので、先頭300字に切る。
+    throw new Error(`Failed to obtain Gmail API access token: ${describeError(e).slice(0, 300)}`);
+  }
   if (!accessToken) {
     throw new Error('Failed to obtain Gmail API access token.');
   }
@@ -184,13 +208,17 @@ export async function sendGmailMessage(opts: {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ raw }),
+    signal: AbortSignal.timeout(GMAIL_TIMEOUT_MS),
   });
 
   if (!resp.ok) {
-    const errorBody = await resp.text();
-    throw new Error(`Gmail API send failed (${resp.status}): ${errorBody}`);
+    // 本文の読み取り中にタイムアウトしても、HTTP ステータスは残す。
+    const errorBody = await resp.text().catch(() => '');
+    throw new Error(`Gmail API send failed (${resp.status}): ${errorBody.slice(0, 300)}`);
   }
 
-  const json = (await resp.json()) as { id?: string };
+  // 2xx なら送信は成立している。messageId の読み取りがタイムアウトしても送信失敗にはしない
+  // （失敗と数えると、届いているのに未送信として記録される）。
+  const json = (await resp.json().catch(() => ({}))) as { id?: string };
   return { messageId: json.id };
 }

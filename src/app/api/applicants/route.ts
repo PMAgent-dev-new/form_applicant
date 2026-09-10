@@ -24,6 +24,7 @@ import {
   type LarkLinkedRecordName,
   type LarkProfile,
 } from '@/lib/larkBase';
+import { describeError } from '@/lib/describe-error';
 
 // Bitable 直書きの投入先テーブル（env で上書き可）。
 //   default / bus       → 求職者DB🚕   （ridejob base：APP_*_RIDEJOB）
@@ -191,28 +192,6 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
  * ログが1行も残らない。
  */
 const LARK_FETCH_TIMEOUT_MS = 5000;
-
-/**
- * 例外をログ用の1行にする。**エラーオブジェクトを丸ごと console.error に渡さないこと。**
- *
- * V8 の JSON の SyntaxError は message 自体に入力の断片を載せる
- * （例: `Unexpected token 'a', "taro@exampl"... is not valid JSON`。2026-09-10 に Node で実測）。
- * name と message に絞っても断片は message 側に残るので、SyntaxError だけは message を出さない。
- * 応募本文の JSON が壊れていたときに、氏名・メール・電話の断片がログに載るのを防ぐ。
- *
- * undici の fetch 失敗は message が 'fetch failed' としか出ないので cause まで出す。
- */
-function describeError(e: unknown): string {
-  const describe = (x: unknown): string => {
-    if (!(x instanceof Error)) return String(x);
-    if (x.name === 'SyntaxError') return `${x.name}: (入力の断片を含みうるため message は省略)`;
-    return `${x.name}: ${x.message}`;
-  };
-  if (!(e instanceof Error) || !e.cause) return describe(e);
-  const causeCode = (e.cause as { code?: unknown }).code;
-  const causeText = causeCode === undefined || causeCode === null ? describe(e.cause) : String(causeCode);
-  return `${describe(e)} cause=${causeText}`;
-}
 
 /**
  * Lark の Webhook（IM通知・Base 自動化）の応答を読む。

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { hangingFetch, shortenAbortSignalTimeout, stalledBodyFetch } from '../testing/fetch-timeout';
 
 /**
  * Meta Conversions API のペイロード形状を固定するテスト。
@@ -85,6 +86,40 @@ describe('sendMetaCapiLead のペイロード', () => {
     expect(event.event_id).toBe('e4');
     expect(event.action_source).toBe('website');
     expect(event.event_name).toBe('Lead');
+  });
+});
+
+describe('sendMetaCapiLead のタイムアウト', () => {
+  // 応募APIは全タスクを await してからレスポンスを返すので、ここが返らないと Promise.allSettled が張り付き、
+  // サマリ行も出ないまま関数が実行上限で打ち切られる。5秒で打ち切り、ok: false で返すことを固定する。
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it('Meta が応答しないとき、5秒のタイムアウトで打ち切って ok: false を返す', async () => {
+    const timeoutSpy = shortenAbortSignalTimeout();
+    const fetchSpy = hangingFetch();
+    vi.stubGlobal('fetch', fetchSpy);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { sendMetaCapiLead } = await loadCapi();
+
+    await expect(sendMetaCapiLead({ eventId: 't1' })).resolves.toEqual({ ok: false });
+
+    expect(timeoutSpy).toHaveBeenCalledWith(5000);
+    expect(fetchSpy.mock.calls[0]?.[1]?.signal).toBe(timeoutSpy.mock.results[0]?.value);
+    // エラーオブジェクトを丸ごと渡さず、1行の文字列にする（describeError）
+    expect(errorSpy.mock.calls).toEqual([[expect.stringContaining('TimeoutError')]]);
+  });
+
+  it('エラー応答の本文の読み取り中にタイムアウトしても、HTTP ステータスを残して ok: false を返す', async () => {
+    shortenAbortSignalTimeout();
+    vi.stubGlobal('fetch', stalledBodyFetch(500));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { sendMetaCapiLead } = await loadCapi();
+
+    await expect(sendMetaCapiLead({ eventId: 't2' })).resolves.toEqual({ ok: false, status: 500 });
   });
 });
 

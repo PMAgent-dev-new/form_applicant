@@ -129,6 +129,20 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     expect(hosts.has('graph.facebook.com')).toBe(true);
   });
 
+  it('Lark・Base・SMS・CAPI の fetch はすべてタイムアウトの signal を渡す', async () => {
+    // 1本でも signal が無いと、その相手が無応答のとき allSettled が張り付き、
+    // サマリ行も出ないまま実行上限で打ち切られる。SMS・CAPI の送信本体はライブラリ側（src/lib）にある。
+    const { POST } = await import('./route');
+    await POST(makeRequest(coupangBody));
+
+    const hosts = new Set(fetchSpy.mock.calls.map((call) => hostOf(call[0])));
+    expect(hosts).toEqual(new Set(['open.larksuite.com', 'leomeet.pmagent.jp', 'graph.facebook.com']));
+    const withoutSignal = fetchSpy.mock.calls
+      .filter((call) => !((call[1] as RequestInit | undefined)?.signal instanceof AbortSignal))
+      .map((call) => hostOf(call[0]));
+    expect(withoutSignal, `signal の無い fetch: ${withoutSignal.join(', ')}`).toEqual([]);
+  });
+
   it('SMSは coupang チャネルで送る(eeasy 側の登録名と一致させる)', async () => {
     const { POST } = await import('./route');
     await POST(makeRequest(coupangBody));

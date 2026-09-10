@@ -374,6 +374,22 @@ describe('applicants POST — outbound host allowlist', () => {
       }
     });
 
+    it('Lark 通知・Base Webhook・SMS・Meta CAPI の fetch はすべてタイムアウトの signal を渡す', async () => {
+      // 1本でも signal が無いと、その相手が無応答のとき allSettled が張り付き、サマリ行も出ないまま実行上限で落ちる。
+      // SMS・CAPI の送信本体はライブラリ側（src/lib）にあるので、ルート経由でも付いていることを確かめる。
+      // このテストではメールは EMAIL_DRY_RUN で送らず、OpenAI CAPI（oppref なし）と Base 直書き（認証情報なし）は発火しない。
+      vi.spyOn(console, 'log').mockImplementation(() => {});
+      const { POST } = await import('./route');
+      await POST(makeRequest(applicantBody));
+
+      const hosts = new Set(fetchSpy.mock.calls.map((call) => hostOf(call[0])));
+      expect(hosts).toEqual(new Set(['open.larksuite.com', 'leomeet.pmagent.jp', 'graph.facebook.com']));
+      const withoutSignal = fetchSpy.mock.calls
+        .filter((call) => !((call[1] as RequestInit | undefined)?.signal instanceof AbortSignal))
+        .map((call) => hostOf(call[0]));
+      expect(withoutSignal, `signal の無い fetch: ${withoutSignal.join(', ')}`).toEqual([]);
+    });
+
     it('Baseのみ経路（LARK_SEND_BASE_ONLY=true）でもサマリを1行出す', async () => {
       vi.stubEnv('LARK_SEND_BASE_ONLY', 'true');
       const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
