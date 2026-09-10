@@ -184,21 +184,82 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
   };
 }
 
+/**
+ * Lark（IM通知 Webhook・Base 自動化 Webhook）への送信タイムアウト。
+ * 既存の `src/app/api/entry-bp/route.ts`・クーパン専用ルートと同じ 5 秒。
+ * 無いと、相手が応答しないときに Promise.allSettled が張り付いたまま関数が実行上限で落ち、
+ * ログが1行も残らない。
+ */
+const LARK_FETCH_TIMEOUT_MS = 5000;
+
+/**
+ * 例外をログ用の1行にする。**エラーオブジェクトを丸ごと console.error に渡さないこと。**
+ *
+ * V8 の JSON の SyntaxError は message 自体に入力の断片を載せる
+ * （例: `Unexpected token 'a', "taro@exampl"... is not valid JSON`。2026-09-10 に Node で実測）。
+ * name と message に絞っても断片は message 側に残るので、SyntaxError だけは message を出さない。
+ * 応募本文の JSON が壊れていたときに、氏名・メール・電話の断片がログに載るのを防ぐ。
+ *
+ * undici の fetch 失敗は message が 'fetch failed' としか出ないので cause まで出す。
+ */
+function describeError(e: unknown): string {
+  const describe = (x: unknown): string => {
+    if (!(x instanceof Error)) return String(x);
+    if (x.name === 'SyntaxError') return `${x.name}: (入力の断片を含みうるため message は省略)`;
+    return `${x.name}: ${x.message}`;
+  };
+  if (!(e instanceof Error) || !e.cause) return describe(e);
+  const causeCode = (e.cause as { code?: unknown }).code;
+  const causeText = causeCode === undefined || causeCode === null ? describe(e.cause) : String(causeCode);
+  return `${describe(e)} cause=${causeText}`;
+}
+
+/**
+ * Lark の Webhook（IM通知・Base 自動化）の応答を読む。
+ * `ok` は **HTTP 200 でも body の code が非0なら false**（bot除外・トークン失効など）。200 だけ見ると、
+ * 届いていないのに成功と記録される。判定式は既存の `src/app/api/entry-bp/route.ts` に揃えた
+ * （code を返さない応答は HTTP ステータスだけで判定する）。
+ * body は丸ごとログに出さない。送った応募データを相手が引用して返す場合に備え、code と msg に絞る。
+ *
+ * 本文の読み取り中にタイムアウトしたら throw する。握りつぶすと code を確かめないまま
+ * `resp.ok` だけで成功扱いになる（ヘッダだけ返して本文が止まる相手で再現）。
+ */
+async function readLarkResult(resp: Response): Promise<{ ok: boolean; detail: string }> {
+  const data = (await resp.json().catch((e: unknown) => {
+    if (e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError')) throw e;
+    return null;
+  })) as { code?: unknown; msg?: unknown } | null;
+  const code = data?.code;
+  const ok = resp.ok && (typeof code === 'undefined' || code === 0);
+  const msg = data?.msg === undefined ? 'n/a' : String(data.msg).slice(0, 200);
+  return { ok, detail: `http=${resp.status} code=${code === undefined ? 'n/a' : String(code)} msg=${msg}` };
+}
+
+// Base への保存がどの経路で成立したか。'none' は保存できなかった（取りこぼし）。
+type BaseSavedVia = 'direct' | 'webhook' | 'none';
+
 // Base への保存。可能なら Bitable API で直書きし、未設定 or 失敗 or 対象外(coupang) なら
 // 既存の Base 自動化 Webhook にフォールバックする（応募データを取りこぼさないため）。
+//
+// 直書きが失敗したときは、Webhook で救えても markFailed('lark-base-direct') で記録する。
+// Webhook へフォールバックしたレコードは utm・広告ID・保有資格などが欠けていた
+// （larkBase.ts の記録。2026-08-12 に発生）ので、「保存はできたが劣化した」ことを足跡に残す。
+// 記録は Webhook を叩く前に済ませるので、その後 Webhook が throw しても失われない。
 async function saveToBase(
   ctx: BaseWriteContext,
   baseWebhookUrl: string | undefined,
-  basePayload: Record<string, unknown>
-): Promise<void> {
+  basePayload: Record<string, unknown>,
+  markFailed: (label: string) => void
+): Promise<BaseSavedVia> {
   const target = resolveDirectBaseWrite(ctx);
   if (target && isLarkBaseConfigured(target.profile)) {
     try {
       await createBaseRecord(target.tableId, target.fields, target.profile);
-      console.log(`Lark Base 直書き成功 (${target.profile} / ${target.tableId})`);
-      return;
+      console.log(`[applicants] Lark Base 直書き成功 (${target.profile} / ${target.tableId})`);
+      return 'direct';
     } catch (e) {
-      console.error(`Lark Base 直書き失敗、Webhook にフォールバック (${target.profile}):`, e);
+      markFailed('lark-base-direct');
+      console.error(`[applicants] Lark Base 直書き失敗、Webhook にフォールバック (${target.profile}): ${describeError(e)}`);
     }
   }
 
@@ -207,16 +268,23 @@ async function saveToBase(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(basePayload),
+      signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
     });
+    const result = await readLarkResult(resp);
     if (!resp.ok) {
-      const errorBody = await resp.text();
-      console.error(`Failed to send to Lark Base Webhook (${resp.status}): ${errorBody}`);
-    } else {
-      console.log('Lark Base webhook triggered successfully');
+      console.error(`[applicants] Failed to send to Lark Base Webhook (${result.detail})`);
+      return 'none';
     }
-  } else {
-    console.warn('Lark Base Webhook URL is not configured. Skipping Base record creation.');
+    if (!result.ok) {
+      // HTTP 200 だが code が 0 ではない。Base 自動化 Webhook が成功時に何を返すかはリポジトリ内に
+      // 一次情報が無く、失敗と決めつけると誤警報になりうる。PR #79（coupang）と同じく HTTP で判定し、記録だけ残す。
+      console.warn(`[applicants] Lark Base Webhook: HTTP ${resp.status} だが code が 0 ではない（${result.detail}）。応答形式が未確認のため失敗には数えない`);
+    }
+    console.log('[applicants] Lark Base webhook triggered successfully');
+    return 'webhook';
   }
+  console.warn('[applicants] Lark Base Webhook URL is not configured. Skipping Base record creation.');
+  return 'none';
 }
 
 // Types for submission payload
@@ -424,9 +492,37 @@ export async function POST(request: NextRequest) {
       submittedAtMs: Date.now(),
     };
 
+    // 副作用（Lark通知・Base保存・メール・SMS・CAPI）の失敗を1箇所に集める。
+    // throw だけでなく **HTTPエラーや Lark の非0コードも** ここへ入れる。入れないと、
+    // 最後のサマリ行が「失敗0件」と嘘をつく。
+    const taskFailures: string[] = [];
+    const markFailed = (label: string) => {
+      if (!taskFailures.includes(label)) taskFailures.push(label);
+    };
+    let baseSavedVia: BaseSavedVia = 'none';
+    let taskCount = 0;
+
     // 並列送信（Baseのみテスト中は直下の単独送信へ）
     if (!sendBaseOnly) {
       const tasks: Promise<void>[] = [];
+
+      // 副作用はどれも非致命なので Promise.allSettled に流している。ただし各タスクが
+      // try/catch を持たないと、fetch の throw を allSettled が握りつぶし **ログが1行も出ない**。
+      // クーパン専用ルートでは 2026-09-10 に本番の Lark 通知が無言で止まっていた（PR #79）。
+      // 同じ形がこのルートにも残っていたので、例外を必ず記録する。
+      //
+      // run() は同期 throw しうるので Promise.resolve().then() でくるむ。
+      // 直接 run().then(...) にすると同期 throw が外側 catch まで飛び、応募そのものを500で落とす。
+      const trackTask = (label: string, run: () => Promise<unknown>): Promise<void> =>
+        Promise.resolve()
+          .then(run)
+          .then(
+            () => undefined,
+            (e: unknown) => {
+              markFailed(label);
+              console.error(`[applicants] ${label} threw and was swallowed: ${describeError(e)}`);
+            }
+          );
 
       // Lark 送信タスク
       if (larkWebhookUrl) {
@@ -482,20 +578,21 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
         } as const;
 
         tasks.push(
-          (async () => {
+          trackTask('lark-notification', async () => {
             const resp = await fetch(larkWebhookUrl, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(larkPayload),
+              signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
             });
-            if (!resp.ok) {
-              const errorBody = await resp.text();
-              console.error(`Failed to send notification to Lark (${resp.status}): ${errorBody}`);
+            const result = await readLarkResult(resp);
+            if (!result.ok) {
+              markFailed('lark-notification');
+              console.error(`[applicants] Failed to send notification to Lark (${result.detail})`);
             } else {
-              const result = await resp.json();
-              console.log('Lark notification sent successfully:', result);
+              console.log('[applicants] Lark notification sent successfully');
             }
-          })()
+          })
         );
       }
 
@@ -542,7 +639,13 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
           page_url: referer,
         } as Record<string, unknown>;
 
-        tasks.push(saveToBase(baseWriteCtx, baseWebhookUrl, basePayload));
+        tasks.push(
+          trackTask('lark-base', async () => {
+            baseSavedVia = await saveToBase(baseWriteCtx, baseWebhookUrl, basePayload, markFailed);
+            // 直書きも Webhook も通らなかった＝応募者のレコードが Base に無い。最も重い失敗。
+            if (baseSavedVia === 'none') markFailed('lark-base');
+          })
+        );
       }
 
       // 応募受付完了 自動返信メール送信タスク
@@ -557,7 +660,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
         const recipientEmail = formData.email;
         const origin = emailOriginCandidate;
         tasks.push(
-          (async () => {
+          trackTask('confirmation-email', async () => {
             const result = await sendApplicationConfirmationEmail({
               to: recipientEmail,
               applicantName: formData.fullName || '',
@@ -566,26 +669,25 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
               email: recipientEmail,
               formOrigin: origin,
             });
+            // 宛先（応募者のメールアドレス）はログに出さない。送信の追跡は messageId で足りる。
             if (result.sent) {
               console.log('Confirmation email sent:', {
-                to: recipientEmail,
                 messageId: result.messageId,
                 formOrigin: origin,
               });
             } else if (result.reason === 'error') {
+              markFailed('confirmation-email');
               console.error('Confirmation email failed:', {
-                to: recipientEmail,
                 error: result.error,
                 formOrigin: origin,
               });
             } else {
               console.log('Confirmation email skipped:', {
-                to: recipientEmail,
                 reason: result.reason,
                 formOrigin: origin,
               });
             }
-          })()
+          })
         );
       }
 
@@ -599,7 +701,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
         const channel = smsChannel;
         const media = (utmParams?.utm_source || 'form').toLowerCase().slice(0, 32);
         tasks.push(
-          (async () => {
+          trackTask('application-sms', async () => {
             const r = await sendApplicationSms({
               channel,
               phone: formData.phoneNumber,
@@ -608,10 +710,15 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
             });
             if (r.sent) {
               console.log('Application SMS sent:', { order: r.deliveryOrderId, ref: r.ref, channel, media });
+            } else if (r.reason === 'disabled' || r.reason === 'dry_run' || r.reason === 'no_phone') {
+              // 意図的にスキップした場合だけ info。それ以外（設定漏れ・eeasy 側の拒否・HTTPエラー）は
+              // 無言不達になりうるので error にし、失敗として集計する（クーパン専用ルートと同じ判定）。
+              console.log('Application SMS skipped:', { reason: r.reason, channel, media });
             } else {
-              console.log('Application SMS skipped/failed:', { reason: r.reason, error: r.error, channel, media });
+              markFailed('application-sms');
+              console.error('Application SMS not delivered:', { reason: r.reason, error: r.error, channel, media });
             }
-          })()
+          })
         );
       }
 
@@ -622,39 +729,54 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
         const capiHost = request.headers.get('x-forwarded-host') || request.headers.get('host') || '';
         const capiProto = request.headers.get('x-forwarded-proto') || 'https';
         const capiFallbackSourceUrl = capiHost ? `${capiProto}://${capiHost}` : undefined;
+        // クロージャに入ると typeof による絞り込みが効かないので、ここで確定させる。
+        const capiEventId = submissionData.metaEventId;
         tasks.push(
-          sendMetaCapiLead({
-            eventId: submissionData.metaEventId,
-            eventSourceUrl: referer,
-            email: formData.email,
-            phone: formData.phoneNumber,
-            fbp: request.cookies.get('_fbp')?.value,
-            fbc: request.cookies.get('_fbc')?.value,
-            clientIpAddress: capiClientIp || undefined,
-            clientUserAgent: capiUserAgent || undefined,
-          }).then(() => {})
+          trackTask('meta-capi', async () => {
+            const r = await sendMetaCapiLead({
+              eventId: capiEventId,
+              eventSourceUrl: referer,
+              email: formData.email,
+              phone: formData.phoneNumber,
+              fbp: request.cookies.get('_fbp')?.value,
+              fbc: request.cookies.get('_fbc')?.value,
+              clientIpAddress: capiClientIp || undefined,
+              clientUserAgent: capiUserAgent || undefined,
+            });
+            // 送信失敗（HTTPエラー・通信エラー）はライブラリがログを出して ok:false を返す。
+            // throw しないので、ここで数えないとサマリが「失敗0件」になる。
+            // 未設定（skipped）は数えない。未設定なら自動スキップする付加機能なので（health/route.ts）、
+            // 数えるとその環境では全応募が failed になり、サマリが読まれなくなる。
+            if (!r.ok && !r.skipped) markFailed('meta-capi');
+          })
         );
 
         // OpenAI（ChatGPT広告）Conversions API — 非致命。
         // oppref が無い応募（＝広告クリック由来でない）は lib 側で送信をスキップする。
         tasks.push(
-          sendOpenAiConversion({
-            eventId: submissionData.metaEventId,
-            oppref: typeof submissionData.oppref === 'string' ? submissionData.oppref : undefined,
-            // action_source=web では source_url が必須。Referer を送らない環境
-            // （プライバシー拡張・no-referrer のアプリ内ブラウザ等）でも欠落させないよう、
-            // ホストヘッダから組み立てた値へフォールバックする。
-            sourceUrl: referer || capiFallbackSourceUrl,
-            email: formData.email,
-            phone: formData.phoneNumber,
-            clientIpAddress: capiClientIp || undefined,
-            clientUserAgent: capiUserAgent || undefined,
-          }).then(() => {})
+          trackTask('openai-capi', async () => {
+            const r = await sendOpenAiConversion({
+              eventId: capiEventId,
+              oppref: typeof submissionData.oppref === 'string' ? submissionData.oppref : undefined,
+              // action_source=web では source_url が必須。Referer を送らない環境
+              // （プライバシー拡張・no-referrer のアプリ内ブラウザ等）でも欠落させないよう、
+              // ホストヘッダから組み立てた値へフォールバックする。
+              sourceUrl: referer || capiFallbackSourceUrl,
+              email: formData.email,
+              phone: formData.phoneNumber,
+              clientIpAddress: capiClientIp || undefined,
+              clientUserAgent: capiUserAgent || undefined,
+            });
+            // no_match_signal（oppref なし＝大半の応募）は正常なスキップ。
+            // not_configured（oppref があるのに設定漏れ）は取りこぼしなので失敗として数える。
+            if (!r.ok && r.skipped !== 'no_match_signal') markFailed('openai-capi');
+          })
         );
       }
 
       // どれかが失敗しても応募自体は成功扱い (Lark/Base/メール全て)
       await Promise.allSettled(tasks);
+      taskCount = tasks.length;
     } else {
       // Baseのみ送信（テストモード）— 直書き優先・フォールバック Webhook
       const userAgent = request.headers.get('user-agent') || '';
@@ -697,15 +819,42 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
         page_url: referer,
       } as Record<string, unknown>;
 
-      await saveToBase(baseWriteCtx, baseWebhookUrl, basePayload);
+      baseSavedVia = await saveToBase(baseWriteCtx, baseWebhookUrl, basePayload, markFailed);
+      if (baseSavedVia === 'none') markFailed('lark-base');
+      taskCount = 1;
     }
+
+    // 応募1件につき必ず1行出す（Baseのみ経路も含む）。無言で壊れていることを検知するための足跡。
+    // この行が無い応募は、途中で例外に落ちたか、必須の Webhook URL が未設定で 500 を返したか
+    // （どちらも専用の error ログが出る）、実行上限で打ち切られている。
+    // formOrigin は外部入力なのでそのまま出さず、判定済みのフラグから導いたラベルにする。
+    const originLabel = isMechanicNewgrad ? 'mechanic_newgrad'
+      : isMechanic ? 'mechanic'
+      : isCoupang ? 'coupang'
+      : isTruck ? 'truck'
+      : isBus ? 'bus'
+      : isTaxi ? 'default'
+      : 'unknown';
+    // オブジェクトのまま渡すと util.inspect が複数行に折り返し（実測9行）、行単位の grep で
+    // failed が見えなくなる。JSON にして物理的に1行にする。
+    console.log('[applicants] submission settled:', JSON.stringify({
+      mode: sendBaseOnly ? 'base-only' : 'full',
+      origin: originLabel,
+      tasks: taskCount,
+      failed: taskFailures,
+      base: baseSavedVia,
+      larkWebhookConfigured: Boolean(larkWebhookUrl),
+      baseWebhookConfigured: Boolean(baseWebhookUrl),
+    }));
 
     // クライアントには成功したことを返す
     // (Larkへの通知成否に関わらず、データを受け付けた時点で成功とすることも多い)
     return NextResponse.json({ message: 'Application submitted successfully!' }, { status: 200 });
 
   } catch (error) {
-    console.error('Error processing application in API route:', error);
+    // エラーオブジェクトを丸ごと渡さない。応募本文の JSON が壊れていると、
+    // SyntaxError の message に氏名・メール・電話の断片が載る（describeError 参照）。
+    console.error('Error processing application in API route:', describeError(error));
     // 予期せぬエラー
     return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
   }

@@ -46,10 +46,12 @@ export type MetaCapiLeadInput = {
   currency?: string;
 };
 
-export async function sendMetaCapiLead(input: MetaCapiLeadInput): Promise<{ ok: boolean; status?: number }> {
+export async function sendMetaCapiLead(input: MetaCapiLeadInput): Promise<{ ok: boolean; status?: number; skipped?: string }> {
   if (!PIXEL_ID || !ACCESS_TOKEN) {
     console.warn('[CAPI] NEXT_PUBLIC_META_PIXEL_ID or META_CAPI_ACCESS_TOKEN not configured, skipping');
-    return { ok: false };
+    // 未設定は送信失敗ではなくスキップ（メール/SMS/Meta CAPI は未設定なら自動スキップする付加機能:
+    // src/app/api/health/route.ts）。呼び出し側が送信失敗と区別できるよう理由を返す。
+    return { ok: false, skipped: 'not_configured' };
   }
 
   const userData: Record<string, unknown> = {};
