@@ -5,7 +5,6 @@ import {
   JOB_POSITION_LABELS,
   LOCATION_LABELS,
 } from '@/app/components/coupang-form/constants';
-import { getCoupangStep1Options } from '../step1-options/options';
 import { resolveAdImageUrl, isLikelyAdId } from '@/lib/meta/resolveAdImage';
 import { sendMetaCapiLead } from '@/lib/meta/capi';
 import { sendApplicationConfirmationEmail } from '@/lib/email/send-application-confirmation';
@@ -20,6 +19,12 @@ import { BASE_PATH } from '@/lib/basePath';
 const COUPANG_EVENT_SOURCE_URL = BASE_PATH
   ? 'https://ridejob.jp/entry/coupang'
   : 'https://ridejob.pmagent.jp/coupang';
+
+/**
+ * Lark（IM通知・Base Webhook）への送信タイムアウト。
+ * 既存の `src/app/api/entry-bp/route.ts` に合わせて 5 秒。
+ */
+const LARK_FETCH_TIMEOUT_MS = 5000;
 
 type UTMParams = {
   utm_source?: string;
@@ -68,24 +73,26 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const step1Options = await getCoupangStep1Options();
     const fallbackJobPositionMap = JOB_POSITION_LABELS as Record<string, string>;
     const fallbackLocationMap = LOCATION_LABELS as Record<string, string>;
 
-    // ラベル変換（シート定義の日本語値を優先し、旧固定値もフォールバック）
+    // ラベル変換。
+    // 現行フォームは**日本語ラベルをそのまま value として送る**（jobPosition は
+    // COUPANG_FIXED_JOB_POSITION 固定、desiredLocation は GAS 由来の日本語値を
+    // `{ value, label: value }` で選択肢にしている）。したがって値はそのまま通せばよい。
+    // JOB_POSITION_LABELS / LOCATION_LABELS は旧スラッグ（field_sales / tokyo）を
+    // 送ってくる古いクライアント用のフォールバックとしてのみ残す。
+    //
+    // ⚠️ ここで GAS の step1-options を引いて突き合わせていたが、投稿値が既に最終ラベルなので
+    // `find()` は恒等一致にしかならず、ラベルに一切寄与していなかった。
+    // その一方で GAS は実測 5〜68秒かかり 404 を返す日もあり（2026-09-10 実測）、
+    // **応募者をその秒数だけ待たせていた**ため、POST 経路からは外した。
+    // 選択肢マスタの取得は LP 側の `/api/coupang/step1-options` が担っており、そちらは変えていない。
     const jobPositionLabel = formData.jobPosition
-      ? (
-          step1Options.jobPositions.find((v) => v === formData.jobPosition)
-          || fallbackJobPositionMap[formData.jobPosition]
-          || formData.jobPosition
-        )
+      ? (fallbackJobPositionMap[formData.jobPosition] || formData.jobPosition)
       : '未選択';
     const desiredLocationLabel = formData.desiredLocation
-      ? (
-          step1Options.desiredLocations.find((v) => v === formData.desiredLocation)
-          || fallbackLocationMap[formData.desiredLocation]
-          || formData.desiredLocation
-        )
+      ? (fallbackLocationMap[formData.desiredLocation] || formData.desiredLocation)
       : '未選択';
     const ageLabel = formData.age ? `${formData.age}歳` : '未選択';
     const birthDateLabel = formData.birthDate || '未入力';
@@ -116,6 +123,35 @@ export async function POST(request: NextRequest) {
     if (!sendBaseOnly) {
       const tasks: Promise<void>[] = [];
 
+      // 副作用（Lark通知・Base送信・メール・SMS・CAPI）はどれも非致命なので
+      // Promise.allSettled に流している。ただし fetch が throw した場合、
+      // allSettled は握りつぶし **ログが1行も出ない**。
+      // 2026-09-10 のE2Eで、Lark通知もBase送信も無言のまま飛んでいないことが判明した
+      // （SMSのログだけが出て、通知系は成功ログも失敗ログも出ていなかった）。
+      // 例外を必ず記録し、最後にまとめて可視化する。
+      const taskFailures: string[] = [];
+      // 失敗を1箇所に集約する。throw だけでなく **HTTPエラーやLarkの非0コードも**
+      // ここへ入れないと、サマリ行が「失敗0件」と嘘をつく。
+      const markFailed = (label: string) => {
+        if (!taskFailures.includes(label)) taskFailures.push(label);
+      };
+      // run() は同期 throw しうるので Promise.resolve().then() でくるむ。
+      // 直接 run().then(...) にすると同期 throw が外側 catch まで飛び、
+      // 応募そのものを500で落としてしまう。
+      const trackTask = (label: string, run: () => Promise<unknown>): Promise<void> =>
+        Promise.resolve()
+          .then(run)
+          .then(
+            () => undefined,
+            (e: unknown) => {
+              markFailed(label);
+              // undici の fetch 失敗は message が 'fetch failed' としか出ないので cause まで出す。
+              const detail = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+              const cause = e instanceof Error && e.cause ? ` cause=${String((e.cause as { code?: string })?.code ?? e.cause)}` : '';
+              console.error(`[coupang] ${label} threw and was swallowed: ${detail}${cause}`);
+            }
+          );
+
       // Lark 送信タスク
       if (larkWebhookUrl) {
         const utmDisplay = utmParams?.utm_source
@@ -143,20 +179,30 @@ export async function POST(request: NextRequest) {
         } as const;
 
         tasks.push(
-          (async () => {
+          trackTask('lark-notification', async () => {
             const resp = await fetch(larkWebhookUrl, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(larkPayload),
+              // タイムアウトが無いと、Lark 側が応答しないときに Promise.allSettled が
+              // 張り付いたまま関数が実行上限で落ち、ログが1行も残らない。
+              // 既存の entry-bp ルートと同じ 5 秒に揃える。
+              signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
             });
-            if (!resp.ok) {
-              const errorBody = await resp.text();
-              console.error(`Failed to send notification to Lark (${resp.status}): ${errorBody}`);
+            // Lark の Webhook は **HTTP 200 でも body の code が非0なら失敗**（bot除外・トークン失効など）。
+            // 200 だけ見て成功扱いにすると、届いていないのに「sent successfully」と記録される。
+            const result = (await resp.json().catch(() => ({}))) as { code?: number; msg?: string };
+            const larkRejected =
+              typeof result?.code !== 'undefined' && result.code !== 0;
+            if (!resp.ok || larkRejected) {
+              markFailed('lark-notification');
+              console.error(
+                `[coupang] Failed to send notification to Lark (http=${resp.status} code=${result?.code ?? 'n/a'} msg=${result?.msg ?? 'n/a'})`
+              );
             } else {
-              const result = await resp.json();
-              console.log('Lark notification sent successfully:', result);
+              console.log('[coupang] Lark notification sent successfully');
             }
-          })()
+          })
         );
       }
 
@@ -193,19 +239,21 @@ export async function POST(request: NextRequest) {
         } as Record<string, unknown>;
 
         tasks.push(
-          (async () => {
+          trackTask('lark-base-webhook', async () => {
             const resp = await fetch(baseWebhookUrl, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(basePayload),
+              signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
             });
             if (!resp.ok) {
-              const errorBody = await resp.text();
-              console.error(`Failed to send to Lark Base Webhook (${resp.status}): ${errorBody}`);
+              markFailed('lark-base-webhook');
+              const errorBody = await resp.text().catch(() => '');
+              console.error(`[coupang] Failed to send to Lark Base Webhook (${resp.status}): ${errorBody.slice(0, 300)}`);
             } else {
-              console.log('Lark Base webhook triggered successfully');
+              console.log('[coupang] Lark Base webhook triggered successfully');
             }
-          })()
+          })
         );
       }
 
@@ -220,7 +268,7 @@ export async function POST(request: NextRequest) {
       if (formData.email && process.env.COUPANG_EMAIL_ENABLED === 'true') {
         const recipientEmail = formData.email;
         tasks.push(
-          (async () => {
+          trackTask('confirmation-email', async () => {
             const result = await sendApplicationConfirmationEmail({
               to: recipientEmail,
               applicantName: formData.fullName || '',
@@ -232,11 +280,12 @@ export async function POST(request: NextRequest) {
             if (result.sent) {
               console.log('Confirmation email sent:', { messageId: result.messageId, formOrigin: 'coupang' });
             } else if (result.reason === 'error') {
+              markFailed('confirmation-email');
               console.error('Confirmation email failed:', { error: result.error, formOrigin: 'coupang' });
             } else {
               console.log('Confirmation email skipped:', { reason: result.reason, formOrigin: 'coupang' });
             }
-          })()
+          })
         );
       }
 
@@ -251,7 +300,7 @@ export async function POST(request: NextRequest) {
       if (formData.phoneNumber && process.env.COUPANG_SMS_ENABLED === 'true') {
         const media = (utmParams?.utm_source || 'form').toLowerCase().slice(0, 32);
         tasks.push(
-          (async () => {
+          trackTask('application-sms', async () => {
             const r = await sendApplicationSms({
               channel: 'coupang',
               phone: formData.phoneNumber,
@@ -264,9 +313,10 @@ export async function POST(request: NextRequest) {
               // 意図的にスキップした場合だけ info。それ以外は無言不達になりうるので error。
               console.log('Application SMS skipped:', { reason: r.reason, channel: 'coupang', media });
             } else {
+              markFailed('application-sms');
               console.error('Application SMS not delivered:', { reason: r.reason, error: r.error, channel: 'coupang', media });
             }
-          })()
+          })
         );
       }
 
@@ -275,26 +325,41 @@ export async function POST(request: NextRequest) {
         const capiUserAgent = request.headers.get('user-agent') || '';
         const capiClientIp = (request.headers.get('x-forwarded-for') || '').split(',')[0]?.trim() || '';
         const capiReferer = request.headers.get('referer') || '';
+        // クロージャに入ると typeof による絞り込みが効かないので、ここで確定させる。
+        const capiEventId = submissionData.metaEventId;
         tasks.push(
-          sendMetaCapiLead({
-            eventId: submissionData.metaEventId,
-            // referer が取れない場合でも website イベントとして成立させる。
-            eventSourceUrl: capiReferer || COUPANG_EVENT_SOURCE_URL,
-            contentName: COUPANG_META_CONTENT_NAME,
-            // dedup 後に残るのは通常サーバー側なので、Pixel と同じ value/currency を持たせる。
-            value: 0,
-            currency: 'JPY',
-            email: formData.email,
-            phone: formData.phoneNumber,
-            fbp: request.cookies.get('_fbp')?.value,
-            fbc: request.cookies.get('_fbc')?.value,
-            clientIpAddress: capiClientIp || undefined,
-            clientUserAgent: capiUserAgent || undefined,
-          }).then(() => {})
+          trackTask('meta-capi', () =>
+            sendMetaCapiLead({
+              eventId: capiEventId,
+              // referer が取れない場合でも website イベントとして成立させる。
+              eventSourceUrl: capiReferer || COUPANG_EVENT_SOURCE_URL,
+              contentName: COUPANG_META_CONTENT_NAME,
+              // dedup 後に残るのは通常サーバー側なので、Pixel と同じ value/currency を持たせる。
+              value: 0,
+              currency: 'JPY',
+              email: formData.email,
+              phone: formData.phoneNumber,
+              fbp: request.cookies.get('_fbp')?.value,
+              fbc: request.cookies.get('_fbc')?.value,
+              clientIpAddress: capiClientIp || undefined,
+              clientUserAgent: capiUserAgent || undefined,
+            })
+          )
         );
       }
 
       await Promise.allSettled(tasks);
+
+      // 応募1件につき必ず1行出す。無言で壊れていることを検知するための足跡。
+      console.log('[coupang] submission settled:', {
+        mode: 'full',
+        tasks: tasks.length,
+        failed: taskFailures,
+        larkWebhookConfigured: Boolean(larkWebhookUrl),
+        baseWebhookConfigured: Boolean(baseWebhookUrl),
+        emailEnabled: process.env.COUPANG_EMAIL_ENABLED === 'true',
+        smsEnabled: process.env.COUPANG_SMS_ENABLED === 'true',
+      });
     } else {
       // Baseのみ送信（テストモード）
       if (baseWebhookUrl) {
@@ -332,13 +397,19 @@ export async function POST(request: NextRequest) {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(basePayload),
+          signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
         });
         if (!resp.ok) {
-          const errorBody = await resp.text();
-          console.error(`Failed to send to Lark Base Webhook (${resp.status}): ${errorBody}`);
+          const errorBody = await resp.text().catch(() => '');
+          console.error(`[coupang] Failed to send to Lark Base Webhook (${resp.status}): ${errorBody.slice(0, 300)}`);
         } else {
-          console.log('Lark Base webhook triggered successfully');
+          console.log('[coupang] Lark Base webhook triggered successfully');
         }
+        // Baseのみ経路でも必ず足跡を残す（この行が無い＝無言の失敗、と読めるようにする）
+        console.log('[coupang] submission settled:', {
+          mode: 'base-only',
+          baseWebhookConfigured: true,
+        });
       }
     }
 

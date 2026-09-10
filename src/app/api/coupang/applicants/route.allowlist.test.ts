@@ -22,7 +22,11 @@ const ALLOWED_HOSTS = new Set([
   'open.larksuite.com', // Lark 通知 webhook / Base webhook
   'leomeet.pmagent.jp', // eeasy SMS 共通エンドポイント
   'graph.facebook.com', // Meta Conversions API
-  'script.google.com', // 職種×勤務地の選択肢マスタ(GAS)
+  // script.google.com は **意図的に外している**。
+  // 選択肢マスタ(GAS)の取得は LP 側の /api/coupang/step1-options だけの仕事で、
+  // 応募POSTの経路からは 2026-09-10 に外した（恒等一致にしかならないのに 5〜68秒待たされていた）。
+  // 誰でもエンドポイントを公開できるホストなので、応募者の個人情報を持つこの経路からは
+  // 「触らない」を保証する。
 ]);
 
 function hostOf(input: unknown): string {
@@ -139,21 +143,71 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     expect(body.media).toBe('ig');
   });
 
-  it('script.google.com へは env で指定したURLに GET でしか触らない', async () => {
-    // script.google.com は誰でもエンドポイントを公開できるホストなので、
-    // ホスト名の許可だけでは「攻撃者のGASへ個人情報をPOST」を防げない。
-    // 正当な用途は選択肢マスタの取得(GET・URL完全一致)だけなので、そこまで縛る。
+  it('script.google.com には一切触らない(応募POSTからGASを引かない)', async () => {
+    // script.google.com は誰でもエンドポイントを公開できるホスト。
+    // このルートは応募者の個人情報を持つので、触らないことを保証する。
+    // 2026-09-10 まではラベル変換のために GET していたが、投稿値が既に最終ラベルのため
+    // 恒等一致にしかならず、GAS の遅延(実測5〜68秒)と404を応募者に転嫁していただけだった。
     const { POST } = await import('./route');
     await POST(makeRequest(coupangBody));
 
     const gasCalls = fetchSpy.mock.calls.filter((call) => hostOf(call[0]) === 'script.google.com');
-    expect(gasCalls.length).toBeGreaterThan(0);
-    for (const [input, init] of gasCalls) {
-      const url = typeof input === 'string' ? input : String((input as { url?: string })?.url ?? input);
-      expect(url).toBe(ALLOWLISTED_ENV.GAS_COUPANG_STEP1_OPTIONS_API_URL);
-      const method = ((init as RequestInit | undefined)?.method ?? 'GET').toUpperCase();
-      expect(method).toBe('GET');
-    }
+    expect(gasCalls.length, 'GAS へ触れている').toBe(0);
+  });
+
+  it('ラベルはGASなしでも日本語のまま Base へ載る', async () => {
+    const { POST } = await import('./route');
+    await POST(makeRequest(coupangBody));
+
+    const baseCall = fetchSpy.mock.calls.find((call) =>
+      String(call[0]).includes('/anycross/trigger/'),
+    );
+    expect(baseCall, 'Base webhook が呼ばれていない').toBeTruthy();
+    const payload = JSON.parse((baseCall![1] as RequestInit).body as string);
+    expect(payload.desired_location).toBe('東京');
+    expect(payload.job_position).toBe('アカウントマネージャー');
+  });
+
+  it('Lark通知が落ちても応募は成立し、SMSとCAPIは送られる', async () => {
+    // 応募を落とさないことの番人。通知の失敗で応募データまで失うのが最悪の壊れ方。
+    fetchSpy.mockImplementation(async (input: unknown) => {
+      if (hostOf(input) === 'open.larksuite.com' && String(input).includes('/bot/v2/hook/')) {
+        throw new TypeError('fetch failed');
+      }
+      return new Response(JSON.stringify({ ok: true, code: 0, StatusCode: 0 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(coupangBody));
+
+    expect(res.status).toBe(200);
+    const hosts = new Set(fetchSpy.mock.calls.map((call) => hostOf(call[0])));
+    expect(hosts.has('leomeet.pmagent.jp')).toBe(true);
+    expect(hosts.has('graph.facebook.com')).toBe(true);
+  });
+
+  it('Larkが HTTP200 でも code!==0 なら失敗として記録する', async () => {
+    // 200 だけ見て成功扱いにすると、bot除外やトークン失効で届いていないのに
+    // 「sent successfully」と記録され、無言の断線に気づけない。
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input: unknown) => {
+      const isLarkNotify =
+        hostOf(input) === 'open.larksuite.com' && String(input).includes('/bot/v2/hook/');
+      return new Response(
+        JSON.stringify(isLarkNotify ? { code: 19001, msg: 'bot not in chat' } : { code: 0 }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(coupangBody));
+
+    expect(res.status).toBe(200);
+    const logged = errorSpy.mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(logged).toContain('Failed to send notification to Lark');
+    expect(logged).toContain('19001');
+    errorSpy.mockRestore();
   });
 
   it('フラグOFFならメールもSMSも送らない(既定の安全側)', async () => {
