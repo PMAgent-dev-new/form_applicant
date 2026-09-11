@@ -25,6 +25,17 @@ import {
   type LarkProfile,
 } from '@/lib/larkBase';
 import { describeError } from '@/lib/describe-error';
+import { createSubmissionTimer, describeSlowSubmission } from '@/lib/submission-timing';
+
+/**
+ * 関数の実行上限（秒）。これを超えた応募は Vercel が 504 で打ち切り、サマリ行も出ない。
+ * 本番は同じ main を2つの Vercel プロジェクトで動かしており、既定の上限が違う
+ * （ridejob.pmagent.jp の ridejob-form は Fluid compute が無効で 15 秒、ridejob.jp/entry の ridejob-entry は 300 秒）ので、コードで揃える。
+ * 60 秒 = このルートの最悪ケースの見積もり約43秒（前段の広告画像の解決 2.5 ＋ Base 直書き: トークン 5・リンク解決 最大約15（マスタが1ページの場合）・
+ * 作成 5・トークン失効時の再試行 10・Webhook へのフォールバック 5）に余裕を足した値（2026-09-11 に決定。PR #82）。
+ * 副作用の待ち時間を増やすときは、この見積もりも見直すこと。
+ */
+export const maxDuration = 60;
 
 // Bitable 直書きの投入先テーブル（env で上書き可）。
 //   default / bus       → 求職者DB🚕   （ridejob base：APP_*_RIDEJOB）
@@ -337,6 +348,8 @@ function isMetaUtmSource(utmSource?: string): boolean {
 }
 
 export async function POST(request: NextRequest) {
+  // サマリ行に載せる所要時間（elapsedMs）と、いちばん時間の掛かった副作用（slowest）を測る。
+  const timer = createSubmissionTimer();
   try {
     const submissionData = (await request.json()) as ApplicantSubmission;
     const { utmParams, formOrigin, ...formData } = submissionData;
@@ -492,8 +505,9 @@ export async function POST(request: NextRequest) {
       //
       // run() は同期 throw しうるので Promise.resolve().then() でくるむ。
       // 直接 run().then(...) にすると同期 throw が外側 catch まで飛び、応募そのものを500で落とす。
+      // timer.time で所要時間も記録する（サマリ行の slowest）。
       const trackTask = (label: string, run: () => Promise<unknown>): Promise<void> =>
-        Promise.resolve()
+        timer.time(label, Promise.resolve()
           .then(run)
           .then(
             () => undefined,
@@ -501,7 +515,7 @@ export async function POST(request: NextRequest) {
               markFailed(label);
               console.error(`[applicants] ${label} threw and was swallowed: ${describeError(e)}`);
             }
-          );
+          ));
 
       // Lark 送信タスク
       if (larkWebhookUrl) {
@@ -798,7 +812,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
         page_url: referer,
       } as Record<string, unknown>;
 
-      baseSavedVia = await saveToBase(baseWriteCtx, baseWebhookUrl, basePayload, markFailed);
+      baseSavedVia = await timer.time('lark-base', saveToBase(baseWriteCtx, baseWebhookUrl, basePayload, markFailed));
       if (baseSavedVia === 'none') markFailed('lark-base');
       taskCount = 1;
     }
@@ -816,6 +830,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
       : 'unknown';
     // オブジェクトのまま渡すと util.inspect が複数行に折り返し（実測9行）、行単位の grep で
     // failed が見えなくなる。JSON にして物理的に1行にする。
+    const timing = timer.summary();
     console.log('[applicants] submission settled:', JSON.stringify({
       mode: sendBaseOnly ? 'base-only' : 'full',
       origin: originLabel,
@@ -824,7 +839,12 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
       base: baseSavedVia,
       larkWebhookConfigured: Boolean(larkWebhookUrl),
       baseWebhookConfigured: Boolean(baseWebhookUrl),
+      elapsedMs: timing.elapsedMs,
+      slowest: timing.slowest,
     }));
+    // 所要時間が実行上限の半分以上なら警告する。上限に届くと打ち切られてこの行自体が出ないので、その手前で気づくため。
+    const slow = describeSlowSubmission(timing, maxDuration);
+    if (slow) console.warn(`[applicants] ${slow}`);
 
     // クライアントには成功したことを返す
     // (Larkへの通知成否に関わらず、データを受け付けた時点で成功とすることも多い)

@@ -421,6 +421,53 @@ describe('applicants POST — outbound host allowlist', () => {
       expect(hosts.has('leomeet.pmagent.jp')).toBe(false);
       expect(hosts.has('graph.facebook.com')).toBe(false);
     });
+
+    it('実行上限（maxDuration）は 60 秒（見積もりの最悪ケース約43秒に余裕を足した値）', async () => {
+      // ridejob.pmagent.jp の ridejob-form は既定 15 秒、ridejob-entry は 300 秒。コードの値で両方を揃えている。
+      // 変えるときは route.ts の見積もりと PR #82 を見直すこと。
+      const { maxDuration } = await import('./route');
+      expect(maxDuration).toBe(60);
+    });
+
+    it('サマリに所要時間（elapsedMs）と、いちばん時間の掛かった副作用（slowest）を載せる', async () => {
+      fetchSpy.mockImplementation(async (input: unknown) => {
+        // SMS だけ遅くする
+        if (hostOf(input) === 'leomeet.pmagent.jp') await new Promise((resolve) => setTimeout(resolve, 30));
+        return allOk();
+      });
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const { POST } = await import('./route');
+      await POST(makeRequest(applicantBody));
+
+      const summary = settledSummaries(logSpy)[0];
+      expect(summary?.elapsedMs).toBeGreaterThanOrEqual(25);
+      expect(summary?.slowest).toMatchObject({ task: 'application-sms' });
+    });
+
+    it('所要時間が上限の半分（30秒）以上なら warn を出す（上限に届くとサマリ行ごと出なくなる）', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        const { POST, maxDuration } = await import('./route');
+        // SMS の応答を待つ間に、上限の半分より1秒多くたったことにする（maxDuration を変えても追随する）
+        const jumpMs = (maxDuration * 1000) / 2 + 1_000;
+        fetchSpy.mockImplementation(async (input: unknown) => {
+          if (hostOf(input) === 'leomeet.pmagent.jp') vi.setSystemTime(Date.now() + jumpMs);
+          return allOk();
+        });
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        await POST(makeRequest(applicantBody));
+
+        expect(settledSummaries(logSpy)[0]?.elapsedMs).toBeGreaterThanOrEqual(jumpMs);
+        const slowLines = warnSpy.mock.calls
+          .map((call) => String(call[0]))
+          .filter((line) => line.includes('submission slow'));
+        expect(slowLines).toHaveLength(1);
+        expect(slowLines[0]).toContain(`limit=${maxDuration}s`);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   describe('ログに個人情報を出さない', () => {
