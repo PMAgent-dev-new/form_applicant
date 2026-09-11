@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import { describeError } from '../describe-error';
 
 /**
  * Meta Conversions API（サーバー側）。
@@ -96,15 +97,21 @@ export async function sendMetaCapiLead(input: MetaCapiLeadInput): Promise<{ ok: 
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
+        // タイムアウト必須（OpenAI CAPI と同じ 5 秒）。応募APIは全タスクを await してからレスポンスを返すため、
+        // Meta が応答しないと Promise.allSettled が張り付き、サマリ行も出ないまま実行上限で打ち切られる。
+        signal: AbortSignal.timeout(5000),
       }
     );
     if (!res.ok) {
-      console.error(`[CAPI] Lead send failed: ${res.status} ${await res.text()}`);
+      // 本文の読み取り中にタイムアウトしても、HTTP ステータスは残す（catch に落とすと status が消える）。
+      const text = await res.text().catch(() => '');
+      console.error(`[CAPI] Lead send failed: ${res.status} ${text.slice(0, 300)}`);
       return { ok: false, status: res.status };
     }
     return { ok: true, status: res.status };
   } catch (error) {
-    console.error('[CAPI] Lead send error:', error);
+    // エラーオブジェクトを丸ごと渡さない（describeError 参照）。タイムアウトは 'TimeoutError: ...' になる。
+    console.error(`[CAPI] Lead send error: ${describeError(error)}`);
     return { ok: false };
   }
 }

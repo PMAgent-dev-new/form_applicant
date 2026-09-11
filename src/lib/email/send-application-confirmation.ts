@@ -6,6 +6,7 @@
  * - 送信失敗時も throw せず SendResult として返す (呼び出し側でフォーム送信成功は維持)
  */
 
+import { describeError } from '../describe-error';
 import { sendGmailMessage } from './gmail-client';
 import {
   buildApplicationConfirmationHtml,
@@ -105,7 +106,8 @@ export async function sendApplicationConfirmationEmail(
     });
     return { sent: true, messageId: result.messageId };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return { sent: false, reason: 'error', error: message };
+    // error は呼び出し側がログに出す。message だけだと undici の 'fetch failed' の原因（ECONNRESET 等）が
+    // 消えるので describeError で1行にする（送信のタイムアウトは 'TimeoutError: ...' になる）。
+    return { sent: false, reason: 'error', error: describeError(error) };
   }
 }

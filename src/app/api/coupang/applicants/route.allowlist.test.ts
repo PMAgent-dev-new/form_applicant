@@ -129,6 +129,49 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     expect(hosts.has('graph.facebook.com')).toBe(true);
   });
 
+  it('Lark・Base・SMS・CAPI の fetch はすべてタイムアウトの signal を渡す', async () => {
+    // 1本でも signal が無いと、その相手が無応答のとき allSettled が張り付き、
+    // サマリ行も出ないまま実行上限で打ち切られる。SMS・CAPI の送信本体はライブラリ側（src/lib）にある。
+    const { POST } = await import('./route');
+    await POST(makeRequest(coupangBody));
+
+    const hosts = new Set(fetchSpy.mock.calls.map((call) => hostOf(call[0])));
+    expect(hosts).toEqual(new Set(['open.larksuite.com', 'leomeet.pmagent.jp', 'graph.facebook.com']));
+    const withoutSignal = fetchSpy.mock.calls
+      .filter((call) => !((call[1] as RequestInit | undefined)?.signal instanceof AbortSignal))
+      .map((call) => hostOf(call[0]));
+    expect(withoutSignal, `signal の無い fetch: ${withoutSignal.join(', ')}`).toEqual([]);
+  });
+
+  it('実行上限（maxDuration）は共通ルートと同じ 60 秒', async () => {
+    const { maxDuration } = await import('./route');
+    expect(maxDuration).toBe(60);
+  });
+
+  it('サマリに所要時間（elapsedMs）と、いちばん時間の掛かった副作用（slowest）を載せる', async () => {
+    fetchSpy.mockImplementation(async (input: unknown) => {
+      // SMS だけ遅くする
+      if (hostOf(input) === 'leomeet.pmagent.jp') await new Promise((resolve) => setTimeout(resolve, 30));
+      return new Response(JSON.stringify({ ok: true, code: 0, StatusCode: 0 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const { POST } = await import('./route');
+      await POST(makeRequest(coupangBody));
+
+      const summary = logSpy.mock.calls.find((call) => call[0] === '[coupang] submission settled:')?.[1] as
+        | { elapsedMs?: number; slowest?: { task?: string } | null }
+        | undefined;
+      expect(summary?.elapsedMs).toBeGreaterThanOrEqual(25);
+      expect(summary?.slowest?.task).toBe('application-sms');
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
   it('SMSは coupang チャネルで送る(eeasy 側の登録名と一致させる)', async () => {
     const { POST } = await import('./route');
     await POST(makeRequest(coupangBody));

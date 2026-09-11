@@ -6,6 +6,7 @@ import {
   LOCATION_LABELS,
 } from '@/app/components/coupang-form/constants';
 import { resolveAdImageUrl, isLikelyAdId } from '@/lib/meta/resolveAdImage';
+import { createSubmissionTimer, describeSlowSubmission } from '@/lib/submission-timing';
 import { sendMetaCapiLead } from '@/lib/meta/capi';
 import { sendApplicationConfirmationEmail } from '@/lib/email/send-application-confirmation';
 import { sendApplicationSms } from '@/lib/sms/send-application-sms';
@@ -26,6 +27,14 @@ const COUPANG_EVENT_SOURCE_URL = BASE_PATH
  */
 const LARK_FETCH_TIMEOUT_MS = 5000;
 
+/**
+ * 関数の実行上限（秒）。共通ルート（src/app/api/applicants/route.ts）と同じ 60 秒に揃える。
+ * 本番は2つの Vercel プロジェクトで既定の上限が違う（ridejob.pmagent.jp の ridejob-form は 15 秒、ridejob-entry は 300 秒）。
+ * このルートの最悪ケースは約7.5秒（広告画像の解決 2.5 ＋ 各副作用 5）。メール（既定 OFF）を有効にすると 12.5 秒、
+ * Gmail のトークン取得の再試行が重なる極端な場合は約30秒（2026-09-11 に決定。PR #82）。
+ */
+export const maxDuration = 60;
+
 type UTMParams = {
   utm_source?: string;
   utm_medium?: string;
@@ -43,6 +52,8 @@ type CoupangSubmission = CoupangFormData & {
 
 
 export async function POST(request: NextRequest) {
+  // サマリ行に載せる所要時間（elapsedMs）と、いちばん時間の掛かった副作用（slowest）を測る。
+  const timer = createSubmissionTimer();
   try {
     const submissionData = (await request.json()) as CoupangSubmission;
     const { utmParams, ...formData } = submissionData;
@@ -137,9 +148,9 @@ export async function POST(request: NextRequest) {
       };
       // run() は同期 throw しうるので Promise.resolve().then() でくるむ。
       // 直接 run().then(...) にすると同期 throw が外側 catch まで飛び、
-      // 応募そのものを500で落としてしまう。
+      // 応募そのものを500で落としてしまう。timer.time で所要時間も記録する（サマリ行の slowest）。
       const trackTask = (label: string, run: () => Promise<unknown>): Promise<void> =>
-        Promise.resolve()
+        timer.time(label, Promise.resolve()
           .then(run)
           .then(
             () => undefined,
@@ -150,7 +161,7 @@ export async function POST(request: NextRequest) {
               const cause = e instanceof Error && e.cause ? ` cause=${String((e.cause as { code?: string })?.code ?? e.cause)}` : '';
               console.error(`[coupang] ${label} threw and was swallowed: ${detail}${cause}`);
             }
-          );
+          ));
 
       // Lark 送信タスク
       if (larkWebhookUrl) {
@@ -351,6 +362,7 @@ export async function POST(request: NextRequest) {
       await Promise.allSettled(tasks);
 
       // 応募1件につき必ず1行出す。無言で壊れていることを検知するための足跡。
+      const timing = timer.summary();
       console.log('[coupang] submission settled:', {
         mode: 'full',
         tasks: tasks.length,
@@ -359,7 +371,12 @@ export async function POST(request: NextRequest) {
         baseWebhookConfigured: Boolean(baseWebhookUrl),
         emailEnabled: process.env.COUPANG_EMAIL_ENABLED === 'true',
         smsEnabled: process.env.COUPANG_SMS_ENABLED === 'true',
+        elapsedMs: timing.elapsedMs,
+        slowest: timing.slowest,
       });
+      // 所要時間が実行上限の半分以上なら警告する（上限に届くと打ち切られてこの行自体が出ない）。
+      const slow = describeSlowSubmission(timing, maxDuration);
+      if (slow) console.warn(`[coupang] ${slow}`);
     } else {
       // Baseのみ送信（テストモード）
       if (baseWebhookUrl) {
@@ -406,10 +423,14 @@ export async function POST(request: NextRequest) {
           console.log('[coupang] Lark Base webhook triggered successfully');
         }
         // Baseのみ経路でも必ず足跡を残す（この行が無い＝無言の失敗、と読めるようにする）
+        const timing = timer.summary();
         console.log('[coupang] submission settled:', {
           mode: 'base-only',
           baseWebhookConfigured: true,
+          elapsedMs: timing.elapsedMs,
         });
+        const slow = describeSlowSubmission(timing, maxDuration);
+        if (slow) console.warn(`[coupang] ${slow}`);
       }
     }
 
