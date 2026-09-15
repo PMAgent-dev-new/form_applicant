@@ -80,6 +80,25 @@ test('commit status・production target・READY・SHAが揃った場合だけdep
   assert.equal(result.ok, true);
 });
 
+test('latest deploymentがREADYでも本番aliasが旧deploymentならgateを通さない', async () => {
+  const { productionAliasGate } = await loadGuard('', 'alias-old');
+  const result = productionAliasGate(
+    { readyState: 'READY', url: 'old-deploy.vercel.app' },
+    { state: 'READY', target: 'production', url: 'new-deploy.vercel.app' },
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /points to old-deploy/);
+});
+
+test('本番aliasとlatest production deploymentが一致すればalias gateを通す', async () => {
+  const { productionAliasGate } = await loadGuard('', 'alias-current');
+  const result = productionAliasGate(
+    { readyState: 'READY', url: 'https://new-deploy.vercel.app' },
+    { state: 'READY', target: 'production', url: 'new-deploy.vercel.app' },
+  );
+  assert.equal(result.ok, true);
+});
+
 test('rollback先は現在以外のREADY production deploymentに固定する', async () => {
   const { selectRollbackTarget } = await loadGuard('', 'rollback-target');
   const target = selectRollbackTarget(
