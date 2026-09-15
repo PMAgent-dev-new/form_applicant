@@ -6,11 +6,18 @@ import {
   validateStep1,
   validateStep2,
   validateStep3,
-  validateStep4,
   validateAllSteps,
 } from '../utils/coupangValidators';
 import { genEventId, trackMeta } from '@/lib/meta/pixel';
 import { COUPANG_META_CONTENT_NAME, COUPANG_FIXED_JOB_POSITION } from '../constants';
+import {
+  EMPTY_UTM_PARAMS,
+  readAttribution,
+  resolveUtmParamsWithSource,
+  type Attribution,
+  type AttributionResolutionSource,
+  type UtmParams,
+} from '@/lib/attribution';
 
 declare global {
   interface Window {
@@ -187,17 +194,28 @@ export function useCoupangFormState() {
       setIsSubmitting(true);
 
       try {
-        // UTMパラメータ取得
-        const urlParams = new URLSearchParams(window.location.search);
-        const utmParams = {
-          utm_source: urlParams.get('utm_source') || undefined,
-          utm_medium: urlParams.get('utm_medium') || undefined,
-          utm_campaign: urlParams.get('utm_campaign') || undefined,
-          utm_term: urlParams.get('utm_term') || undefined,
-          utm_creative: urlParams.get('utm_creative') || undefined,
-          utm_content: urlParams.get('utm_content') || undefined, // Meta広告(v3): CR-ID固定値（例 CR-2608-30）
-          utm_id: urlParams.get('utm_id') || undefined, // Meta広告(v3): {{ad.id}}（広告ID）
-        };
+        // LIFT JOB だけ query 直読みになっていたため、共通フォームと同じ
+        // query → Cookie → referrer の順で流入元を復元する。Meta のアプリ内ブラウザや
+        // 応募時に query が無い場合は、着地時に AttributionCapture が保存した
+        // rj_attr から source / medium / campaign / term / content を復元する。
+        // utm_creative / utm_id は共有Cookieの互換スキーマに含まれないため、現行の
+        // LIFT JOB（同一ページ内で完結）では応募時URLの query から取得する。
+        // いずれの場合も、異なる出所の項目は混ぜない。
+        // 計測の取得失敗で応募者を落とさないよう、例外時は空のUTMで送信を続ける。
+        let attribution: Attribution = {};
+        let utmParams: UtmParams = EMPTY_UTM_PARAMS;
+        let attributionSource: AttributionResolutionSource = 'direct';
+        try {
+          attribution = readAttribution();
+          ({ utmParams, attributionSource } = resolveUtmParamsWithSource(
+            window.location.search,
+            attribution,
+            document.referrer,
+            window.location.host,
+          ));
+        } catch (error) {
+          console.warn('[liftjob-attribution] 流入元の解決に失敗しました（応募送信は継続します）', error);
+        }
 
         // GTMイベント送信
         trackEvent('form_submit', {
@@ -216,6 +234,13 @@ export function useCoupangFormState() {
             ...formData,
             utmParams,
             metaEventId,
+            // Baseの「経路」系フィールドで、UTMだけでなくLPと初回流入元も
+            // 確認できるようにする。pageUrl はブラウザ側の実URLなので、
+            // Referrer-Policy によりサーバー側 Referer が短縮される場合の保険にもなる。
+            pageUrl: window.location.href,
+            landingPath: attribution.landing || window.location.pathname,
+            initialReferrer: attribution.referrer || document.referrer || '',
+            attributionSource,
           }),
         });
 

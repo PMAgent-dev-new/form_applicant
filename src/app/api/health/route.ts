@@ -16,15 +16,30 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
 
-type EnvGroup = { name: string; anyOf: string[] };
+type EnvGroup = { name: string; anyOf: string[]; notifyOnly?: boolean };
 
 const REQUIRED_ENV_GROUPS: EnvGroup[] = [
   // 応募通知(テキスト) — これが無いと route.ts は 500 を返し応募が1件も記録されない
-  { name: 'lark_notify', anyOf: ['LARK_WEBHOOK_URL', 'LARK_WEBHOOK_URL_TEST'] },
+  {
+    name: 'lark_notify',
+    anyOf: ['LARK_WEBHOOK_URL', 'LARK_WEBHOOK_URL_TEST'],
+    notifyOnly: true,
+  },
   // 応募レコード保存(Base) — 応募データの保存先
   {
     name: 'lark_base',
     anyOf: ['LARK_BASE_WEBHOOK_URL', 'LARK_BASE_WEBHOOK_URL_PROD', 'LARK_BASE_WEBHOOK_URL_TEST'],
+  },
+  // LIFT JOB（クーパン）は共通経路と別のWebhookを使う。共通側だけの検査では
+  // LIFT JOBのみ無言で切れても /api/health が ready のままになるため、別ゲートにする。
+  {
+    name: 'lark_liftjob_notify',
+    anyOf: ['LARK_WEBHOOK_URL_COUPANG_PROD', 'LARK_WEBHOOK_URL_COUPANG'],
+    notifyOnly: true,
+  },
+  {
+    name: 'lark_liftjob_base',
+    anyOf: ['LARK_BASE_WEBHOOK_URL_COUPANG_PROD', 'LARK_BASE_WEBHOOK_URL_COUPANG'],
   },
 ];
 
@@ -32,8 +47,14 @@ function isSet(key: string): boolean {
   return (process.env[key] ?? '').trim().length > 0;
 }
 
-export function findMissingEnvGroups(groups: EnvGroup[] = REQUIRED_ENV_GROUPS): string[] {
-  return groups.filter((g) => !g.anyOf.some(isSet)).map((g) => g.name);
+export function findMissingEnvGroups(
+  groups: EnvGroup[] = REQUIRED_ENV_GROUPS,
+  baseOnly = process.env.LARK_SEND_BASE_ONLY === 'true',
+): string[] {
+  return groups
+    .filter((g) => !(baseOnly && g.notifyOnly))
+    .filter((g) => !g.anyOf.some(isSet))
+    .map((g) => g.name);
 }
 
 export async function GET(request: NextRequest) {

@@ -10,6 +10,8 @@ import { sendMetaCapiLead } from '@/lib/meta/capi';
 import { sendApplicationConfirmationEmail } from '@/lib/email/send-application-confirmation';
 import { sendApplicationSms } from '@/lib/sms/send-application-sms';
 import { BASE_PATH } from '@/lib/basePath';
+import { getMediaName } from '@/lib/media-name';
+import { resolveApplicationSourceMasterName } from '@/lib/lark-masters';
 
 /**
  * referer が取れないときに CAPI へ渡す既定の event_source_url。
@@ -26,7 +28,25 @@ const COUPANG_EVENT_SOURCE_URL = BASE_PATH
  */
 const LARK_FETCH_TIMEOUT_MS = 5000;
 
-type UTMParams = {
+type LarkWebhookResult = {
+  code?: number | string;
+  msg?: string;
+  StatusCode?: number | string;
+  StatusMessage?: string;
+};
+
+function hasNonZeroCode(value: number | string | undefined): boolean {
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string' && value.trim()) return Number(value) !== 0;
+  return false;
+}
+
+/** Lark Bot / AnyCross は HTTP 200 でも body 側に失敗コードを返すため両方見る。 */
+function isLarkRejected(result: LarkWebhookResult): boolean {
+  return hasNonZeroCode(result.code) || hasNonZeroCode(result.StatusCode);
+}
+
+export type UTMParams = {
   utm_source?: string;
   utm_medium?: string;
   utm_campaign?: string;
@@ -39,13 +59,206 @@ type UTMParams = {
 type CoupangSubmission = CoupangFormData & {
   utmParams?: UTMParams;
   metaEventId?: string;
+  /** 応募確定時のブラウザURL。Referer が短縮・欠落する環境の保険。 */
+  pageUrl?: string;
+  /** サイト内回遊前の最初の着地パス。 */
+  landingPath?: string;
+  /** 着地時点の referrer。 */
+  initialReferrer?: string;
+  /** 送信したUTMをどこから復元したか。 */
+  attributionSource?: 'query' | 'click_id' | 'cookie' | 'referrer' | 'direct';
 };
+
+const META_SOURCE_NAMES: Record<string, string> = {
+  meta: 'Meta',
+  fb: 'Facebook',
+  facebook: 'Facebook',
+  ig: 'Instagram',
+  instagram: 'Instagram',
+  th: 'Threads',
+  threads: 'Threads',
+  msg: 'Messenger',
+  messenger: 'Messenger',
+};
+
+const META_AD_MEDIUMS = new Set(['ad', 'cpc', 'ads', 'paid', 'search']);
+
+const text = (value: unknown): string => {
+  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  // JSONオブジェクトは独自toStringを持ち得る。String(value)自体がthrowする入力もあるため捨てる。
+  return '';
+};
+
+/** リクエスト/Cookie由来の値は型注釈を信用せず、サーバー境界で文字列へ正規化する。 */
+function normalizeUtmParams(value: unknown): UTMParams {
+  const input = value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+  return {
+    utm_source: text(input.utm_source),
+    utm_medium: text(input.utm_medium),
+    utm_campaign: text(input.utm_campaign),
+    utm_term: text(input.utm_term),
+    utm_creative: text(input.utm_creative),
+    utm_content: text(input.utm_content),
+    utm_id: text(input.utm_id),
+  };
+}
+
+function pathnameFromUrl(value: string): string {
+  try {
+    return new URL(value).pathname;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * LIFT JOBの通知に出す流入経路。キャンペーンはMeta配信だが、
+ * {{site_source_name}} で取れる配置（fb / ig / threads / messenger）は潰さない。
+ * UTMが無い場合に「RIDEJOB HP」や「Meta広告」と推測で埋めると集計を汚すため、
+ * 取得できなかった事実を明示する。
+ */
+export function describeLiftJobRoute(utm: UTMParams = {}): string {
+  const source = text(utm.utm_source).toLowerCase();
+  const medium = text(utm.utm_medium).toLowerCase();
+  if (!source) return '経路不明（UTM未取得）';
+  const platform = META_SOURCE_NAMES[source];
+  if (platform) {
+    if (!medium) return `${platform}（流入区分未取得）`;
+    return `${platform}${META_AD_MEDIUMS.has(medium) ? '広告' : ''}（${medium}）`;
+  }
+  const label = getMediaName(utm);
+  return medium ? `${label}（${medium}）` : label;
+}
+
+/** Baseの媒体別集計用の大分類。配置の詳細は utm_source に保存する。 */
+export function getLiftJobMediaName(utm: UTMParams = {}): string {
+  const source = text(utm.utm_source).toLowerCase();
+  const medium = text(utm.utm_medium).toLowerCase();
+  if (!source) return '経路不明';
+  if (META_SOURCE_NAMES[source] && META_AD_MEDIUMS.has(medium)) return 'Meta広告';
+  return getMediaName(utm);
+}
+
+function firstText(...values: unknown[]): string {
+  for (const value of values) {
+    const candidate = text(value);
+    if (candidate) return candidate;
+  }
+  return '';
+}
+
+export function buildLiftJobNotification(params: {
+  utm: UTMParams;
+  pageUrl: string;
+  email?: string;
+  fullName?: string;
+  fullNameKana?: string;
+  phoneNumber?: string;
+  jobPositionLabel: string;
+  desiredLocationLabel: string;
+  ageLabel: string;
+  birthDateLabel: string;
+}): string {
+  const { utm } = params;
+  return `
+LIFT JOB（ロケットナウ）の応募がありました！
+-------------------------
+流入経路: ${describeLiftJobRoute(utm)}
+キャンペーンID: ${text(utm.utm_campaign) || '未取得'}
+広告セットID: ${text(utm.utm_term) || '未取得'}
+CR-ID: ${text(utm.utm_content) || '未取得'}
+広告ID: ${text(utm.utm_id) || '未取得'}
+広告名: ${text(utm.utm_creative) || '未取得'}
+LP: ${params.pageUrl || '未取得'}
+メールアドレス: ${params.email || '未入力'}
+氏名（漢字）: ${params.fullName || '未入力'}
+氏名（ふりがな）: ${params.fullNameKana || '未入力'}
+電話番号: ${params.phoneNumber || '未入力'}
+希望職種: ${params.jobPositionLabel}
+希望勤務地: ${params.desiredLocationLabel}
+年齢: ${params.ageLabel}
+生年月日: ${params.birthDateLabel}
+-------------------------
+  `.trim();
+}
+
+export function buildLiftJobBasePayload(params: {
+  utm: UTMParams;
+  adId: string;
+  adCreativeId: string;
+  adImageUrl: string;
+  formData: CoupangFormData;
+  jobPositionLabel: string;
+  desiredLocationLabel: string;
+  pageUrl: string;
+  landingPath: string;
+  initialReferrer: string;
+  attributionSource: CoupangSubmission['attributionSource'];
+  userAgent: string;
+  clientIp: string;
+  submittedAt: string;
+  environment?: string;
+}): Record<string, unknown> {
+  // 共通resolverはUTMなしをRIDEJOB HPとみなすが、LIFT JOBは別サービス・別Base。
+  // 推測でRIDEJOBへ寄せず、sourceを実測できたときだけマスタ名候補を送る。
+  const applicationSource = text(params.utm.utm_source)
+    ? resolveApplicationSourceMasterName(params.utm)
+    : undefined;
+  return {
+    media_name: getLiftJobMediaName(params.utm),
+    application_source: applicationSource || '',
+    utm_source: text(params.utm.utm_source),
+    utm_medium: text(params.utm.utm_medium),
+    utm_campaign: text(params.utm.utm_campaign),
+    utm_term: text(params.utm.utm_term),
+    utm_creative: text(params.utm.utm_creative),
+    utm_content: text(params.utm.utm_content),
+    utm_id: text(params.utm.utm_id),
+    ad_id: params.adId,
+    ad_creative_id: params.adCreativeId,
+    ad_image_url: params.adImageUrl,
+    email: params.formData.email || '',
+    full_name: params.formData.fullName || '',
+    full_name_kana: params.formData.fullNameKana || '',
+    phone_number: params.formData.phoneNumber || '',
+    job_position: params.jobPositionLabel,
+    desired_location: params.desiredLocationLabel,
+    age: params.formData.age || '',
+    birth_date: params.formData.birthDate || '',
+    submitted_at: params.submittedAt,
+    environment: params.environment,
+    user_agent: params.userAgent,
+    client_ip: params.clientIp,
+    form_origin: 'coupang_rocketnow',
+    is_coupang: true,
+    page_url: params.pageUrl,
+    landing_path: params.landingPath,
+    initial_referrer: params.initialReferrer,
+    attribution_source: params.attributionSource || 'direct',
+  };
+}
 
 
 export async function POST(request: NextRequest) {
   try {
     const submissionData = (await request.json()) as CoupangSubmission;
-    const { utmParams, ...formData } = submissionData;
+    const {
+      utmParams: submittedUtmParams,
+      metaEventId,
+      pageUrl: submittedPageUrl,
+      landingPath: submittedLandingPath,
+      initialReferrer: submittedInitialReferrer,
+      attributionSource,
+      ...formData
+    } = submissionData;
+    const utmParams = normalizeUtmParams(submittedUtmParams);
+    const requestReferer = request.headers.get('referer') || '';
+    const pageUrl = firstText(submittedPageUrl, requestReferer, COUPANG_EVENT_SOURCE_URL);
+    const landingPath = firstText(submittedLandingPath, pathnameFromUrl(pageUrl), BASE_PATH ? '/entry/coupang' : '/coupang');
+    const initialReferrer = firstText(submittedInitialReferrer);
 
     // 環境判定
     const isProduction = process.env.NODE_ENV === 'production';
@@ -154,24 +367,18 @@ export async function POST(request: NextRequest) {
 
       // Lark 送信タスク
       if (larkWebhookUrl) {
-        const utmDisplay = utmParams?.utm_source
-          ? `${utmParams.utm_source}${utmParams.utm_medium ? `(${utmParams.utm_medium})` : ''}`
-          : 'RIDEJOB HP';
-
-        const messageContent = `
-ロケットナウの応募がありました！
--------------------------
-流入元: ${utmDisplay}
-メールアドレス: ${formData.email || '未入力'}
-氏名（漢字）: ${formData.fullName || '未入力'}
-氏名（ふりがな）: ${formData.fullNameKana || '未入力'}
-電話番号: ${formData.phoneNumber || '未入力'}
-希望職種: ${jobPositionLabel}
-希望勤務地: ${desiredLocationLabel}
-年齢: ${ageLabel}
-生年月日: ${birthDateLabel}
--------------------------
-        `.trim();
+        const messageContent = buildLiftJobNotification({
+          utm: utmParams,
+          pageUrl,
+          email: formData.email,
+          fullName: formData.fullName,
+          fullNameKana: formData.fullNameKana,
+          phoneNumber: formData.phoneNumber,
+          jobPositionLabel,
+          desiredLocationLabel,
+          ageLabel,
+          birthDateLabel,
+        });
 
         const larkPayload = {
           msg_type: 'text',
@@ -191,10 +398,8 @@ export async function POST(request: NextRequest) {
             });
             // Lark の Webhook は **HTTP 200 でも body の code が非0なら失敗**（bot除外・トークン失効など）。
             // 200 だけ見て成功扱いにすると、届いていないのに「sent successfully」と記録される。
-            const result = (await resp.json().catch(() => ({}))) as { code?: number; msg?: string };
-            const larkRejected =
-              typeof result?.code !== 'undefined' && result.code !== 0;
-            if (!resp.ok || larkRejected) {
+            const result = (await resp.json().catch(() => ({}))) as LarkWebhookResult;
+            if (!resp.ok || isLarkRejected(result)) {
               markFailed('lark-notification');
               console.error(
                 `[coupang] Failed to send notification to Lark (http=${resp.status} code=${result?.code ?? 'n/a'} msg=${result?.msg ?? 'n/a'})`
@@ -211,32 +416,23 @@ export async function POST(request: NextRequest) {
         const userAgent = request.headers.get('user-agent') || '';
         const clientIp = (request.headers.get('x-forwarded-for') || '').split(',')[0]?.trim() || '';
 
-        const basePayload = {
-          media_name: 'Meta広告',
-          utm_source: utmParams?.utm_source || '',
-          utm_medium: utmParams?.utm_medium || '',
-          utm_campaign: utmParams?.utm_campaign || '',
-          utm_term: utmParams?.utm_term || '',
-          utm_creative: utmParams?.utm_creative || '',
-          utm_content: utmParams?.utm_content || '',
-          utm_id: utmParams?.utm_id || '',
-          ad_id: adId,
-          ad_creative_id: adCreativeId,
-          ad_image_url: adImageUrl,
-          email: formData.email || '',
-          full_name: formData.fullName || '',
-          full_name_kana: formData.fullNameKana || '',
-          phone_number: formData.phoneNumber || '',
-          job_position: jobPositionLabel,
-          desired_location: desiredLocationLabel,
-          age: formData.age || '',
-          birth_date: formData.birthDate || '',
-          submitted_at: new Date().toISOString(),
+        const basePayload = buildLiftJobBasePayload({
+          utm: utmParams,
+          adId,
+          adCreativeId,
+          adImageUrl,
+          formData,
+          jobPositionLabel,
+          desiredLocationLabel,
+          pageUrl,
+          landingPath,
+          initialReferrer,
+          attributionSource,
+          userAgent,
+          clientIp,
+          submittedAt: new Date().toISOString(),
           environment: process.env.NODE_ENV,
-          user_agent: userAgent,
-          client_ip: clientIp,
-          form_origin: 'coupang_rocketnow',
-        } as Record<string, unknown>;
+        });
 
         tasks.push(
           trackTask('lark-base-webhook', async () => {
@@ -246,10 +442,12 @@ export async function POST(request: NextRequest) {
               body: JSON.stringify(basePayload),
               signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
             });
-            if (!resp.ok) {
+            const result = (await resp.json().catch(() => ({}))) as LarkWebhookResult;
+            if (!resp.ok || isLarkRejected(result)) {
               markFailed('lark-base-webhook');
-              const errorBody = await resp.text().catch(() => '');
-              console.error(`[coupang] Failed to send to Lark Base Webhook (${resp.status}): ${errorBody.slice(0, 300)}`);
+              console.error(
+                `[coupang] Failed to send to Lark Base Webhook (http=${resp.status} code=${result.code ?? result.StatusCode ?? 'n/a'} msg=${result.msg ?? result.StatusMessage ?? 'n/a'})`
+              );
             } else {
               console.log('[coupang] Lark Base webhook triggered successfully');
             }
@@ -321,18 +519,17 @@ export async function POST(request: NextRequest) {
       }
 
       // Meta Conversions API（Lead）— 非致命。eventId が無ければスキップ
-      if (typeof submissionData.metaEventId === 'string' && submissionData.metaEventId) {
+      if (typeof metaEventId === 'string' && metaEventId) {
         const capiUserAgent = request.headers.get('user-agent') || '';
         const capiClientIp = (request.headers.get('x-forwarded-for') || '').split(',')[0]?.trim() || '';
-        const capiReferer = request.headers.get('referer') || '';
         // クロージャに入ると typeof による絞り込みが効かないので、ここで確定させる。
-        const capiEventId = submissionData.metaEventId;
+        const capiEventId = metaEventId;
         tasks.push(
           trackTask('meta-capi', () =>
             sendMetaCapiLead({
               eventId: capiEventId,
               // referer が取れない場合でも website イベントとして成立させる。
-              eventSourceUrl: capiReferer || COUPANG_EVENT_SOURCE_URL,
+              eventSourceUrl: requestReferer || pageUrl || COUPANG_EVENT_SOURCE_URL,
               contentName: COUPANG_META_CONTENT_NAME,
               // dedup 後に残るのは通常サーバー側なので、Pixel と同じ value/currency を持たせる。
               value: 0,
@@ -366,32 +563,23 @@ export async function POST(request: NextRequest) {
         const userAgent = request.headers.get('user-agent') || '';
         const clientIp = (request.headers.get('x-forwarded-for') || '').split(',')[0]?.trim() || '';
 
-        const basePayload = {
-          media_name: 'Meta広告',
-          utm_source: utmParams?.utm_source || '',
-          utm_medium: utmParams?.utm_medium || '',
-          utm_campaign: utmParams?.utm_campaign || '',
-          utm_term: utmParams?.utm_term || '',
-          utm_creative: utmParams?.utm_creative || '',
-          utm_content: utmParams?.utm_content || '',
-          utm_id: utmParams?.utm_id || '',
-          ad_id: adId,
-          ad_creative_id: adCreativeId,
-          ad_image_url: adImageUrl,
-          email: formData.email || '',
-          full_name: formData.fullName || '',
-          full_name_kana: formData.fullNameKana || '',
-          phone_number: formData.phoneNumber || '',
-          job_position: jobPositionLabel,
-          desired_location: desiredLocationLabel,
-          age: formData.age || '',
-          birth_date: formData.birthDate || '',
-          submitted_at: new Date().toISOString(),
+        const basePayload = buildLiftJobBasePayload({
+          utm: utmParams,
+          adId,
+          adCreativeId,
+          adImageUrl,
+          formData,
+          jobPositionLabel,
+          desiredLocationLabel,
+          pageUrl,
+          landingPath,
+          initialReferrer,
+          attributionSource,
+          userAgent,
+          clientIp,
+          submittedAt: new Date().toISOString(),
           environment: process.env.NODE_ENV,
-          user_agent: userAgent,
-          client_ip: clientIp,
-          form_origin: 'coupang_rocketnow',
-        } as Record<string, unknown>;
+        });
 
         const resp = await fetch(baseWebhookUrl, {
           method: 'POST',
@@ -399,9 +587,12 @@ export async function POST(request: NextRequest) {
           body: JSON.stringify(basePayload),
           signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
         });
-        if (!resp.ok) {
-          const errorBody = await resp.text().catch(() => '');
-          console.error(`[coupang] Failed to send to Lark Base Webhook (${resp.status}): ${errorBody.slice(0, 300)}`);
+        const result = (await resp.json().catch(() => ({}))) as LarkWebhookResult;
+        if (!resp.ok || isLarkRejected(result)) {
+          console.error(
+            `[coupang] Failed to send to Lark Base Webhook (http=${resp.status} code=${result.code ?? result.StatusCode ?? 'n/a'} msg=${result.msg ?? result.StatusMessage ?? 'n/a'})`
+          );
+          return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
         } else {
           console.log('[coupang] Lark Base webhook triggered successfully');
         }
