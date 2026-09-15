@@ -37,10 +37,14 @@ const REQUIRED_ENV_GROUPS: EnvGroup[] = [
     anyOf: ['LARK_WEBHOOK_URL_COUPANG_PROD', 'LARK_WEBHOOK_URL_COUPANG'],
     notifyOnly: true,
   },
-  {
-    name: 'lark_liftjob_base',
-    anyOf: ['LARK_BASE_WEBHOOK_URL_COUPANG_PROD', 'LARK_BASE_WEBHOOK_URL_COUPANG'],
-  },
+  // LIFT JOBはWebhook受理だけでなく、submission_idによる直接upsertを正本にする。
+  { name: 'lark_liftjob_app_id', anyOf: ['APP_ID_LIFTJOB'] },
+  { name: 'lark_liftjob_app_secret', anyOf: ['APP_SECRET_LIFTJOB'] },
+  { name: 'lark_liftjob_app_token', anyOf: ['APP_TOKEN_LIFTJOB'] },
+  { name: 'lark_liftjob_table', anyOf: ['LARK_BASE_TABLE_ID_LIFTJOB'] },
+  // ChatGPT広告の成果返却。opprefがあるときだけ使用し、Advanced Matchingは別途OFFを維持する。
+  { name: 'openai_ads_pixel', anyOf: ['OPENAI_ADS_PIXEL_ID'] },
+  { name: 'openai_ads_capi_key', anyOf: ['OPENAI_ADS_CAPI_KEY'] },
 ];
 
 function isSet(key: string): boolean {

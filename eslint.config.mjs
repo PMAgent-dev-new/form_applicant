@@ -3,7 +3,7 @@ import typescript from "eslint-config-next/typescript";
 
 const eslintConfig = [
   {
-    ignores: [".next/**", "node_modules/**", "public/**", "gas/**"],
+    ignores: [".next/**", ".claude/worktrees/**", "node_modules/**", "public/**", "gas/**"],
   },
   ...coreWebVitals,
   ...typescript,

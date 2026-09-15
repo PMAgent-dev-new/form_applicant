@@ -1,5 +1,5 @@
 import { apiPath } from '@/lib/basePath';
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import type { CoupangFormData, CoupangFormErrors } from '../types';
 import {
@@ -12,8 +12,9 @@ import { genEventId, trackMeta } from '@/lib/meta/pixel';
 import { COUPANG_META_CONTENT_NAME, COUPANG_FIXED_JOB_POSITION } from '../constants';
 import {
   EMPTY_UTM_PARAMS,
+  isMetaAdsAttribution,
   readAttribution,
-  resolveUtmParamsWithSource,
+  resolveLiftJobAttribution,
   type Attribution,
   type AttributionResolutionSource,
   type UtmParams,
@@ -43,6 +44,8 @@ export function useCoupangFormState() {
   const [errors, setErrors] = useState<CoupangFormErrors>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isFormDirty, setIsFormDirty] = useState(false);
+  // 通信失敗後の再送でも同じIDを使い、Base upsertとCAPIの重複排除を成立させる。
+  const submissionIdRef = useRef<string | null>(null);
 
   // GTMイベント送信
   const trackEvent = useCallback((eventName: string, params?: Record<string, unknown>) => {
@@ -205,9 +208,10 @@ export function useCoupangFormState() {
         let attribution: Attribution = {};
         let utmParams: UtmParams = EMPTY_UTM_PARAMS;
         let attributionSource: AttributionResolutionSource = 'direct';
+        let oppref: string | undefined;
         try {
           attribution = readAttribution();
-          ({ utmParams, attributionSource } = resolveUtmParamsWithSource(
+          ({ utmParams, attributionSource, oppref } = resolveLiftJobAttribution(
             window.location.search,
             attribution,
             document.referrer,
@@ -222,8 +226,9 @@ export function useCoupangFormState() {
           form_name: 'coupang_rocketnow_application',
         });
 
-        // Pixel と CAPI で共有する eventId（重複排除用）
-        const metaEventId = genEventId();
+        // Pixel/CAPI/Baseで共有する安定ID。成功するまで同じ値を再利用する。
+        const submissionId = submissionIdRef.current || genEventId();
+        submissionIdRef.current = submissionId;
 
         const response = await fetch(apiPath('/api/coupang/applicants'), {
           method: 'POST',
@@ -233,7 +238,9 @@ export function useCoupangFormState() {
           body: JSON.stringify({
             ...formData,
             utmParams,
-            metaEventId,
+            oppref,
+            submissionId,
+            metaEventId: submissionId,
             // Baseの「経路」系フィールドで、UTMだけでなくLPと初回流入元も
             // 確認できるようにする。pageUrl はブラウザ側の実URLなので、
             // Referrer-Policy によりサーバー側 Referer が短縮される場合の保険にもなる。
@@ -252,15 +259,18 @@ export function useCoupangFormState() {
         }
 
         await response.json();
+        submissionIdRef.current = null;
         setIsFormDirty(false);
 
         // 送信成功時に Meta Lead を発火（サーバーCAPIと同一 eventId で重複排除）。
         // contentName はカスタムコンバージョン「RIDEJOB_クーパン応募」の唯一のルール。
-        trackMeta(
-          'Lead',
-          { value: 0, currency: 'JPY', contentName: COUPANG_META_CONTENT_NAME },
-          metaEventId
-        );
+        if (isMetaAdsAttribution(utmParams)) {
+          trackMeta(
+            'Lead',
+            { value: 0, currency: 'JPY', contentName: COUPANG_META_CONTENT_NAME },
+            submissionId
+          );
+        }
         // GA4 側にも応募完了を送る。form_name は共通フォームと同じ固定値にし、
         // 職種の分離は job_category で行う（GTMのトリガーが form_name で絞っている場合に
         // クーパンだけCVが落ちるのを避けるため）。

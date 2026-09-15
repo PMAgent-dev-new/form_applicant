@@ -413,3 +413,56 @@ export function resolveUtmParamsWithSource(
   }
   return { utmParams, attributionSource: 'direct' };
 }
+
+/**
+ * LIFT JOB専用の解決結果。opprefだけの同一queryはChatGPT広告と確定できるため
+ * openai/cpcへ補完する。共有resolverの意味は変えず、他職種へ波及させない。
+ */
+export function resolveLiftJobAttribution(
+  search: string,
+  attribution: Attribution,
+  referrer: string,
+  currentHost: string,
+): {
+  utmParams: UtmParams;
+  attributionSource: AttributionResolutionSource;
+  oppref?: string;
+} {
+  const resolved = resolveUtmParamsWithSource(search, attribution, referrer, currentHost);
+  const queryOppref = new URLSearchParams(search).get('oppref')?.trim() || undefined;
+  let candidate = resolved;
+  const source = resolved.utmParams.utm_source.trim().toLowerCase();
+  const medium = resolved.utmParams.utm_medium.trim().toLowerCase();
+  if (queryOppref && (!source || (source === 'openai' && !medium))) {
+    candidate = {
+      utmParams: {
+        ...resolved.utmParams,
+        utm_source: 'openai',
+        utm_medium: 'cpc',
+      },
+      attributionSource: source ? resolved.attributionSource : 'click_id',
+    };
+  }
+
+  // Cookieのopprefを別媒体の応募へ持ち越さない。OpenAI広告として解決できた応募だけに返す。
+  const oppref = isOpenAiAdsAttribution(candidate.utmParams)
+    ? (queryOppref || attribution.oppref)
+    : undefined;
+  return { ...candidate, oppref };
+}
+
+/** OpenAI CAPIへ送信してよいChatGPT広告流入か。 */
+export function isOpenAiAdsAttribution(utm: Partial<UtmParams>): boolean {
+  const source = (utm.utm_source ?? '').trim().toLowerCase();
+  const medium = (utm.utm_medium ?? '').trim().toLowerCase();
+  return source === 'openai' && ['ad', 'cpc', 'ads', 'paid'].includes(medium);
+}
+
+/** MetaのLeadを発火してよいLIFT JOB流入か。ChatGPT等の応募をMetaへ誤計上しない。 */
+export function isMetaAdsAttribution(utm: Partial<UtmParams>): boolean {
+  const source = (utm.utm_source ?? '').trim().toLowerCase();
+  const medium = (utm.utm_medium ?? '').trim().toLowerCase();
+  return [
+    'meta', 'fb', 'facebook', 'ig', 'instagram', 'th', 'threads', 'msg', 'messenger',
+  ].includes(source) && ['ad', 'cpc', 'ads', 'paid', 'search'].includes(medium);
+}

@@ -5,6 +5,9 @@ import {
   readAttribution,
   resolveUtmParams,
   resolveUtmParamsWithSource,
+  resolveLiftJobAttribution,
+  isMetaAdsAttribution,
+  isOpenAiAdsAttribution,
   touchFromReferrer,
   type Attribution,
 } from './attribution';
@@ -232,6 +235,60 @@ describe('クリックIDだけの有料クリック（レビュー指摘1の回�
     const r = resolveUtmParams('?oppref=gAAAAAb123', {}, 'https://chatgpt.com/', HOST);
     expect(r.utm_source).toBe('');
     expect(r.utm_medium).toBe('');
+  });
+
+  test('LIFT JOBだけは同一queryのopprefをopenai/cpcへ補完する', () => {
+    const r = resolveLiftJobAttribution(
+      '?oppref=gAAAAAb123',
+      {},
+      'https://chatgpt.com/',
+      HOST,
+    );
+    expect(r).toMatchObject({
+      utmParams: { utm_source: 'openai', utm_medium: 'cpc' },
+      attributionSource: 'click_id',
+      oppref: 'gAAAAAb123',
+    });
+  });
+
+  test('LIFT JOBでも過去Cookieのopprefだけでは新しい自然流入を上書きしない', () => {
+    const r = resolveLiftJobAttribution(
+      '',
+      {
+        oppref: 'old-oppref',
+        lastTouch: { source: 'google', medium: 'organic', at: '2026-09-16T00:00:00Z' },
+      },
+      '',
+      HOST,
+    );
+    expect(r.utmParams).toMatchObject({ utm_source: 'google', utm_medium: 'organic' });
+    expect(r.oppref).toBeUndefined();
+  });
+
+  test('CookieのopprefはOpenAI広告として解決できた応募だけに返す', () => {
+    const r = resolveLiftJobAttribution(
+      '',
+      {
+        oppref: 'saved-oppref',
+        lastTouch: { source: 'openai', medium: 'cpc', at: '2026-09-16T00:00:00Z' },
+      },
+      '',
+      HOST,
+    );
+    expect(r.oppref).toBe('saved-oppref');
+  });
+
+  test('Meta Lead対象をMeta広告だけに限定する', () => {
+    expect(isMetaAdsAttribution({ utm_source: 'ig', utm_medium: 'cpc' })).toBe(true);
+    expect(isMetaAdsAttribution({ utm_source: 'messenger', utm_medium: 'ad' })).toBe(true);
+    expect(isMetaAdsAttribution({ utm_source: 'openai', utm_medium: 'cpc' })).toBe(false);
+    expect(isMetaAdsAttribution({ utm_source: 'ig', utm_medium: 'organic' })).toBe(false);
+  });
+
+  test('OpenAI CAPI対象をChatGPT広告だけに限定する', () => {
+    expect(isOpenAiAdsAttribution({ utm_source: 'openai', utm_medium: 'cpc' })).toBe(true);
+    expect(isOpenAiAdsAttribution({ utm_source: 'openai', utm_medium: 'organic' })).toBe(false);
+    expect(isOpenAiAdsAttribution({ utm_source: 'ig', utm_medium: 'cpc' })).toBe(false);
   });
 
   test('utm_source があれば従来どおりそれが勝つ（gclid併用でも）', () => {

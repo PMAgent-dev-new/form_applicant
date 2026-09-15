@@ -24,6 +24,7 @@ const ALLOWED_HOSTS = new Set([
   'test-base.jp.larksuite.com', // Lark Base Automation webhook（本番と同じURL形式のダミー）
   'leomeet.pmagent.jp', // eeasy SMS 共通エンドポイント
   'graph.facebook.com', // Meta Conversions API
+  'bzr.openai.com', // ChatGPT Ads Conversions API
   // script.google.com は **意図的に外している**。
   // 選択肢マスタ(GAS)の取得は LP 側の /api/coupang/step1-options だけの仕事で、
   // 応募POSTの経路からは 2026-09-10 に外した（恒等一致にしかならないのに 5〜68秒待たされていた）。
@@ -54,6 +55,8 @@ const ALLOWLISTED_ENV: Record<string, string> = {
   SMS_SEND_SECRET: 'test-secret',
   NEXT_PUBLIC_META_PIXEL_ID: '1234567890',
   META_CAPI_ACCESS_TOKEN: 'test-capi-token',
+  OPENAI_ADS_PIXEL_ID: 'test-openai-pixel',
+  OPENAI_ADS_CAPI_KEY: 'test-openai-key',
   GMAIL_SENDER_EMAIL: 'support_team@pmagent.jp',
   EMAIL_DRY_RUN: 'true',
   // クーパンのメール/SMSは既定OFF。経路を実際に通すためテストでは点火する。
@@ -61,7 +64,7 @@ const ALLOWLISTED_ENV: Record<string, string> = {
   COUPANG_SMS_ENABLED: 'true',
 };
 
-function makeRequest(body: unknown) {
+function makeRequest(body: unknown, extraHeaders: Record<string, string> = {}) {
   // ハンドラが request.cookies を読むため、素の Request では落ちる。
   return new NextRequest('https://ridejob.jp/entry/api/coupang/applicants', {
     method: 'POST',
@@ -69,6 +72,7 @@ function makeRequest(body: unknown) {
       'content-type': 'application/json',
       referer: 'https://ridejob.jp/entry/coupang',
       'user-agent': 'vitest',
+      ...extraHeaders,
     },
     body: JSON.stringify(body),
   });
@@ -83,6 +87,7 @@ const coupangBody = {
   desiredLocation: '東京',
   age: '30',
   birthDate: '19960101',
+  submissionId: 'evt-coupang-allowlist-test',
   metaEventId: 'evt-coupang-allowlist-test',
   utmParams: {
     utm_source: 'ig',
@@ -255,6 +260,231 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     });
   });
 
+  it('直接Base書き込み用に日本語列へ経路項目を欠落なく割り当てる', async () => {
+    const { buildLiftJobBasePayload, buildLiftJobDirectBaseFields } = await import('./route');
+    const payload = buildLiftJobBasePayload({
+      utm: coupangBody.utmParams,
+      adId: '120234567892',
+      adCreativeId: 'creative-1',
+      adImageUrl: 'https://example.com/ad.jpg',
+      formData: coupangBody as CoupangFormData,
+      jobPositionLabel: coupangBody.jobPosition,
+      desiredLocationLabel: coupangBody.desiredLocation,
+      pageUrl: coupangBody.pageUrl,
+      landingPath: coupangBody.landingPath,
+      initialReferrer: coupangBody.initialReferrer,
+      attributionSource: 'query',
+      userAgent: 'vitest',
+      clientIp: '',
+      submittedAt: '2026-09-16T00:00:00.000Z',
+      submissionId: 'submission-direct-map',
+    });
+    expect(buildLiftJobDirectBaseFields(payload)).toMatchObject({
+      '求職者名': coupangBody.fullName,
+      'マスタ-応募職種': coupangBody.jobPosition,
+      '希望勤務地': coupangBody.desiredLocation,
+      '応募経由(マスタ連動)': ['ig(ad)'],
+      '流入媒体（自動判定）': 'Meta広告',
+      utm_term: '120234567891',
+      utm_content: 'CR-2608-30',
+      utm_creative: 'CR-2608-30_SALES_未経験から法人営業',
+      utm_id: '120234567892',
+      ad_id: '120234567892',
+      ad_creative_id: 'creative-1',
+      ad_image_url: 'https://example.com/ad.jpg',
+      submission_id: 'submission-direct-map',
+    });
+  });
+
+  it('直接Baseはsubmission_idでupsertし、再送時の通知重複を防ぐ', async () => {
+    vi.stubEnv('APP_ID_LIFTJOB', 'cli-lift');
+    vi.stubEnv('APP_SECRET_LIFTJOB', 'secret-lift');
+    vi.stubEnv('APP_TOKEN_LIFTJOB', 'app-lift');
+    vi.stubEnv('LARK_BASE_TABLE_ID_LIFTJOB', 'tbl-lift');
+    vi.stubEnv('HEALTH_CHECK_TOKEN', 'health-secret');
+    vi.resetModules();
+
+    let created = false;
+    let notifyCalls = 0;
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('tenant_access_token')) {
+        return Response.json({ code: 0, tenant_access_token: 'token', expire: 7200 });
+      }
+      if (url.includes('/records/search')) {
+        return Response.json({
+          code: 0,
+          data: {
+            items: created
+              ? [{ record_id: 'rec-lift', fields: { Lark通知送信済み: true } }]
+              : [],
+          },
+        });
+      }
+      if (new URL(url).pathname.endsWith('/records') && init?.method === 'POST') {
+        created = true;
+        return Response.json({ code: 0, data: { record: { record_id: 'rec-lift' } } });
+      }
+      if (url.endsWith('/records/rec-lift') && init?.method === 'PUT') {
+        return Response.json({ code: 0 });
+      }
+      if (url.includes('/bot/v2/hook/')) {
+        notifyCalls += 1;
+        return Response.json({ code: 0 });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+
+    const body = { ...coupangBody, testMode: true };
+    const { POST } = await import('./route');
+    const first = await POST(makeRequest(body, { 'x-e2e-token': 'health-secret' }));
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({ baseRecordId: 'rec-lift' });
+
+    const second = await POST(makeRequest(body, { 'x-e2e-token': 'health-secret' }));
+    expect(second.status).toBe(200);
+    expect(notifyCalls).toBe(1);
+    expect(fetchSpy.mock.calls.some((call) => String(call[0]).includes('/base/automation/webhook/event/'))).toBe(false);
+  });
+
+  it('通知受理後のBaseフラグ更新失敗では500再送を誘発しない', async () => {
+    vi.stubEnv('APP_ID_LIFTJOB', 'cli-lift');
+    vi.stubEnv('APP_SECRET_LIFTJOB', 'secret-lift');
+    vi.stubEnv('APP_TOKEN_LIFTJOB', 'app-lift');
+    vi.stubEnv('LARK_BASE_TABLE_ID_LIFTJOB', 'tbl-lift');
+    vi.stubEnv('HEALTH_CHECK_TOKEN', 'health-secret');
+    vi.resetModules();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('tenant_access_token')) {
+        return Response.json({ code: 0, tenant_access_token: 'token', expire: 7200 });
+      }
+      if (url.includes('/records/search')) {
+        return Response.json({ code: 0, data: { items: [] } });
+      }
+      if (new URL(url).pathname.endsWith('/records') && init?.method === 'POST') {
+        return Response.json({ code: 0, data: { record: { record_id: 'rec-lift' } } });
+      }
+      if (url.includes('/bot/v2/hook/')) return Response.json({ code: 0 });
+      if (url.endsWith('/records/rec-lift') && init?.method === 'PUT') {
+        return Response.json({ code: 5001, msg: 'temporary failure' }, { status: 500 });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(
+      { ...coupangBody, testMode: true },
+      { 'x-e2e-token': 'health-secret' },
+    ));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ failed: ['lark-notification-state'] });
+    expect(errorSpy.mock.calls.flat().join(' ')).toContain('state update failed after successful send');
+    errorSpy.mockRestore();
+  });
+
+  it('ChatGPT広告を通知・Base・OpenAI CAPIへ同じ経路で連携する', async () => {
+    const body = {
+      ...coupangBody,
+      submissionId: 'evt-lift-chatgpt',
+      metaEventId: 'evt-lift-chatgpt',
+      oppref: 'gAAAAA-test-oppref',
+      utmParams: {
+        utm_source: 'openai',
+        utm_medium: 'cpc',
+        utm_campaign: 'chatgpt-campaign-1',
+        utm_term: 'chatgpt-adgroup-1',
+        utm_content: 'CR-CHATGPT-01',
+        utm_id: 'chatgpt-ad-1',
+        utm_creative: 'chatgpt-creative-1',
+      },
+      pageUrl: 'https://ridejob.jp/entry/coupang?utm_source=openai&utm_medium=cpc&oppref=gAAAAA-test-oppref',
+      attributionSource: 'query',
+    };
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(body));
+    expect(res.status).toBe(200);
+
+    const notifyCall = fetchSpy.mock.calls.find((call) => String(call[0]).includes('/bot/v2/hook/'));
+    const notifyPayload = JSON.parse((notifyCall![1] as RequestInit).body as string);
+    expect(notifyPayload.content.text).toContain('流入経路: ChatGPT広告（cpc）');
+    expect(notifyPayload.content.text).not.toContain('gAAAAA-test-oppref');
+
+    const baseCall = fetchSpy.mock.calls.find((call) => String(call[0]).includes('/base/automation/webhook/event/'));
+    const basePayload = JSON.parse((baseCall![1] as RequestInit).body as string);
+    expect(basePayload).toMatchObject({
+      media_name: 'ChatGPT広告',
+      application_source: 'openai(ad)',
+      utm_source: 'openai',
+      utm_medium: 'cpc',
+      submission_id: 'evt-lift-chatgpt',
+    });
+    expect(basePayload.oppref).toBeUndefined();
+    expect(basePayload.page_url).not.toContain('oppref');
+
+    const openAiCall = fetchSpy.mock.calls.find((call) => hostOf(call[0]) === 'bzr.openai.com');
+    expect(openAiCall, 'OpenAI CAPIが呼ばれていない').toBeTruthy();
+    const openAiPayload = JSON.parse((openAiCall![1] as RequestInit).body as string);
+    expect(openAiPayload.validate_only).toBe(false);
+    expect(openAiPayload.events[0]).toMatchObject({
+      id: 'evt-lift-chatgpt',
+      type: 'registration_completed',
+      oppref: 'gAAAAA-test-oppref',
+    });
+    expect(openAiPayload.events[0].user).toBeUndefined();
+    expect(fetchSpy.mock.calls.some((call) => hostOf(call[0]) === 'graph.facebook.com')).toBe(false);
+  });
+
+  it('opprefが無ければOpenAI CAPIへ送らない', async () => {
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(coupangBody));
+    expect(res.status).toBe(200);
+    expect(fetchSpy.mock.calls.some((call) => hostOf(call[0]) === 'bzr.openai.com')).toBe(false);
+  });
+
+  it('opprefがあってもOpenAI広告以外の経路ならOpenAI CAPIへ送らない', async () => {
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest({ ...coupangBody, oppref: 'stale-cookie-oppref' }));
+    expect(res.status).toBe(200);
+    expect(fetchSpy.mock.calls.some((call) => hostOf(call[0]) === 'bzr.openai.com')).toBe(false);
+  });
+
+  it('認証付きE2EモードはOpenAIをvalidate-onlyにし、メール・SMS・Meta CAPIを抑止する', async () => {
+    vi.stubEnv('HEALTH_CHECK_TOKEN', 'health-secret');
+    vi.resetModules();
+    const body = {
+      ...coupangBody,
+      submissionId: 'LIFT-E2E-CHATGPT',
+      metaEventId: 'LIFT-E2E-CHATGPT',
+      testMode: true,
+      oppref: 'gAAAAA-e2e',
+      utmParams: { ...coupangBody.utmParams, utm_source: 'openai', utm_medium: 'cpc' },
+    };
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(body, { 'x-e2e-token': 'health-secret' }));
+    expect(res.status).toBe(200);
+
+    const openAiCall = fetchSpy.mock.calls.find((call) => hostOf(call[0]) === 'bzr.openai.com');
+    const openAiPayload = JSON.parse((openAiCall![1] as RequestInit).body as string);
+    expect(openAiPayload.validate_only).toBe(true);
+    expect(fetchSpy.mock.calls.some((call) => hostOf(call[0]) === 'graph.facebook.com')).toBe(false);
+    expect(fetchSpy.mock.calls.some((call) => hostOf(call[0]) === 'leomeet.pmagent.jp')).toBe(false);
+    const notifyCall = fetchSpy.mock.calls.find((call) => String(call[0]).includes('/bot/v2/hook/'));
+    const notifyPayload = JSON.parse((notifyCall![1] as RequestInit).body as string);
+    expect(notifyPayload.content.text).toContain('【E2Eテスト・実応募ではありません】');
+  });
+
+  it('E2Eモードはhealth token不一致なら外部送信前に401にする', async () => {
+    vi.stubEnv('HEALTH_CHECK_TOKEN', 'health-secret');
+    vi.resetModules();
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest({ ...coupangBody, testMode: true }, { 'x-e2e-token': 'wrong' }));
+    expect(res.status).toBe(401);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it('UTMが無い応募をRIDEJOB HPやMeta広告と推測で埋めない', async () => {
     const { buildLiftJobBasePayload, describeLiftJobRoute, getLiftJobMediaName } = await import('./route');
     expect(describeLiftJobRoute({})).toBe('経路不明（UTM未取得）');
@@ -274,6 +504,7 @@ describe('coupang applicants POST — outbound host allowlist', () => {
       userAgent: 'vitest',
       clientIp: '',
       submittedAt: '2026-09-15T00:00:00.000Z',
+      submissionId: 'evt-no-utm',
     });
     expect(payload.application_source).toBe('');
   });
@@ -326,6 +557,7 @@ describe('coupang applicants POST — outbound host allowlist', () => {
       userAgent: 'vitest',
       clientIp: '',
       submittedAt: '2026-09-15T00:00:00.000Z',
+      submissionId: 'evt-hostile-utm',
     });
     expect(payload.utm_source).toBe('');
   });
@@ -343,8 +575,8 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     expect(payload.landing_path).toBe('/entry/coupang');
   });
 
-  it('Lark通知が落ちても応募は成立し、SMSとCAPIは送られる', async () => {
-    // 応募を落とさないことの番人。通知の失敗で応募データまで失うのが最悪の壊れ方。
+  it('Lark通知が落ちたら500にし、SMSとCAPIを開始しない', async () => {
+    // Baseはsubmission_idでupsert済みなので、同じIDの再送で重複せず通知を回復できる。
     fetchSpy.mockImplementation(async (input: unknown) => {
       if (hostOf(input) === 'open.larksuite.com' && String(input).includes('/bot/v2/hook/')) {
         throw new TypeError('fetch failed');
@@ -357,10 +589,10 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     const { POST } = await import('./route');
     const res = await POST(makeRequest(coupangBody));
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
     const hosts = new Set(fetchSpy.mock.calls.map((call) => hostOf(call[0])));
-    expect(hosts.has('leomeet.pmagent.jp')).toBe(true);
-    expect(hosts.has('graph.facebook.com')).toBe(true);
+    expect(hosts.has('leomeet.pmagent.jp')).toBe(false);
+    expect(hosts.has('graph.facebook.com')).toBe(false);
   });
 
   it('Larkが HTTP200 でも code!==0 なら失敗として記録する', async () => {
@@ -378,7 +610,7 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     const { POST } = await import('./route');
     const res = await POST(makeRequest(coupangBody));
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
     const logged = errorSpy.mock.calls.map((c) => c.join(' ')).join('\n');
     expect(logged).toContain('Failed to send notification to Lark');
     expect(logged).toContain('19001');
@@ -400,7 +632,7 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     const { POST } = await import('./route');
     const res = await POST(makeRequest(coupangBody));
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
     const logged = errorSpy.mock.calls.map((c) => c.join(' ')).join('\n');
     expect(logged).toContain('Failed to send notification to Lark');
     expect(logged).toContain('code=n/a');
@@ -423,7 +655,7 @@ describe('coupang applicants POST — outbound host allowlist', () => {
 
     expect(res.status).toBe(500);
     const logged = errorSpy.mock.calls.map((c) => c.join(' ')).join('\n');
-    expect(logged).toContain('Failed to send to Lark Base Webhook');
+    expect(logged).toContain('Lark Base save failed');
     expect(logged).toContain('4001');
     expect(fetchSpy.mock.calls.some((call) => String(call[0]).includes('/bot/v2/hook/'))).toBe(false);
     errorSpy.mockRestore();
@@ -447,7 +679,7 @@ describe('coupang applicants POST — outbound host allowlist', () => {
 
     expect(res.status).toBe(500);
     const logged = errorSpy.mock.calls.map((c) => c.join(' ')).join('\n');
-    expect(logged).toContain('Failed to send to Lark Base Webhook');
+    expect(logged).toContain('Lark Base save failed');
     expect(logged).toContain('code=n/a');
     expect(fetchSpy.mock.calls.some((call) => String(call[0]).includes('/bot/v2/hook/'))).toBe(false);
     errorSpy.mockRestore();
@@ -466,7 +698,7 @@ describe('coupang applicants POST — outbound host allowlist', () => {
 
     expect(res.status).toBe(500);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-    expect(errorSpy.mock.calls.flat().join(' ')).toContain('lark-base-webhook threw');
+    expect(errorSpy.mock.calls.flat().join(' ')).toContain('Lark Base save failed');
     errorSpy.mockRestore();
   });
 
@@ -482,7 +714,7 @@ describe('coupang applicants POST — outbound host allowlist', () => {
 
     expect(res.status).toBe(500);
     const logged = errorSpy.mock.calls.map((c) => c.join(' ')).join('\n');
-    expect(logged).toContain('Failed to send to Lark Base Webhook');
+    expect(logged).toContain('Lark Base save failed');
     expect(logged).toContain('code=n/a');
     errorSpy.mockRestore();
   });

@@ -22,6 +22,6 @@
 （判定: `src/lib/meta/resolveAdImage.ts`）。
 
 `oppref`（OpenAIのクリック識別子）は着地URLに自動付与されるため手で足さない。
-現状 Pixel / Conversions API は未導入で、OpenAI管理画面のコンバージョンは0のまま。
-**成果はLark側（応募→面談）で読む**という前提で運用する。
-
+LIFT JOB（`/entry/coupang` または `/coupang`）の応募完了時は、`oppref` がある場合だけ
+OpenAI Conversions APIへ成果を返す。`oppref` がない応募は送信せず、Advanced Matchingも
+既定OFFを維持する。媒体・キャンペーン等はLark通知とLIFT JOB Baseにも保存して突合する。
