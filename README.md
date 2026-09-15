@@ -95,6 +95,9 @@ LARK_BASE_TABLE_ID_LIFTJOB=your_liftjob_table_id
 OPENAI_ADS_PIXEL_ID=your_openai_ads_pixel_id
 OPENAI_ADS_CAPI_KEY=your_openai_ads_capi_key
 OPENAI_ADS_ADVANCED_MATCHING=false
+# OpenAI資格情報を持たない補助projectでは、代わりにこの2つを設定
+OPENAI_ADS_RELAY_URL=https://ridejob.jp/entry/api/openai/conversions
+OPENAI_ADS_RELAY_TOKEN=your_internal_relay_token
 
 # Gmail送信用GAS API URL
 GAS_EMAIL_API_URL=https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec

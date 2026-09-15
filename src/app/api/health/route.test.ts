@@ -18,11 +18,13 @@ const LARK_ENV = {
   LARK_BASE_TABLE_ID_LIFTJOB: 'tbl_liftjob',
   OPENAI_ADS_PIXEL_ID: 'pixel_openai',
   OPENAI_ADS_CAPI_KEY: 'key_openai',
+  OPENAI_ADS_RELAY_TOKEN: 'relay-secret',
 };
 
 describe('GET /api/health', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
   });
 
   it('returns liveness (200 ok) with no token configured, leaking nothing', async () => {
@@ -77,6 +79,8 @@ describe('GET /api/health', () => {
       'LARK_BASE_TABLE_ID_LIFTJOB',
       'OPENAI_ADS_PIXEL_ID',
       'OPENAI_ADS_CAPI_KEY',
+      'OPENAI_ADS_RELAY_URL',
+      'OPENAI_ADS_RELAY_TOKEN',
     ]) {
       vi.stubEnv(k, '');
     }
@@ -92,9 +96,50 @@ describe('GET /api/health', () => {
       'lark_liftjob_app_secret',
       'lark_liftjob_app_token',
       'lark_liftjob_table',
-      'openai_ads_pixel',
-      'openai_ads_capi_key',
+      'openai_ads_delivery',
     ]);
+  });
+
+  it('OpenAI直接資格情報がなくてもrelay一式があればreadyにする', async () => {
+    vi.stubEnv('HEALTH_CHECK_TOKEN', 'secret');
+    for (const [k, v] of Object.entries(LARK_ENV)) vi.stubEnv(k, v);
+    vi.stubEnv('OPENAI_ADS_PIXEL_ID', '');
+    vi.stubEnv('OPENAI_ADS_CAPI_KEY', '');
+    vi.stubEnv('OPENAI_ADS_RELAY_URL', 'https://ridejob.jp/entry/api/openai/conversions');
+    vi.stubEnv('OPENAI_ADS_RELAY_TOKEN', 'relay-secret');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify({ status: 'ready' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    );
+
+    const res = await GET(makeRequest({ 'x-health-token': 'secret' }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: 'ready' });
+  });
+
+  it('relay先が認証不一致または未readyならdegradedにする', async () => {
+    vi.stubEnv('HEALTH_CHECK_TOKEN', 'secret');
+    for (const [k, v] of Object.entries(LARK_ENV)) vi.stubEnv(k, v);
+    vi.stubEnv('OPENAI_ADS_PIXEL_ID', '');
+    vi.stubEnv('OPENAI_ADS_CAPI_KEY', '');
+    vi.stubEnv('OPENAI_ADS_RELAY_URL', 'https://ridejob.jp/entry/api/openai/conversions');
+    vi.stubEnv('OPENAI_ADS_RELAY_TOKEN', 'wrong-relay-secret');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ status: 'unauthorized' }), { status: 401 })),
+    );
+
+    const res = await GET(makeRequest({ 'x-health-token': 'secret' }));
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({
+      status: 'degraded',
+      missing: ['openai_ads_relay_upstream'],
+    });
   });
 
   it('LIFT JOB専用の通知Webhookが欠けたら degraded にする', async () => {
