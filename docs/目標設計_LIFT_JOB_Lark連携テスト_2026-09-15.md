@@ -7,7 +7,7 @@
 
 ## 目的
 
-2026-09-15に本番反映したLIFT JOB応募連携について、応募者向けメール・SMSを発生させずに、Lark通知WebhookとAnyCross/Base連携Webhookが修正後の項目を受理することを確認する。あわせて、テストで判明した `ridejob-entry` の本番環境変数欠落を修復し、両サイトで認証付きreadinessを確認する。
+2026-09-15に本番反映したLIFT JOB応募連携について、応募者向けメール・SMSを発生させずに、Lark通知WebhookとLark Base Automation Webhookが修正後の項目を受理できる構成を確認する。あわせて、テストで判明した `ridejob-entry` の本番環境変数欠落を修復し、両サイトで認証付きreadinessを確認する。
 
 ## 完了条件
 
@@ -28,12 +28,12 @@
    - `utm_creative=CR-2608-30_SALES_未経験から法人営業`
    - `utm_id=120234567892`
    - `ad_id=120234567892`
-   - `ad_creative_id=''`、`ad_image_url=''`（Meta画像解決をモックした回帰テストの期待値）
+   - `ad_creative_id=''`、`ad_image_url=''`（画像解決用token未設定で解決をスキップした回帰テストの期待値）
    - `page_url=https://ridejob.jp/entry/coupang?utm_source=ig&utm_medium=cpc`
    - `landing_path=/entry/coupang`
    - `initial_referrer`、`attribution_source=query`
    - `form_origin=coupang_rocketnow`、`is_coupang=true`
-5. AnyCross/Base連携Webhookの本番送信は、シナリオの後続処理、読み戻し、削除手段を確認できた場合だけ、個人情報を含まない `【接続テスト・削除可】` データを1件送る。成功条件はHTTP 2xxかつJSON本文で `code`／`StatusCode` に非0値がないことに加え、Baseの実レコード読み戻しと削除後0件確認までとする。
+5. Lark Base Automation Webhookの本番送信は、シナリオの後続処理、読み戻し、削除手段を確認できた場合だけ、個人情報を含まない `【接続テスト・削除可】` データを1件送る。成功条件はHTTP 2xxかつJSON本文で明示的な成功コードがあることに加え、Baseの実レコード読み戻しと削除後0件確認までとする。
 6. 権限不足で読み戻せない場合は、本番Base Webhookを送らず、ローカルpayload検証と本番設定のreadiness確認までを実測結果として記録する。
 
 ## スコープ外
@@ -66,13 +66,15 @@
 - 2026-09-15 13:11 JST／Astra判断: 既存のBase payload回帰テストで未検証だった `ad_id`、`ad_creative_id`、`ad_image_url` のアサーションを追加し、目標の期待値を実際のテストfixtureへ合わせた。
 - 2026-09-15 22:29 JST／ユーザー判断: 「全て本番反映して」。提示済みの本番設定修復、両Vercelプロジェクトの再デプロイ、GitHub Actions secret更新、およびテスト記録・追加アサーションのPR／マージを承認。追加の外部リソースは作成しない。
 - 2026-09-15 22:33 JST／Astra判断: `ridejob-form` の既存本番値を正本として、通知URLはLark Bot Incoming Webhook、Base URLはLark Base Automation WebhookのHTTPS形式を検証してから両プロジェクトへ同期した。秘密値は出力・コミットしない。
+- 2026-09-15 22:43 JST／Reviewer指摘を一次コードで再検証: health tokenを送っても `status=ok` を成功終了する自動ガード、旧・空設定Deploymentへのrollback、Webhookの空／非JSON成功扱い、URL形式未検証、テスト記録の時刻・表現・状態矛盾を確認した。
+- 2026-09-15 22:46 JST／Astra判断: 先に現行本番コミット `29fdfac` を新envで両プロジェクトへ再デプロイし、両方の認証付き `status=ready` を確認してから本体PRをマージする。これにより直前Deploymentを新env・既知コードの安全な復旧先にする。
+- 2026-09-15 22:49 JST／Astra判断: health token送信時の `status=ok` を2回目で異常判定するガード、通知／Base URLのHTTPS・ホスト・パス検証、通知・Base双方の必須化、明示的成功コード必須化を追加する。正しいLark形式以外への個人情報送信と無音断線を防ぐため、本番反映範囲に含める。
 
 ## 保留
 
 - Lark通知先チャットを読み戻す権限がない場合、通知の実表示確認は保留する。
-- LIFT JOB Baseを読み戻す権限・appTokenと、AnyCross/Base Automationの参照権限がない場合、本番Base Webhook送信と実レコード確認は保留する。
-- `ridejob-form` の実値を `ridejob-entry` の本番通知／Base環境変数へ設定し、両プロジェクトへ共通の `HEALTH_CHECK_TOKEN` を設定する作業は、2026-09-15 22:29 JSTにユーザー承認済み。
-- Base本番テストの実行自体はユーザー指示で承認済み。AnyCrossシナリオとBase Automationの参照権限、およびLIFT JOB Baseの読み書き・削除権限がないため実行条件未達。
+- LIFT JOB Baseを読み戻す権限・appTokenと、Base Automationの参照権限がない場合、本番Base Webhook送信と実レコード確認は保留する。
+- Base本番テストの実行自体はユーザー指示で承認済み。Base Automationの参照権限、およびLIFT JOB Baseの読み書き・削除権限がないため実行条件未達。
 - 送信済みテスト通知1件は、Incoming Webhookの応答でmessage_idを取得できず、現環境から通知先チャットも読めないため、実表示確認と削除を保留する。
 
 ### 本番設定修復の推奨案と承認情報
@@ -85,7 +87,7 @@
 ## 仮決めした前提
 
 - Webhookの受理成功と、通知先／Baseの実表示確認は別の完了条件として扱う。
-- AnyCrossへのテストデータは、本番応募APIが現在送信するフィールド名と同じ構造にする。
+- Base Automationへのテストデータは、本番応募APIが現在送信するフィールド名と同じ構造にする。
 
 ## テスト通知本文
 
@@ -112,14 +114,14 @@ LP: https://ridejob.jp/entry/coupang
 
 ## 実測結果
 
-実行日時: 2026-09-15 13:04〜13:08 JST
+実行日時: 2026-09-15 13:04〜13:11 JST、22:29〜22:50 JST
 
 ### ローカル回帰
 
-- `npm test`: 10ファイル、183テスト全件成功。
+- `npm test`: Vitest 10ファイル・187テスト、Node組込みテスト2件が全件成功。
 - `npm run typecheck`: 成功。
 - `npm run build`: 成功。27ページを生成。microCMS未設定による既知の静的フォールバック警告のみ。
-- LIFT JOB関連の対象テスト再実行: 3ファイル、63テスト全件成功。
+- LIFT JOB関連の対象テスト再実行: 3ファイル、67テスト全件成功。
   - 通知本文の流入経路・キャンペーン・広告セット・CR・広告・LP
   - Base payloadの `media_name`、`application_source`、UTM v3、`ad_id`、`ad_creative_id`、`ad_image_url`、`page_url`、`landing_path`、`initial_referrer`、`attribution_source`、`form_origin`、`is_coupang`
   - query／click_id／Cookie／referrer／directのアトリビューション
@@ -132,6 +134,7 @@ LP: https://ridejob.jp/entry/coupang
 - 応答: HTTP 200、JSON、`code=0`、`msg=success`、`StatusCode=0`、`StatusMessage=success`。
 - `ridejob-entry` は通知URL実値が空だったため、同プロジェクト経由の通知は未送信・未検証。
 - 通知先チャットの読み取り権限がないため、実表示の読み戻しは未確認。
+- 本番設定同期・先行デプロイ後、`【本番反映後テスト】` 通知をメンション・個人情報なしで1件送信。応答はHTTP 200、JSON、`code=0`、`StatusCode=0` で明示的成功を確認した。
 
 ### 本番環境変数とヘルスチェック
 
@@ -140,24 +143,27 @@ LP: https://ridejob.jp/entry/coupang
 - 無認証livenessは両方ともHTTP 200、`{"status":"ok"}`。
 - 2026-09-15 22:33 JST、通知URLとBase URLを両Vercelプロジェクトのproductionへ同値で設定し、共通のランダムな `HEALTH_CHECK_TOKEN` を両プロジェクトとGitHub Actions secretへ設定した。
 - 設定後にproduction envを再取得し、通知／Base／health tokenがすべて非空、両プロジェクト間で一致、通知URLとBase URLがそれぞれ期待するLarkのHTTPS形式であることを実測した。実値は表示していない。
-- 認証付きreadinessの `{"status":"ready"}` は、設定を取り込む本番デプロイ完了後に確認する。
+- 現行本番コミット `29fdfac` を新envで両プロジェクトへ先行再デプロイし、`ridejob-form` と `ridejob-entry` の両方で認証付きHTTP 200、`{"status":"ready"}` を実測した。
+- 本体PRのマージ前に新env・既知コードのreadyなDeploymentを作ったため、マージ後に自動rollbackが必要になっても旧・空設定へは戻らない順序にした。
 
-### AnyCross／Base
+### Lark Base Automation
 
 - ローカルpayload生成テストは成功。
-- AnyCrossシナリオの後続処理、LIFT JOB Baseの読み戻し、テストレコード削除手段を確認できないため、本番Base Webhookへのテスト送信は実施していない。
+- Base Automationの後続処理、LIFT JOB Baseの読み戻し、テストレコード削除手段を確認できないため、本番Base Webhookへのテスト送信は実施していない。
 - 完了条件5は保留。テストレコードは作成していない。
 
-### レビューで見つかった追加課題
+### レビュー指摘への対応
 
-- 本番コードはWebhook URLのホスト／パスをランタイムで拒否せず、現行テストは送信先を観測するガードに留まる。
-- 通知／Base送信処理は、HTTP 200の空本文・非JSON・成功コード欠落を成功扱いし得る。今回の実通知レスポンスは明示的な成功コードを返したため、接続テストの判定自体は成功。
+- health tokenを送信したのにlivenessしか返らない場合は、2回確認後に `unhealthy` としてCIを失敗させるよう修正し、Node組込みテスト2件で固定した。
+- 通知URLとBase URLをランタイムで検証し、Lark Bot／AnyCross／Lark Base Automationの許可形式以外は応募者情報送信前にHTTP 500で拒否するテストを追加した。
+- 通知／Base送信はHTTP 2xxだけでは成功とせず、JSON本文の `code=0` または `StatusCode=0` を必須にした。空本文と非JSONを失敗記録するテストを追加した。
+- 追加アサーションの空値は、Meta画像解決をモックした結果ではなく、画像解決用token未設定で解決をスキップした場合の期待値である。
 
 ### 秘密情報の後処理
 
-- Vercel production envの確認に使った一時ディレクトリ2件は削除し、削除後に存在しないことを確認した。
+- 初回確認に使った一時ディレクトリ2件は削除済み。本番修復・デプロイ確認用の一時ディレクトリは最終検証後に削除する。
 - Webhook URLの実値はコマンド出力・目標設計書・git差分へ表示していない。
-- git差分に実値形式のLark Bot／AnyCrossトークンがないことを正規表現検索し、0件を確認した。
+- git差分に実値形式のLark Bot／AnyCross／Base Automationトークンがないことを正規表現検索し、0件を確認した。
 
 ### クライアント混入チェック
 

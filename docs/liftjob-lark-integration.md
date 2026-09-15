@@ -3,6 +3,10 @@
 LIFT JOB（ロケットナウ営業職）の応募は
 `/api/coupang/applicants` から、専用の Lark Bot Webhook と Base Webhook へ送信する。
 
+通常モードでは通知・Baseの両Webhookを必須とし、どちらかが未設定または許可形式外なら
+応募者情報を外部送信する前にHTTP 500で停止する。通知先はLark Bot Incoming Webhook、
+Base保存先はAnyCrossまたはLark Base Automation WebhookのHTTPS URLだけを許可する。
+
 ## 流入経路の決定
 
 応募時の UTM は、共通フォームと同じく次の順で決める。
@@ -68,5 +72,6 @@ AnyCross / Lark Base 側のオートメーションでは、次の対応で必�
 4. Base で上表の値を読み戻し、Webhook payload と一致すること。
 5. テストレコードを削除し、通知チャットにテストであることを残すこと。
 
-Webhook が HTTP 200 を返しても、Lark の `code` または `StatusCode` が
-0 以外なら送信失敗としてログに残す。
+Webhook が HTTP 200 を返しても、Lark の `code=0` または `StatusCode=0` が
+JSON本文に明示されなければ送信失敗としてログに残す。空本文・非JSON・成功コード欠落も
+成功扱いしない。

@@ -41,9 +41,59 @@ function hasNonZeroCode(value: number | string | undefined): boolean {
   return false;
 }
 
+function isZeroCode(value: number | string | undefined): boolean {
+  if (typeof value === 'number') return value === 0;
+  if (typeof value === 'string' && value.trim()) return Number(value) === 0;
+  return false;
+}
+
 /** Lark Bot / AnyCross は HTTP 200 でも body 側に失敗コードを返すため両方見る。 */
 function isLarkRejected(result: LarkWebhookResult): boolean {
   return hasNonZeroCode(result.code) || hasNonZeroCode(result.StatusCode);
+}
+
+/** 空本文・非JSON・成功コード欠落を、誤って成功扱いしない。 */
+function isLarkAccepted(result: LarkWebhookResult): boolean {
+  const hasExplicitSuccess = isZeroCode(result.code) || isZeroCode(result.StatusCode);
+  return hasExplicitSuccess && !isLarkRejected(result);
+}
+
+function isAllowedLarkWebhookUrl(value: string, kind: 'notification' | 'base'): boolean {
+  try {
+    const url = new URL(value);
+    if (
+      url.protocol !== 'https:' ||
+      url.username ||
+      url.password ||
+      url.port ||
+      url.search ||
+      url.hash
+    ) {
+      return false;
+    }
+
+    const segments = url.pathname.split('/').filter(Boolean);
+    if (kind === 'notification') {
+      return (
+        url.hostname === 'open.larksuite.com' &&
+        segments.length === 5 &&
+        segments.slice(0, 4).join('/') === 'open-apis/bot/v2/hook' &&
+        Boolean(segments[4])
+      );
+    }
+
+    const isAnyCross =
+      url.hostname === 'open.larksuite.com' &&
+      segments.length === 3 &&
+      segments.slice(0, 2).join('/') === 'anycross/trigger';
+    const isBaseAutomation =
+      /^[a-z0-9-]+\.jp\.larksuite\.com$/.test(url.hostname) &&
+      segments.length === 5 &&
+      segments.slice(0, 4).join('/') === 'base/automation/webhook/event';
+    return (isAnyCross || isBaseAutomation) && Boolean(segments.at(-1));
+  } catch {
+    return false;
+  }
 }
 
 export type UTMParams = {
@@ -273,17 +323,14 @@ export async function POST(request: NextRequest) {
       ? process.env.LARK_BASE_WEBHOOK_URL_COUPANG_PROD || process.env.LARK_BASE_WEBHOOK_URL_COUPANG
       : process.env.LARK_BASE_WEBHOOK_URL_COUPANG_TEST || process.env.LARK_BASE_WEBHOOK_URL_COUPANG;
 
-    // 必須URLの検証
-    if (sendBaseOnly) {
-      if (!baseWebhookUrl) {
-        console.error('Lark Base Webhook URL is not configured for Coupang.');
-        return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
-      }
-    } else {
-      if (!larkWebhookUrl) {
-        console.error('Lark Webhook URL is not configured for Coupang.');
-        return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
-      }
+    // LIFT JOBは通知とBase保存がどちらも必須。誤設定URLへ応募者情報を送らない。
+    if (!baseWebhookUrl || !isAllowedLarkWebhookUrl(baseWebhookUrl, 'base')) {
+      console.error('Lark Base Webhook URL is missing or invalid for Coupang.');
+      return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
+    }
+    if (!sendBaseOnly && (!larkWebhookUrl || !isAllowedLarkWebhookUrl(larkWebhookUrl, 'notification'))) {
+      console.error('Lark Webhook URL is missing or invalid for Coupang.');
+      return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
     }
 
     const fallbackJobPositionMap = JOB_POSITION_LABELS as Record<string, string>;
@@ -399,10 +446,10 @@ export async function POST(request: NextRequest) {
             // Lark の Webhook は **HTTP 200 でも body の code が非0なら失敗**（bot除外・トークン失効など）。
             // 200 だけ見て成功扱いにすると、届いていないのに「sent successfully」と記録される。
             const result = (await resp.json().catch(() => ({}))) as LarkWebhookResult;
-            if (!resp.ok || isLarkRejected(result)) {
+            if (!resp.ok || !isLarkAccepted(result)) {
               markFailed('lark-notification');
               console.error(
-                `[coupang] Failed to send notification to Lark (http=${resp.status} code=${result?.code ?? 'n/a'} msg=${result?.msg ?? 'n/a'})`
+                `[coupang] Failed to send notification to Lark (http=${resp.status} code=${result.code ?? result.StatusCode ?? 'n/a'} msg=${result.msg ?? result.StatusMessage ?? 'n/a'})`
               );
             } else {
               console.log('[coupang] Lark notification sent successfully');
@@ -443,7 +490,7 @@ export async function POST(request: NextRequest) {
               signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
             });
             const result = (await resp.json().catch(() => ({}))) as LarkWebhookResult;
-            if (!resp.ok || isLarkRejected(result)) {
+            if (!resp.ok || !isLarkAccepted(result)) {
               markFailed('lark-base-webhook');
               console.error(
                 `[coupang] Failed to send to Lark Base Webhook (http=${resp.status} code=${result.code ?? result.StatusCode ?? 'n/a'} msg=${result.msg ?? result.StatusMessage ?? 'n/a'})`

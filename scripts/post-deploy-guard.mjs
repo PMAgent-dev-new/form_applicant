@@ -21,6 +21,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const {
   GITHUB_REPOSITORY,
@@ -120,11 +121,14 @@ async function waitForDeploys() {
 }
 
 /**
+ * @param {{name:string,url:string}} project
+ * @param {{retryDelayMs?:number}} [options]
  * @returns {Promise<{project:string, verdict:'ready'|'live'|'unhealthy', detail:string}>}
  */
-async function healthCheck(project) {
+export async function healthCheck(project, options = {}) {
   const headers = HEALTH_CHECK_TOKEN ? { 'x-health-token': HEALTH_CHECK_TOKEN } : {};
   let degraded = 0;
+  let rejectedReadiness = 0;
   let lastDetail = 'no response';
 
   for (let attempt = 1; attempt <= HEALTH_ATTEMPTS; attempt += 1) {
@@ -140,8 +144,19 @@ async function healthCheck(project) {
         return { project: project.name, verdict: 'ready', detail: lastDetail };
       }
       if (res.status === 200 && body.status === 'ok') {
-        // Liveness only: readiness not asserted (token not effective in prod yet).
-        return { project: project.name, verdict: 'live', detail: lastDetail };
+        if (!HEALTH_CHECK_TOKEN) {
+          // Secret未設定の移行期間だけはlivenessへフォールバックする。
+          return { project: project.name, verdict: 'live', detail: lastDetail };
+        }
+        // Secretを送ったのにokなら、Vercel側の未反映または不一致。1回はalias切替中を許容する。
+        rejectedReadiness += 1;
+        if (rejectedReadiness >= 2) {
+          return {
+            project: project.name,
+            verdict: 'unhealthy',
+            detail: `${lastDetail} (readiness token was not accepted)`,
+          };
+        }
       }
       if (res.status === 503 && body.status === 'degraded') {
         degraded += 1;
@@ -153,7 +168,7 @@ async function healthCheck(project) {
       lastDetail = `error: ${e.message}`;
     }
     log(`  ${project.name} attempt ${attempt}/${HEALTH_ATTEMPTS}: ${lastDetail}`);
-    if (attempt < HEALTH_ATTEMPTS) await sleep(HEALTH_INTERVAL_MS);
+    if (attempt < HEALTH_ATTEMPTS) await sleep(options.retryDelayMs ?? HEALTH_INTERVAL_MS);
   }
   return { project: project.name, verdict: 'unhealthy', detail: lastDetail };
 }
@@ -278,7 +293,10 @@ async function main() {
   process.exitCode = 1; // surface the unhealthy deploy regardless of arm state
 }
 
-main().catch((e) => {
-  fail(`post-deploy guard crashed: ${e.stack || e.message}`);
-  process.exitCode = 1;
-});
+const executedUrl = process.argv[1] ? pathToFileURL(process.argv[1]).href : '';
+if (import.meta.url === executedUrl) {
+  main().catch((e) => {
+    fail(`post-deploy guard crashed: ${e.stack || e.message}`);
+    process.exitCode = 1;
+  });
+}
