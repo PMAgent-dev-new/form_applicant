@@ -23,6 +23,8 @@ const ENDPOINT = 'https://bzr.openai.com/v1/events';
 const PIXEL_ID = process.env.OPENAI_ADS_PIXEL_ID ?? '';
 const API_KEY = process.env.OPENAI_ADS_CAPI_KEY ?? '';
 const ADVANCED_MATCHING = process.env.OPENAI_ADS_ADVANCED_MATCHING === 'true';
+const RELAY_URL = process.env.OPENAI_ADS_RELAY_URL ?? '';
+const RELAY_TOKEN = process.env.OPENAI_ADS_RELAY_TOKEN ?? '';
 
 function sha256(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
@@ -76,6 +78,29 @@ type OpenAiEvent = {
   user?: Record<string, unknown>;
 };
 
+export type OpenAiConversionResult = {
+  ok: boolean;
+  status?: number;
+  skipped?: string;
+};
+
+export function hasDirectOpenAiConversionConfig(): boolean {
+  return PIXEL_ID.trim().length > 0 && API_KEY.trim().length > 0;
+}
+
+function sourceUrlForRelay(value?: string): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return undefined;
+    // query/hashはクライアント入力を含み得る。OpenAIのsource_urlに必要なLP識別は
+    // origin + pathnameで足りるため、relay境界では必ず落とす。
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * 送信するイベント本体を組み立てる。突合材料が何も無ければ null を返す。
  *
@@ -110,20 +135,11 @@ export function buildConversionEvent(input: OpenAiConversionInput): OpenAiEvent 
   return event;
 }
 
-export async function sendOpenAiConversion(
-  input: OpenAiConversionInput,
-): Promise<{ ok: boolean; status?: number; skipped?: string }> {
-  // 先に「送るべきイベントか」を判定する。順序を逆にすると、env 未設定の間は
-  // 全応募（大半が Meta 経由）で警告が鳴り続け、読まれない警告になる。
-  const event = buildConversionEvent(input);
-  if (!event) {
-    // oppref が無い＝広告クリック由来ではない応募。突合できないので送らない。
-    return { ok: false, skipped: 'no_match_signal' };
-  }
-
-  if (!PIXEL_ID || !API_KEY) {
-    // ここで鳴る＝「oppref があるのに設定漏れで取りこぼしたCV」。放置してはいけない警告。
-    console.warn('[OpenAI CAPI] OPENAI_ADS_PIXEL_ID / OPENAI_ADS_CAPI_KEY 未設定のため送信しません（oppref あり）');
+async function sendBuiltEvent(
+  event: OpenAiEvent,
+  validateOnly = false,
+): Promise<OpenAiConversionResult> {
+  if (!hasDirectOpenAiConversionConfig()) {
     return { ok: false, skipped: 'not_configured' };
   }
 
@@ -134,7 +150,7 @@ export async function sendOpenAiConversion(
         Authorization: `Bearer ${API_KEY}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ validate_only: input.validateOnly === true, events: [event] }),
+      body: JSON.stringify({ validate_only: validateOnly, events: [event] }),
       // タイムアウト必須。応募APIは全タスクを await してからレスポンスを返すため、
       // ここがハングすると応募者の待ち時間に直結する（最悪、保存済みなのにエラー画面）。
       signal: AbortSignal.timeout(5000),
@@ -150,4 +166,76 @@ export async function sendOpenAiConversion(
     console.error('[OpenAI CAPI] 送信でエラー', e);
     return { ok: false };
   }
+}
+
+/** relay受信側専用。relayへ再転送せず、必ずこのランタイムの資格情報だけを使う。 */
+export async function sendOpenAiConversionDirect(
+  input: OpenAiConversionInput,
+): Promise<OpenAiConversionResult> {
+  const event = buildConversionEvent(input);
+  if (!event) {
+    return { ok: false, skipped: 'no_match_signal' };
+  }
+  return sendBuiltEvent(event, input.validateOnly === true);
+}
+
+export async function sendOpenAiConversion(
+  input: OpenAiConversionInput,
+): Promise<OpenAiConversionResult> {
+  // 先に「送るべきイベントか」を判定する。順序を逆にすると、env 未設定の間は
+  // 全応募（大半が Meta 経由）で警告が鳴り続け、読まれない警告になる。
+  const event = buildConversionEvent(input);
+  if (!event) {
+    // oppref が無い＝広告クリック由来ではない応募。突合できないので送らない。
+    return { ok: false, skipped: 'no_match_signal' };
+  }
+
+  if (hasDirectOpenAiConversionConfig()) {
+    return sendBuiltEvent(event, input.validateOnly === true);
+  }
+
+  // ridejob-form は過去に作ったOpenAIのsensitive値をVercelから再取得できない。
+  // そのため、資格情報を持つridejob-entryへopprefとイベント情報だけを中継する。
+  // メール・電話・IP・UAは中継payloadへ含めない。
+  if (RELAY_URL && RELAY_TOKEN) {
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        const res = await fetch(RELAY_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-openai-relay-token': RELAY_TOKEN,
+          },
+          body: JSON.stringify({
+            eventId: input.eventId,
+            oppref: input.oppref,
+            sourceUrl: sourceUrlForRelay(input.sourceUrl),
+            validateOnly: input.validateOnly === true,
+            timestampMs: input.timestampMs,
+          }),
+          signal: AbortSignal.timeout(5000),
+        });
+        const body = (await res.json().catch(() => ({}))) as OpenAiConversionResult;
+        if (res.ok && body.ok) {
+          console.log('[OpenAI CAPI] relay送信成功', event.id);
+          return { ok: true, status: res.status };
+        }
+        const retryable = res.status === 429 || res.status >= 500;
+        if (!retryable || attempt === 2) {
+          console.error('[OpenAI CAPI] relay送信失敗', res.status);
+          return { ok: false, status: res.status };
+        }
+      } catch (e) {
+        if (attempt === 2) {
+          console.error('[OpenAI CAPI] relay送信でエラー', e);
+          return { ok: false };
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+
+  // ここで鳴る＝「oppref があるのに設定漏れで取りこぼしたCV」。放置してはいけない警告。
+  console.warn('[OpenAI CAPI] 直接送信またはrelayの設定がないため送信しません（oppref あり）');
+  return { ok: false, skipped: 'not_configured' };
 }

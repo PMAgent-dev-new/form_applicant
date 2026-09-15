@@ -42,9 +42,6 @@ const REQUIRED_ENV_GROUPS: EnvGroup[] = [
   { name: 'lark_liftjob_app_secret', anyOf: ['APP_SECRET_LIFTJOB'] },
   { name: 'lark_liftjob_app_token', anyOf: ['APP_TOKEN_LIFTJOB'] },
   { name: 'lark_liftjob_table', anyOf: ['LARK_BASE_TABLE_ID_LIFTJOB'] },
-  // ChatGPT広告の成果返却。opprefがあるときだけ使用し、Advanced Matchingは別途OFFを維持する。
-  { name: 'openai_ads_pixel', anyOf: ['OPENAI_ADS_PIXEL_ID'] },
-  { name: 'openai_ads_capi_key', anyOf: ['OPENAI_ADS_CAPI_KEY'] },
 ];
 
 function isSet(key: string): boolean {
@@ -55,10 +52,36 @@ export function findMissingEnvGroups(
   groups: EnvGroup[] = REQUIRED_ENV_GROUPS,
   baseOnly = process.env.LARK_SEND_BASE_ONLY === 'true',
 ): string[] {
-  return groups
+  const missing = groups
     .filter((g) => !(baseOnly && g.notifyOnly))
     .filter((g) => !g.anyOf.some(isSet))
     .map((g) => g.name);
+
+  // ChatGPT広告は、OpenAIへ直接送れる資格情報一式、または資格情報を持つ
+  // ridejob-entryへの内部relay一式のどちらかが揃っていればよい。
+  const hasDirectOpenAi = isSet('OPENAI_ADS_PIXEL_ID') && isSet('OPENAI_ADS_CAPI_KEY');
+  const hasOpenAiRelay = isSet('OPENAI_ADS_RELAY_URL') && isSet('OPENAI_ADS_RELAY_TOKEN');
+  if (!hasDirectOpenAi && !hasOpenAiRelay) missing.push('openai_ads_delivery');
+  // 直接資格情報を持つprojectはrelay受信側でもある。認証secretが無い状態をreadyにしない。
+  if (hasDirectOpenAi && !isSet('OPENAI_ADS_RELAY_TOKEN')) missing.push('openai_ads_relay_auth');
+  return missing;
+}
+
+async function relayIsReady(): Promise<boolean> {
+  const url = process.env.OPENAI_ADS_RELAY_URL ?? '';
+  const token = process.env.OPENAI_ADS_RELAY_TOKEN ?? '';
+  if (!url || !token) return false;
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { 'x-openai-relay-token': token },
+      signal: AbortSignal.timeout(5000),
+    });
+    const body = (await res.json().catch(() => ({}))) as { status?: string };
+    return res.status === 200 && body.status === 'ready';
+  } catch {
+    return false;
+  }
 }
 
 export async function GET(request: NextRequest) {
@@ -74,6 +97,13 @@ export async function GET(request: NextRequest) {
   const missing = findMissingEnvGroups();
   if (missing.length > 0) {
     return NextResponse.json({ status: 'degraded', missing }, { status: 503 });
+  }
+  const usesRelay = !isSet('OPENAI_ADS_PIXEL_ID') || !isSet('OPENAI_ADS_CAPI_KEY');
+  if (usesRelay && !(await relayIsReady())) {
+    return NextResponse.json(
+      { status: 'degraded', missing: ['openai_ads_relay_upstream'] },
+      { status: 503 },
+    );
   }
   return NextResponse.json({ status: 'ready' }, { status: 200 });
 }
