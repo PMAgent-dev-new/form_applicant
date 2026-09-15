@@ -11,8 +11,9 @@
  *   it only reports what it WOULD roll back and fails the job so the alert is visible.
  * - Readiness is only asserted when HEALTH_CHECK_TOKEN is available (in both the
  *   Vercel prod env and here). Until then it falls back to a liveness check and warns.
- * - The production URL is the source of truth, not the deploy status: a failed Vercel
- *   build leaves the previous good deployment live, which the health check will pass.
+ * - Rollback is considered only after both the GitHub commit status and the latest
+ *   Vercel production deployment prove that the pushed SHA is live. A failed build
+ *   must not be mistaken for a healthy deploy just because the previous alias is live.
  *
  * Rollback requires VERCEL_TOKEN. Health/monitoring need only GITHUB_TOKEN.
  */
@@ -54,14 +55,15 @@ const DRILL = FORCE_UNHEALTHY.trim().toLowerCase() === 'true';
 // つまり取り違えたまま1か月、main への push ごとに「健全な方を巻き戻す」経路が生きていた。
 // ヘルスチェックURLは2本とも200を返すので緑のままで、誰も気づけない形の事故だった。
 const PROJECTS = [
-  { name: 'ridejob-form', url: 'https://ridejob.pmagent.jp' },
-  { name: 'ridejob-entry', url: 'https://ridejob.jp/entry' },
+  { name: 'ridejob-form', url: 'https://ridejob.pmagent.jp', alias: 'ridejob.pmagent.jp' },
+  { name: 'ridejob-entry', url: 'https://ridejob.jp/entry', alias: 'ridejob-entry.vercel.app' },
 ];
 
 const HEALTH_ATTEMPTS = 6;
 const HEALTH_INTERVAL_MS = 10_000;
 const DEPLOY_WAIT_MS = 12 * 60_000;
 const DEPLOY_POLL_MS = 15_000;
+const VERCEL_CLI = 'vercel@59.17.0';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => console.log(...a);
@@ -121,6 +123,51 @@ async function waitForDeploys() {
 }
 
 /**
+ * Fail closed unless the pushed SHA is both successfully built and the latest
+ * READY production deployment for the project.
+ *
+ * @param {string} commitState
+ * @param {{state?:string,target?:string,meta?:{githubCommitSha?:string}} | undefined} deployment
+ * @param {string} expectedSha
+ * @returns {{ok:boolean,reason:string}}
+ */
+export function deploymentGate(commitState, deployment, expectedSha) {
+  if (commitState !== 'success') {
+    return { ok: false, reason: `commit status is ${commitState}` };
+  }
+  if (!deployment) return { ok: false, reason: 'production deployment is missing' };
+  if (deployment.target !== 'production' || deployment.state !== 'READY') {
+    return {
+      ok: false,
+      reason: `latest deployment is target=${deployment.target ?? 'unknown'} state=${deployment.state ?? 'unknown'}`,
+    };
+  }
+  const deployedSha = deployment.meta?.githubCommitSha ?? '';
+  if (deployedSha !== expectedSha) {
+    return {
+      ok: false,
+      reason: `latest production SHA is ${deployedSha ? deployedSha.slice(0, 7) : 'missing'}`,
+    };
+  }
+  return { ok: true, reason: `production SHA ${deployedSha.slice(0, 7)} is READY` };
+}
+
+export function guardPrerequisiteError({ vercelToken, healthToken }) {
+  if (!vercelToken) return 'VERCEL_TOKEN is required to verify the production deployment SHA';
+  if (!healthToken) return 'HEALTH_CHECK_TOKEN is required for authenticated readiness checks';
+  return '';
+}
+
+export function selectRollbackTarget(deployments, currentUrl) {
+  return deployments.find(
+    (deployment) =>
+      deployment.url !== currentUrl &&
+      deployment.target === 'production' &&
+      deployment.state === 'READY',
+  );
+}
+
+/**
  * @param {{name:string,url:string}} project
  * @param {{retryDelayMs?:number}} [options]
  * @returns {Promise<{project:string, verdict:'ready'|'live'|'unhealthy', detail:string}>}
@@ -173,20 +220,52 @@ export async function healthCheck(project, options = {}) {
   return { project: project.name, verdict: 'unhealthy', detail: lastDetail };
 }
 
+function vercelExec(args, options = {}) {
+  return execFileSync('npx', ['--yes', VERCEL_CLI, ...args], {
+    env: { ...process.env, VERCEL_TOKEN },
+    ...options,
+  });
+}
+
+function productionDeployments(project) {
+  const output = vercelExec(
+    [
+      'ls',
+      project.name,
+      '--scope',
+      VERCEL_TEAM,
+      '--environment',
+      'production',
+      '--format',
+      'json',
+    ],
+    { encoding: 'utf8' },
+  );
+  const parsed = JSON.parse(output);
+  return parsed.deployments ?? [];
+}
+
+function inspectedAlias(project) {
+  const output = vercelExec(
+    ['inspect', project.alias, '--scope', VERCEL_TEAM, '--format', 'json'],
+    { encoding: 'utf8' },
+  );
+  return JSON.parse(output);
+}
+
 function linkArgs(project) {
   const dir = mkdtempSync(join(tmpdir(), `vlink-${project.name}-`));
-  const base = ['--token', VERCEL_TOKEN, '--scope', VERCEL_TEAM, '--cwd', dir, '--yes'];
-  execFileSync('npx', ['--yes', 'vercel@latest', 'link', '--project', project.name, ...base], {
+  const base = ['--scope', VERCEL_TEAM, '--cwd', dir, '--yes'];
+  vercelExec(['link', '--project', project.name, ...base], {
     stdio: 'inherit',
   });
   return base;
 }
 
-function rollback(project) {
-  // vercel rollback (no target) rolls the linked project back to its previous
-  // production deployment. Link in a throwaway dir so we target the right project.
+function rollback(project, deploymentUrl) {
+  // 対象URLを固定し、確認後に別deployが出ても「その時点のprevious」を誤って戻さない。
   const base = linkArgs(project);
-  execFileSync('npx', ['--yes', 'vercel@latest', 'rollback', ...base], { stdio: 'inherit' });
+  vercelExec(['rollback', `https://${deploymentUrl}`, ...base], { stdio: 'inherit' });
 }
 
 // selftest: prove the rollback PREREQUISITES (Vercel auth + team scope + project
@@ -203,7 +282,7 @@ function selfTest() {
     try {
       log(`\n=== selftest: ${project.name} ===`);
       const base = linkArgs(project); // link proves token + scope + project name resolve
-      execFileSync('npx', ['--yes', 'vercel@latest', 'ls', ...base], { stdio: 'inherit' });
+      vercelExec(['ls', ...base], { stdio: 'inherit' });
       log(`✓ ${project.name}: vercel auth + link + ls OK (rollback prerequisites verified)`);
     } catch (e) {
       ok = false;
@@ -245,7 +324,52 @@ async function main() {
     return;
   }
 
-  await waitForDeploys();
+  const prerequisiteError = guardPrerequisiteError({
+    vercelToken: VERCEL_TOKEN,
+    healthToken: HEALTH_CHECK_TOKEN,
+  });
+  if (prerequisiteError) {
+    fail(prerequisiteError);
+    process.exitCode = 1;
+    return;
+  }
+
+  const deployStates = await waitForDeploys();
+
+  // A failed/missing deploy leaves the old production alias healthy. Do not let
+  // that old response turn this run green, and never roll it back for a build
+  // that did not reach production.
+  const deployGateFailures = [];
+  const deployContexts = new Map();
+  for (const project of PROJECTS) {
+    const commitState = deployStates.find((s) => s.name === project.name)?.state ?? 'missing';
+    try {
+      const deployments = productionDeployments(project);
+      const current = deployments[0];
+      const gate = deploymentGate(commitState, current, GITHUB_SHA);
+      const rollbackTarget = selectRollbackTarget(deployments.slice(1), current?.url);
+      if (!gate.ok) deployGateFailures.push(`${project.name}: ${gate.reason}`);
+      else if (ARMED && !rollbackTarget) {
+        deployGateFailures.push(`${project.name}: no READY production rollback target found`);
+      } else {
+        log(`✓ ${project.name}: ${gate.reason}`);
+        deployContexts.set(project.name, { current, rollbackTarget });
+      }
+    } catch (e) {
+      deployGateFailures.push(`${project.name}: could not verify production SHA — ${e.message}`);
+    }
+  }
+
+  if (deployGateFailures.length > 0) {
+    for (const line of deployGateFailures) fail(line);
+    await notify(
+      `🔴 post-deploy guard: deployment verification failed for ${GITHUB_SHA.slice(0, 7)}\n` +
+        deployGateFailures.join('\n') +
+        '\nNo rollback was attempted because the pushed SHA was not proven live.',
+    );
+    process.exitCode = 1;
+    return;
+  }
 
   const results = [];
   for (const project of PROJECTS) {
@@ -277,8 +401,32 @@ async function main() {
       fail(`${line} → rolling back`);
       await notify(`🔴 ${line}\nRolling back ${r.project} to previous production deployment.`);
       try {
-        rollback(PROJECTS.find((p) => p.name === r.project));
-        await notify(`↩️ ${r.project}: rollback requested (previous production deployment).`);
+        const project = PROJECTS.find((p) => p.name === r.project);
+        const context = deployContexts.get(r.project);
+        if (!project || !context?.rollbackTarget) {
+          throw new Error('verified rollback target is missing');
+        }
+
+        // Gate後に別のproduction deployが出た競合ではrollbackしない。
+        const latestBeforeRollback = productionDeployments(project)[0];
+        const stillCurrent = deploymentGate('success', latestBeforeRollback, GITHUB_SHA);
+        if (!stillCurrent.ok || latestBeforeRollback?.url !== context.current.url) {
+          throw new Error('production changed after verification; rollback aborted');
+        }
+
+        rollback(project, context.rollbackTarget.url);
+        const alias = inspectedAlias(project);
+        if (alias.url !== context.rollbackTarget.url || alias.readyState !== 'READY') {
+          throw new Error(
+            `rollback alias mismatch — expected ${context.rollbackTarget.url}, got ${alias.url ?? 'missing'}`,
+          );
+        }
+        const recovery = await healthCheck(project);
+        if (recovery.verdict !== 'ready') {
+          throw new Error(`rollback completed but readiness was not restored — ${recovery.detail}`);
+        }
+        log(`✓ ${r.project}: rollback restored readiness — ${recovery.detail}`);
+        await notify(`↩️ ${r.project}: rollback completed and readiness was verified.`);
       } catch (e) {
         fail(`rollback of ${r.project} failed: ${e.message}`);
         await notify(`⚠️ ${r.project}: rollback FAILED — ${e.message}. Manual intervention needed.`);

@@ -16,7 +16,7 @@
    - `npm run typecheck`
    - `npm run build`
 2. `ridejob-entry` と `ridejob-form` へ `x-health-token` を付けた認証付き本番ヘルスチェックを行い、HTTP 200かつ `{"status":"ready"}` を確認する。`status=ok` は未認証のlivenessなので成功に含めない。
-3. Lark通知Webhookへ、個人情報とメンションを含まない下記 `【接続テスト】` 通知を1件だけ送り、HTTP 2xxかつJSON本文の `code=0` を確認する。`code` 欠落、非JSON、非0は成功に含めない。
+3. Lark通知Webhookへ、個人情報とメンションを含まない `【接続テスト】` と、本番設定同期後の `【本番反映後テスト】` を各1件（合計2件）送り、HTTP 2xxかつJSON本文の `code=0` を確認する。`code` 欠落、非JSON、非0は成功に含めない。
 4. Base payload生成の回帰テストで、下記キーと期待値を確認する。
    - `media_name=Meta広告`
    - `application_source=ig(ad)`
@@ -46,11 +46,11 @@
 
 ## 戻し方
 
-- 本番コードの機能差分は追加せず、追加した回帰アサーションは当該テスト差分を戻せば元に戻る。
-- 本番環境変数は、`ridejob-entry` に既存の正しいLIFT JOB通知／Base URLを設定し、両サイトとGitHub Actionsへ共通のhealth tokenを設定する。変更前の空値は応募POSTを500にする障害構成のため復旧先にしない。デプロイに問題が出た場合は直前の本番デプロイへ一時rollbackし、非空のWebhook設定は保持したまま既知の本番コミットを再デプロイする。
+- 本番コードにはWebhook URL検証、明示的成功コード判定、Base失敗時のHTTP 500、デプロイSHA検証とrollback後readiness確認を追加する。問題時は当該コミットをrevertする。
+- 本番環境変数は、`ridejob-entry` に既存の正しいLIFT JOB通知／Base URLを設定し、両サイトとGitHub Actionsへ共通のhealth tokenを設定する。変更前の空値は応募POSTを500にする障害構成のため復旧先にしない。安全な直前Deploymentとして、同じ非空設定で現行本番コミット `29fdfac` を両プロジェクトへ再デプロイし、認証付き `ready` を確認済み。rollbackはこの安全な直前Deploymentまでとし、それ以前へは戻さない。
 - Baseテストは読み戻し・削除権限が揃うまで送信しない。
 - Baseテストを送信した場合は一意な実行IDでレコードを特定し、削除後に同じ実行IDが0件であることを確認する。
-- 通知メッセージは `【接続テスト】` と明記し、実応募と区別する。Incoming Webhookでは削除用message_idを得られない可能性があるため、テスト通知1件は残存を許容する。
+- 通知メッセージは接続テストであることを明記し、実応募と区別する。Incoming Webhookでは削除用message_idを得られなかったため、送信済みテスト通知2件は残存を許容する。
 
 ## 判断ログ
 
@@ -69,25 +69,30 @@
 - 2026-09-15 22:43 JST／Reviewer指摘を一次コードで再検証: health tokenを送っても `status=ok` を成功終了する自動ガード、旧・空設定Deploymentへのrollback、Webhookの空／非JSON成功扱い、URL形式未検証、テスト記録の時刻・表現・状態矛盾を確認した。
 - 2026-09-15 22:46 JST／Astra判断: 先に現行本番コミット `29fdfac` を新envで両プロジェクトへ再デプロイし、両方の認証付き `status=ready` を確認してから本体PRをマージする。これにより直前Deploymentを新env・既知コードの安全な復旧先にする。
 - 2026-09-15 22:49 JST／Astra判断: health token送信時の `status=ok` を2回目で異常判定するガード、通知／Base URLのHTTPS・ホスト・パス検証、通知・Base双方の必須化、明示的成功コード必須化を追加する。正しいLark形式以外への個人情報送信と無音断線を防ぐため、本番反映範囲に含める。
+- 2026-09-15 23:09 JST／Reviewer指摘を一次コードで再検証: Base-onlyの成功判定差、通常モードでBase失敗後もHTTP 200を返す経路、AnyCross callback形式の未許可、失敗した新Deploymentを旧本番のhealthで成功扱いする経路、rollback後の回復未確認を確認した。
+- 2026-09-15 23:12 JST／Astra判断: Base失敗は通常・Base-onlyともHTTP 500とし、通知単独失敗はBase重複を避けるためログ記録のうえ非致命とする。デプロイガードはcommit status、最新productionのREADY状態、Git SHAが全て一致する場合だけhealth／rollbackへ進め、rollback後も認証付きreadyを必須にする。
+- 2026-09-15 23:19 JST／最終Reviewer 2観点: health token欠落時のCI成功、Base失敗判定前の非冪等副作用、rollback先未固定、主要失敗種別のテスト不足、通知本文への改行・at記法注入を指摘。Webhook受理とBase実保存が別である点は、現権限では解消できない残存事項として明記する。
+- 2026-09-15 23:21 JST／Astra判断: Baseを最初にawaitし、受理失敗時は通知・メール・SMS・CAPIを開始しない。ガード本体はhealth tokenを必須化し、rollback対象Deployment URLを事前固定、実行直前のproduction再検証、alias一致と認証付きreadyの回復確認を必須化する。通知の各入力値は1行化し、Lark at記法を無害化する。
 
 ## 保留
 
 - Lark通知先チャットを読み戻す権限がない場合、通知の実表示確認は保留する。
 - LIFT JOB Baseを読み戻す権限・appTokenと、Base Automationの参照権限がない場合、本番Base Webhook送信と実レコード確認は保留する。
 - Base本番テストの実行自体はユーザー指示で承認済み。Base Automationの参照権限、およびLIFT JOB Baseの読み書き・削除権限がないため実行条件未達。
-- 送信済みテスト通知1件は、Incoming Webhookの応答でmessage_idを取得できず、現環境から通知先チャットも読めないため、実表示確認と削除を保留する。
+- 送信済みテスト通知2件は、Incoming Webhookの応答でmessage_idを取得できず、現環境から通知先チャットも読めないため、実表示確認と削除を保留する。
 
 ### 本番設定修復の推奨案と承認情報
 
 - 推奨: `ridejob-form` で実測できたLIFT JOB通知／Base URLを `ridejob-entry` のproductionへ設定し、ランダム生成した共通 `HEALTH_CHECK_TOKEN` を両VercelプロジェクトとGitHub Actions secretへ設定する。
-- 影響: 新規プロジェクトや継続課金リソースは作らない。設定反映には `ridejob-entry` と `ridejob-form` の本番再デプロイを各1回、合計2回行う。GitHub Actions secretの更新自体はworkflowを起動せず、次回の通常main pushからreadiness検査に使われる。
-- 費用: Vercelの既存契約のビルド／実行枠を2デプロイ分消費する。追加金額は契約と残枠に依存し、現権限では確定できない。
+- 影響: 新規プロジェクトや継続課金リソースは作らない。安全な復旧先を作る先行再デプロイ2回と、main反映後の自動デプロイ2回の合計4回を行う。GitHub Actions secretの更新自体はworkflowを起動せず、main push後のreadiness検査に使う。
+- 費用: Vercelの既存契約のビルド／実行枠を合計4デプロイ分消費する。追加金額は契約と残枠に依存し、現権限では確定できない。
 - 戻し方: 変更前の空値は応募POSTが500になる障害構成なので復旧先にしない。再デプロイ自体が失敗した場合はサイト表示を直前の本番デプロイへ一時rollbackするが、LIFT JOB通知／Base URLの非空設定は保持する。その後、既知の本番コミット `29fdfac` を同じ非空設定で再デプロイし、両URLの `status=ready` とLIFT JOB通知疎通を再確認する。health tokenだけに問題がある場合は両Vercel環境とGitHub Actions secretを同時に同じ新値へローテーションし、再度readinessを確認する。
 
 ## 仮決めした前提
 
 - Webhookの受理成功と、通知先／Baseの実表示確認は別の完了条件として扱う。
 - Base Automationへのテストデータは、本番応募APIが現在送信するフィールド名と同じ構造にする。
+- Webhook受理後のBase実保存を同期的に保証する永続キュー／DBは既存構成に無い。新規リソース作成は今回の承認範囲外なので追加せず、Baseの読み戻し権限取得後に監視または直接書き込み方式を別途設計する。
 
 ## テスト通知本文
 
@@ -114,14 +119,14 @@ LP: https://ridejob.jp/entry/coupang
 
 ## 実測結果
 
-実行日時: 2026-09-15 13:04〜13:11 JST、22:29〜22:50 JST
+実行日時: 2026-09-15 12:55〜13:11 JST、22:29 JST〜
 
 ### ローカル回帰
 
-- `npm test`: Vitest 10ファイル・187テスト、Node組込みテスト2件が全件成功。
+- `npm test`: Vitest 10ファイル・192テスト、Node組込みテスト7件が全件成功。
 - `npm run typecheck`: 成功。
 - `npm run build`: 成功。27ページを生成。microCMS未設定による既知の静的フォールバック警告のみ。
-- LIFT JOB関連の対象テスト再実行: 3ファイル、67テスト全件成功。
+- LIFT JOB関連の対象テスト再実行: 3ファイル、72テスト全件成功。
   - 通知本文の流入経路・キャンペーン・広告セット・CR・広告・LP
   - Base payloadの `media_name`、`application_source`、UTM v3、`ad_id`、`ad_creative_id`、`ad_image_url`、`page_url`、`landing_path`、`initial_referrer`、`attribution_source`、`form_origin`、`is_coupang`
   - query／click_id／Cookie／referrer／directのアトリビューション
@@ -154,9 +159,12 @@ LP: https://ridejob.jp/entry/coupang
 
 ### レビュー指摘への対応
 
-- health tokenを送信したのにlivenessしか返らない場合は、2回確認後に `unhealthy` としてCIを失敗させるよう修正し、Node組込みテスト2件で固定した。
+- health token欠落時はガード本体を即失敗させ、token送信時にlivenessしか返らない場合も2回確認後に `unhealthy` とする。さらにcommit status、最新production DeploymentのREADY状態、Git SHAの一致を必須にした。rollback先は直前のREADY production URLへ固定し、実行直前の競合検査、alias一致、認証付きreadyの回復確認を行う。Node組込みテスト7件で主要判定を固定した。
 - 通知URLとBase URLをランタイムで検証し、Lark Bot／AnyCross／Lark Base Automationの許可形式以外は応募者情報送信前にHTTP 500で拒否するテストを追加した。
-- 通知／Base送信はHTTP 2xxだけでは成功とせず、JSON本文の `code=0` または `StatusCode=0` を必須にした。空本文と非JSONを失敗記録するテストを追加した。
+- AnyCrossの現行callback URL形式を許可し、回帰テストを追加した。
+- 通知／Base送信はHTTP 2xxだけでは成功とせず、JSON本文の `code=0` または `StatusCode=0` を必須にした。通常・Base-onlyとも空本文と非JSONを失敗とし、Base失敗時はHTTP 500を返すテストを追加した。
+- Baseを通知・メール・SMS・CAPIより先にawaitし、Baseの通信例外／HTTPエラー時に後続副作用を開始しないテストを追加した。Webhook受理後のBase実保存と、応答だけ失われた場合のBase重複は外部オートメーション側の読み戻し・冪等化が必要なため未保証。
+- Lark通知へ埋め込む入力値の改行・制御文字と `<at ...>` 記法を無害化し、悪性入力の回帰テストを追加した。
 - 追加アサーションの空値は、Meta画像解決をモックした結果ではなく、画像解決用token未設定で解決をスキップした場合の期待値である。
 
 ### 秘密情報の後処理
@@ -167,5 +175,5 @@ LP: https://ridejob.jp/entry/coupang
 
 ### クライアント混入チェック
 
-- 作業対象2ファイル（tracked差分1ファイル、新規未追跡1ファイル）を `leak_check.sh` で検査した。4件検出されたが、すべて自案件の `ridejob-entry`、`ridejob-form`、`ridejob.jp` であり、他クライアント情報ではないことを1件ずつ確認した。
+- 最終変更対象7ファイルを一時ディレクトリへ複製して `leak_check.sh` で検査し、他クライアント情報・内部情報・認証情報の検出0件を確認した。
 - 画像・動画の変更はない。

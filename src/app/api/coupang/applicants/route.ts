@@ -84,8 +84,9 @@ function isAllowedLarkWebhookUrl(value: string, kind: 'notification' | 'base'): 
 
     const isAnyCross =
       url.hostname === 'open.larksuite.com' &&
-      segments.length === 3 &&
-      segments.slice(0, 2).join('/') === 'anycross/trigger';
+      ((segments.length === 3 && segments.slice(0, 2).join('/') === 'anycross/trigger') ||
+        (segments.length === 4 &&
+          segments.slice(0, 3).join('/') === 'anycross/trigger/callback'));
     const isBaseAutomation =
       /^[a-z0-9-]+\.jp\.larksuite\.com$/.test(url.hostname) &&
       segments.length === 5 &&
@@ -139,6 +140,17 @@ const text = (value: unknown): string => {
   // JSONオブジェクトは独自toStringを持ち得る。String(value)自体がthrowする入力もあるため捨てる。
   return '';
 };
+
+/** 応募者入力で通知行の偽装やLarkのat記法を成立させない。 */
+function larkLineText(value: unknown, fallback = '未取得'): string {
+  const normalized = text(value)
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ')
+    .replace(/</g, '＜')
+    .replace(/>/g, '＞')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return normalized || fallback;
+}
 
 /** リクエスト/Cookie由来の値は型注釈を信用せず、サーバー境界で文字列へ正規化する。 */
 function normalizeUtmParams(value: unknown): UTMParams {
@@ -216,21 +228,21 @@ export function buildLiftJobNotification(params: {
   return `
 LIFT JOB（ロケットナウ）の応募がありました！
 -------------------------
-流入経路: ${describeLiftJobRoute(utm)}
-キャンペーンID: ${text(utm.utm_campaign) || '未取得'}
-広告セットID: ${text(utm.utm_term) || '未取得'}
-CR-ID: ${text(utm.utm_content) || '未取得'}
-広告ID: ${text(utm.utm_id) || '未取得'}
-広告名: ${text(utm.utm_creative) || '未取得'}
-LP: ${params.pageUrl || '未取得'}
-メールアドレス: ${params.email || '未入力'}
-氏名（漢字）: ${params.fullName || '未入力'}
-氏名（ふりがな）: ${params.fullNameKana || '未入力'}
-電話番号: ${params.phoneNumber || '未入力'}
-希望職種: ${params.jobPositionLabel}
-希望勤務地: ${params.desiredLocationLabel}
-年齢: ${params.ageLabel}
-生年月日: ${params.birthDateLabel}
+	流入経路: ${larkLineText(describeLiftJobRoute(utm))}
+	キャンペーンID: ${larkLineText(utm.utm_campaign)}
+	広告セットID: ${larkLineText(utm.utm_term)}
+	CR-ID: ${larkLineText(utm.utm_content)}
+	広告ID: ${larkLineText(utm.utm_id)}
+	広告名: ${larkLineText(utm.utm_creative)}
+	LP: ${larkLineText(params.pageUrl)}
+	メールアドレス: ${larkLineText(params.email, '未入力')}
+	氏名（漢字）: ${larkLineText(params.fullName, '未入力')}
+	氏名（ふりがな）: ${larkLineText(params.fullNameKana, '未入力')}
+	電話番号: ${larkLineText(params.phoneNumber, '未入力')}
+	希望職種: ${larkLineText(params.jobPositionLabel, '未入力')}
+	希望勤務地: ${larkLineText(params.desiredLocationLabel, '未入力')}
+	年齢: ${larkLineText(params.ageLabel, '未入力')}
+	生年月日: ${larkLineText(params.birthDateLabel, '未入力')}
 -------------------------
   `.trim();
 }
@@ -383,7 +395,7 @@ export async function POST(request: NextRequest) {
     if (!sendBaseOnly) {
       const tasks: Promise<void>[] = [];
 
-      // 副作用（Lark通知・Base送信・メール・SMS・CAPI）はどれも非致命なので
+      // Baseは必須保存先として先にawaitし、成功後の通知・メール・SMS・CAPIだけを
       // Promise.allSettled に流している。ただし fetch が throw した場合、
       // allSettled は握りつぶし **ログが1行も出ない**。
       // 2026-09-10 のE2Eで、Lark通知もBase送信も無言のまま飛んでいないことが判明した
@@ -412,7 +424,63 @@ export async function POST(request: NextRequest) {
             }
           );
 
-      // Lark 送信タスク
+      // Baseを先に確定する。保存失敗時に通知・メール・SMSを先行送信すると、
+      // 500を見た利用者の再送で副作用だけが重複するため、後続はBase受理後に開始する。
+      if (baseWebhookUrl) {
+        const userAgent = request.headers.get('user-agent') || '';
+        const clientIp = (request.headers.get('x-forwarded-for') || '').split(',')[0]?.trim() || '';
+
+        const basePayload = buildLiftJobBasePayload({
+          utm: utmParams,
+          adId,
+          adCreativeId,
+          adImageUrl,
+          formData,
+          jobPositionLabel,
+          desiredLocationLabel,
+          pageUrl,
+          landingPath,
+          initialReferrer,
+          attributionSource,
+          userAgent,
+          clientIp,
+          submittedAt: new Date().toISOString(),
+          environment: process.env.NODE_ENV,
+        });
+
+        await trackTask('lark-base-webhook', async () => {
+            const resp = await fetch(baseWebhookUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(basePayload),
+              signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
+            });
+            const result = (await resp.json().catch(() => ({}))) as LarkWebhookResult;
+            if (!resp.ok || !isLarkAccepted(result)) {
+              markFailed('lark-base-webhook');
+              console.error(
+                `[coupang] Failed to send to Lark Base Webhook (http=${resp.status} code=${result.code ?? result.StatusCode ?? 'n/a'} msg=${result.msg ?? result.StatusMessage ?? 'n/a'})`
+              );
+            } else {
+              console.log('[coupang] Lark Base webhook triggered successfully');
+            }
+          });
+
+        if (taskFailures.includes('lark-base-webhook')) {
+          console.log('[coupang] submission settled:', {
+            mode: 'full',
+            tasks: 1,
+            failed: taskFailures,
+            larkWebhookConfigured: Boolean(larkWebhookUrl),
+            baseWebhookConfigured: true,
+            emailEnabled: false,
+            smsEnabled: false,
+          });
+          return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
+        }
+      }
+
+      // Lark通知はBase受理後に送る。通知単独失敗は保存済み応募を再送させないため非致命。
       if (larkWebhookUrl) {
         const messageContent = buildLiftJobNotification({
           utm: utmParams,
@@ -438,13 +506,8 @@ export async function POST(request: NextRequest) {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(larkPayload),
-              // タイムアウトが無いと、Lark 側が応答しないときに Promise.allSettled が
-              // 張り付いたまま関数が実行上限で落ち、ログが1行も残らない。
-              // 既存の entry-bp ルートと同じ 5 秒に揃える。
               signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
             });
-            // Lark の Webhook は **HTTP 200 でも body の code が非0なら失敗**（bot除外・トークン失効など）。
-            // 200 だけ見て成功扱いにすると、届いていないのに「sent successfully」と記録される。
             const result = (await resp.json().catch(() => ({}))) as LarkWebhookResult;
             if (!resp.ok || !isLarkAccepted(result)) {
               markFailed('lark-notification');
@@ -453,50 +516,6 @@ export async function POST(request: NextRequest) {
               );
             } else {
               console.log('[coupang] Lark notification sent successfully');
-            }
-          })
-        );
-      }
-
-      // Base 送信タスク
-      if (baseWebhookUrl) {
-        const userAgent = request.headers.get('user-agent') || '';
-        const clientIp = (request.headers.get('x-forwarded-for') || '').split(',')[0]?.trim() || '';
-
-        const basePayload = buildLiftJobBasePayload({
-          utm: utmParams,
-          adId,
-          adCreativeId,
-          adImageUrl,
-          formData,
-          jobPositionLabel,
-          desiredLocationLabel,
-          pageUrl,
-          landingPath,
-          initialReferrer,
-          attributionSource,
-          userAgent,
-          clientIp,
-          submittedAt: new Date().toISOString(),
-          environment: process.env.NODE_ENV,
-        });
-
-        tasks.push(
-          trackTask('lark-base-webhook', async () => {
-            const resp = await fetch(baseWebhookUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(basePayload),
-              signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
-            });
-            const result = (await resp.json().catch(() => ({}))) as LarkWebhookResult;
-            if (!resp.ok || !isLarkAccepted(result)) {
-              markFailed('lark-base-webhook');
-              console.error(
-                `[coupang] Failed to send to Lark Base Webhook (http=${resp.status} code=${result.code ?? result.StatusCode ?? 'n/a'} msg=${result.msg ?? result.StatusMessage ?? 'n/a'})`
-              );
-            } else {
-              console.log('[coupang] Lark Base webhook triggered successfully');
             }
           })
         );
@@ -597,7 +616,7 @@ export async function POST(request: NextRequest) {
       // 応募1件につき必ず1行出す。無言で壊れていることを検知するための足跡。
       console.log('[coupang] submission settled:', {
         mode: 'full',
-        tasks: tasks.length,
+        tasks: tasks.length + 1,
         failed: taskFailures,
         larkWebhookConfigured: Boolean(larkWebhookUrl),
         baseWebhookConfigured: Boolean(baseWebhookUrl),
@@ -635,7 +654,7 @@ export async function POST(request: NextRequest) {
           signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
         });
         const result = (await resp.json().catch(() => ({}))) as LarkWebhookResult;
-        if (!resp.ok || isLarkRejected(result)) {
+        if (!resp.ok || !isLarkAccepted(result)) {
           console.error(
             `[coupang] Failed to send to Lark Base Webhook (http=${resp.status} code=${result.code ?? result.StatusCode ?? 'n/a'} msg=${result.msg ?? result.StatusMessage ?? 'n/a'})`
           );

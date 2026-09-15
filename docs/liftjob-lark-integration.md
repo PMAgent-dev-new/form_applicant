@@ -6,6 +6,18 @@ LIFT JOB（ロケットナウ営業職）の応募は
 通常モードでは通知・Baseの両Webhookを必須とし、どちらかが未設定または許可形式外なら
 応募者情報を外部送信する前にHTTP 500で停止する。通知先はLark Bot Incoming Webhook、
 Base保存先はAnyCrossまたはLark Base Automation WebhookのHTTPS URLだけを許可する。
+AnyCrossは `/anycross/trigger/{id}` と現行の `/anycross/trigger/callback/{id}` の
+両形式に対応する。Base送信を最初に行い、失敗した場合は後続の通知・メール・SMS・CAPIを
+開始せず、応募APIもHTTP 500を返す。これにより保存漏れを成功扱いせず、再送時の副作用重複を抑える。
+通知だけが失敗した場合は、保存済みBaseレコードをブラウザ再送で重複させないため、
+失敗をログへ残したうえで応募APIは成功扱いとする。
+
+Webhookの `code=0` はオートメーションによる受理までを示す。Baseレコード作成完了の保証には、
+Base側の実レコード監視または永続キューが別途必要である。現環境にはLIFT JOB Baseの
+読み戻し権限がないため、本番疎通では受理とpayload生成までを検証対象とする。
+
+Lark通知へ埋め込む入力値は改行・制御文字を空白へ正規化し、`<` / `>` を全角化する。
+応募者入力による通知行の偽装や `<at ...>` メンション記法の成立を防ぐ。
 
 ## 流入経路の決定
 
@@ -74,4 +86,4 @@ AnyCross / Lark Base 側のオートメーションでは、次の対応で必�
 
 Webhook が HTTP 200 を返しても、Lark の `code=0` または `StatusCode=0` が
 JSON本文に明示されなければ送信失敗としてログに残す。空本文・非JSON・成功コード欠落も
-成功扱いしない。
+成功扱いしない。この判定は通常モードとBase-onlyモードの双方に適用する。

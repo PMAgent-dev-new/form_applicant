@@ -28,7 +28,7 @@ test('health token送信時のstatus=okは2回確認後にunhealthyとする', a
   }
 });
 
-test('health token未設定時だけstatus=okをlivenessとして許容する', async () => {
+test('healthCheck helperはtoken未設定時だけstatus=okをlivenessとして返す', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => Response.json({ status: 'ok' });
   try {
@@ -38,4 +38,57 @@ test('health token未設定時だけstatus=okをlivenessとして許容する', 
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('guard本体の前提条件はhealth token欠落を拒否する', async () => {
+  const { guardPrerequisiteError } = await loadGuard('', 'missing-health-token');
+  assert.match(
+    guardPrerequisiteError({ vercelToken: 'configured', healthToken: '' }),
+    /HEALTH_CHECK_TOKEN is required/,
+  );
+});
+
+test('commit statusが失敗なら旧productionがREADYでもdeploy gateを通さない', async () => {
+  const { deploymentGate } = await loadGuard('', 'deploy-failed');
+  const result = deploymentGate(
+    'failure',
+    { state: 'READY', target: 'production', meta: { githubCommitSha: 'new-sha' } },
+    'new-sha',
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /commit status is failure/);
+});
+
+test('productionのSHAがpush対象と違えばdeploy gateを通さない', async () => {
+  const { deploymentGate } = await loadGuard('', 'deploy-old-sha');
+  const result = deploymentGate(
+    'success',
+    { state: 'READY', target: 'production', meta: { githubCommitSha: 'old-sha' } },
+    'new-sha',
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /latest production SHA is old-sha/);
+});
+
+test('commit status・production target・READY・SHAが揃った場合だけdeploy gateを通す', async () => {
+  const { deploymentGate } = await loadGuard('', 'deploy-ready');
+  const result = deploymentGate(
+    'success',
+    { state: 'READY', target: 'production', meta: { githubCommitSha: 'new-sha' } },
+    'new-sha',
+  );
+  assert.equal(result.ok, true);
+});
+
+test('rollback先は現在以外のREADY production deploymentに固定する', async () => {
+  const { selectRollbackTarget } = await loadGuard('', 'rollback-target');
+  const target = selectRollbackTarget(
+    [
+      { url: 'failed.vercel.app', state: 'ERROR', target: 'production' },
+      { url: 'preview.vercel.app', state: 'READY', target: 'preview' },
+      { url: 'known-good.vercel.app', state: 'READY', target: 'production' },
+    ],
+    'current.vercel.app',
+  );
+  assert.equal(target?.url, 'known-good.vercel.app');
 });
