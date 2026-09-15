@@ -4,10 +4,12 @@
 // LARK_DOMAIN_<PROFILE> を読む（例: MECHANIC, RIDEJOB）。
 // Webhook 方式と異なり、フィールドを直接指定して書けるのが利点。
 
+import { createHash } from "node:crypto";
+
 // 認証プロファイル。投入先 Base（Bitable アプリ）ごとに異なるアプリ資格情報を使う。
 //   mechanic … 求職者DB👷‍♂️ / IDOM_新卒2027 等（既存 APP_*_MECHANIC）
 //   ridejob  … 求職者DB🚕 等（APP_*_RIDEJOB）
-export type LarkProfile = "mechanic" | "ridejob";
+export type LarkProfile = "mechanic" | "ridejob" | "liftjob";
 
 const DEFAULT_PROFILE: LarkProfile = "mechanic";
 
@@ -113,11 +115,52 @@ async function postRecord(
   cfg: LarkBaseConfig,
   token: string,
   tableId: string,
-  fields: Record<string, LarkFieldValue>
-): Promise<{ code?: number; msg?: string; ok: boolean }> {
-  const url = `${cfg.domain}/open-apis/bitable/v1/apps/${cfg.appToken}/tables/${tableId}/records`;
+  fields: Record<string, LarkFieldValue>,
+  clientToken?: string,
+): Promise<{ code?: number; msg?: string; ok: boolean; recordId?: string }> {
+  const query = clientToken ? `?client_token=${encodeURIComponent(clientToken)}` : "";
+  const url = `${cfg.domain}/open-apis/bitable/v1/apps/${cfg.appToken}/tables/${tableId}/records${query}`;
   const res = await fetch(url, {
     method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json; charset=utf-8",
+    },
+    body: JSON.stringify({ fields }),
+    signal: AbortSignal.timeout(5000),
+  });
+  const data = (await res.json().catch(() => ({}))) as {
+    code?: number;
+    msg?: string;
+    data?: { record?: { record_id?: string } };
+  };
+  return {
+    code: data.code,
+    msg: data.msg,
+    ok: res.ok,
+    recordId: data.data?.record?.record_id,
+  };
+}
+
+/** 任意の安定IDをLark client_token用の決定的UUID v4表現へ変換する。 */
+function idempotencyToken(value: string): string {
+  const bytes = createHash("sha256").update(value, "utf8").digest().subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+async function putRecord(
+  cfg: LarkBaseConfig,
+  token: string,
+  tableId: string,
+  recordId: string,
+  fields: Record<string, LarkFieldValue>
+): Promise<{ code?: number; msg?: string; ok: boolean }> {
+  const url = `${cfg.domain}/open-apis/bitable/v1/apps/${cfg.appToken}/tables/${tableId}/records/${recordId}`;
+  const res = await fetch(url, {
+    method: "PUT",
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json; charset=utf-8",
@@ -235,6 +278,69 @@ async function resolveLinkedRecordId(
   throw new Error(`リンク先に「${recordName}」のレコードが見つかりません`);
 }
 
+async function prepareFields(
+  cfg: LarkBaseConfig,
+  token: string,
+  tableId: string,
+  fields: Record<string, LarkFieldValue | LarkLinkedRecordName | undefined>,
+): Promise<Record<string, LarkFieldValue>> {
+  const cleaned: Record<string, LarkFieldValue> = {};
+  const linkResolveDeadline = Date.now() + LINK_RESOLVE_BUDGET_MS;
+  for (const [k, v] of Object.entries(fields)) {
+    if (v && typeof v === "object" && !Array.isArray(v) && "linkedRecordName" in v) {
+      try {
+        if (Date.now() >= linkResolveDeadline) {
+          throw new Error(`リンク解決の制限時間(${LINK_RESOLVE_BUDGET_MS}ms)を超えました`);
+        }
+        cleaned[k] = [await resolveLinkedRecordId(cfg, token, tableId, k, v.linkedRecordName)];
+      } catch (e) {
+        console.error(`Lark Base リンク解決に失敗したため「${k}」を省略します:`, e);
+      }
+    } else if (v !== undefined && v !== "") {
+      cleaned[k] = v as LarkFieldValue;
+    }
+  }
+  return cleaned;
+}
+
+type SearchRecord = {
+  record_id?: string;
+  fields?: Record<string, unknown>;
+};
+
+async function searchRecordsByTextField(
+  cfg: LarkBaseConfig,
+  token: string,
+  tableId: string,
+  fieldName: string,
+  value: string,
+): Promise<SearchRecord[]> {
+  const url = `${cfg.domain}/open-apis/bitable/v1/apps/${cfg.appToken}/tables/${tableId}/records/search?page_size=2`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json; charset=utf-8",
+    },
+    body: JSON.stringify({
+      filter: {
+        conjunction: "and",
+        conditions: [{ field_name: fieldName, operator: "is", value: [value] }],
+      },
+    }),
+    signal: AbortSignal.timeout(5000),
+  });
+  const data = (await res.json().catch(() => ({}))) as {
+    code?: number;
+    msg?: string;
+    data?: { items?: SearchRecord[] };
+  };
+  if (!res.ok || data.code !== 0) {
+    throw new Error(`Base レコード検索失敗: code=${data.code} msg=${data.msg}`);
+  }
+  return data.data?.items ?? [];
+}
+
 // 指定プロファイルのアプリで、指定テーブルにレコードを1件作成する。失敗時は throw。
 // undefined / 空文字のフィールドは送信しない。
 export async function createBaseRecord(
@@ -249,25 +355,7 @@ export async function createBaseRecord(
   }
 
   let token = await fetchTenantAccessToken(cfg, profile);
-  const cleaned: Record<string, LarkFieldValue> = {};
-  const linkResolveDeadline = Date.now() + LINK_RESOLVE_BUDGET_MS;
-  for (const [k, v] of Object.entries(fields)) {
-    if (v && typeof v === "object" && !Array.isArray(v) && "linkedRecordName" in v) {
-      try {
-        if (Date.now() >= linkResolveDeadline) {
-          throw new Error(`リンク解決の制限時間(${LINK_RESOLVE_BUDGET_MS}ms)を超えました`);
-        }
-        cleaned[k] = [await resolveLinkedRecordId(cfg, token, tableId, k, v.linkedRecordName)];
-      } catch (e) {
-        // リンク解決に失敗しても、そのフィールドを落としてレコード作成は続ける。
-        // ここで throw すると呼び出し側が Base Webhook にフォールバックし、utm・広告ID・保有資格など
-        // 他の全フィールドまで失われる（2026-08-12 に欠損レコードが実際に発生した）。
-        console.error(`Lark Base リンク解決に失敗したため「${k}」を省略します:`, e);
-      }
-    } else if (v !== undefined && v !== "") {
-      cleaned[k] = v as LarkFieldValue;
-    }
-  }
+  const cleaned = await prepareFields(cfg, token, tableId, fields);
 
   let result = await postRecord(cfg, token, tableId, cleaned);
 
@@ -282,5 +370,85 @@ export async function createBaseRecord(
 
   if (!result.ok || (typeof result.code !== "undefined" && result.code !== 0)) {
     throw new Error(`Base レコード作成失敗: code=${result.code} msg=${result.msg}`);
+  }
+}
+
+export type BaseUpsertResult = {
+  recordId: string;
+  created: boolean;
+  previousFields: Record<string, unknown>;
+};
+
+/** Text列の一意キーで既存なら更新、無ければ作成する。 */
+export async function upsertBaseRecordByTextField(
+  tableId: string,
+  uniqueFieldName: string,
+  uniqueValue: string,
+  fields: Record<string, LarkFieldValue | LarkLinkedRecordName | undefined>,
+  profile: LarkProfile = DEFAULT_PROFILE,
+): Promise<BaseUpsertResult> {
+  const cfg = readConfig(profile);
+  if (!cfg) {
+    const s = profile.toUpperCase();
+    throw new Error(`Lark Base 認証情報（APP_ID_${s} / APP_SECRET_${s} / APP_TOKEN_${s}）が未設定です。`);
+  }
+  if (!uniqueValue.trim()) throw new Error("Base upsertの一意キーが空です。");
+
+  const token = await fetchTenantAccessToken(cfg, profile);
+  const records = await searchRecordsByTextField(
+    cfg,
+    token,
+    tableId,
+    uniqueFieldName,
+    uniqueValue,
+  );
+  if (records.length > 1) {
+    throw new Error(`Base upsertの一意キー「${uniqueValue}」が複数件あります。`);
+  }
+
+  const cleaned = await prepareFields(cfg, token, tableId, fields);
+  const existing = records[0];
+  if (existing?.record_id) {
+    const result = await putRecord(cfg, token, tableId, existing.record_id, cleaned);
+    if (!result.ok || result.code !== 0) {
+      throw new Error(`Base レコード更新失敗: code=${result.code} msg=${result.msg}`);
+    }
+    return {
+      recordId: existing.record_id,
+      created: false,
+      previousFields: existing.fields ?? {},
+    };
+  }
+
+  // 検索→作成の間に同じsubmission_idが同時到着しても、Lark側で作成を1件に畳む。
+  const result = await postRecord(
+    cfg,
+    token,
+    tableId,
+    cleaned,
+    idempotencyToken(`${cfg.appToken}/${tableId}/${uniqueFieldName}/${uniqueValue}`),
+  );
+  if (!result.ok || result.code !== 0 || !result.recordId) {
+    throw new Error(`Base レコード作成失敗: code=${result.code} msg=${result.msg}`);
+  }
+  return { recordId: result.recordId, created: true, previousFields: {} };
+}
+
+export async function updateBaseRecord(
+  tableId: string,
+  recordId: string,
+  fields: Record<string, LarkFieldValue | LarkLinkedRecordName | undefined>,
+  profile: LarkProfile = DEFAULT_PROFILE,
+): Promise<void> {
+  const cfg = readConfig(profile);
+  if (!cfg) {
+    const s = profile.toUpperCase();
+    throw new Error(`Lark Base 認証情報（APP_ID_${s} / APP_SECRET_${s} / APP_TOKEN_${s}）が未設定です。`);
+  }
+  const token = await fetchTenantAccessToken(cfg, profile);
+  const cleaned = await prepareFields(cfg, token, tableId, fields);
+  const result = await putRecord(cfg, token, tableId, recordId, cleaned);
+  if (!result.ok || result.code !== 0) {
+    throw new Error(`Base レコード更新失敗: code=${result.code} msg=${result.msg}`);
   }
 }

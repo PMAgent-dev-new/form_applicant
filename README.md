@@ -85,6 +85,17 @@ LARK_BASE_WEBHOOK_URL_COUPANG_TEST=your_test_base_webhook_url
 LARK_WEBHOOK_URL_COUPANG_PROD=your_prod_webhook_url
 LARK_BASE_WEBHOOK_URL_COUPANG_PROD=your_prod_base_webhook_url
 
+# LIFT JOB Base直接保存（本番の正本。Webhookは旧環境用フォールバック）
+APP_ID_LIFTJOB=your_lark_app_id
+APP_SECRET_LIFTJOB=your_lark_app_secret
+APP_TOKEN_LIFTJOB=your_liftjob_base_app_token
+LARK_BASE_TABLE_ID_LIFTJOB=your_liftjob_table_id
+
+# ChatGPT Ads Conversions API（opprefがある応募だけ送信）
+OPENAI_ADS_PIXEL_ID=your_openai_ads_pixel_id
+OPENAI_ADS_CAPI_KEY=your_openai_ads_capi_key
+OPENAI_ADS_ADVANCED_MATCHING=false
+
 # Gmail送信用GAS API URL
 GAS_EMAIL_API_URL=https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec
 

@@ -39,6 +39,8 @@ const AD_SOURCE_PREFIXES: Record<string, string> = {
   instagram: 'ig',
   th: 'th',
   threads: 'th',
+  msg: 'msg',
+  messenger: 'msg',
   tiktok: 'tiktok',
   google: 'google',
   // ChatGPT広告（OpenAI Ads）。入稿URLは utm_source=openai / utm_medium=cpc で統一している。

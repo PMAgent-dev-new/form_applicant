@@ -17,6 +17,8 @@ describe('resolveApplicationSourceMasterName', () => {
     ['google', 'organic', 'google(organic)'],
     ['openai', 'cpc', 'openai(ad)'],
     ['openai', 'ad', 'openai(ad)'],
+    ['msg', 'cpc', 'msg(ad)'],
+    ['messenger', 'ad', 'msg(ad)'],
     ['stanby', 'cpc', 'スタンバイ'],
   ])('utm_source=%s / utm_medium=%s → %s', (utm_source, utm_medium, expected) => {
     expect(resolveApplicationSourceMasterName({ utm_source, utm_medium })).toBe(expected);

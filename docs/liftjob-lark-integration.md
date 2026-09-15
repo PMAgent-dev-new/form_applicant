@@ -1,20 +1,19 @@
 # LIFT JOB 応募の Lark 通知・Base 連携
 
 LIFT JOB（ロケットナウ営業職）の応募は
-`/api/coupang/applicants` から、専用の Lark Bot Webhook と Base Webhook へ送信する。
+`/api/coupang/applicants` から、専用の Lark Bot Webhookへ通知し、LIFT JOB Baseへ直接保存する。
 
-通常モードでは通知・Baseの両Webhookを必須とし、どちらかが未設定または許可形式外なら
-応募者情報を外部送信する前にHTTP 500で停止する。通知先はLark Bot Incoming Webhook、
-Base保存先はAnyCrossまたはLark Base Automation WebhookのHTTPS URLだけを許可する。
-AnyCrossは `/anycross/trigger/{id}` と現行の `/anycross/trigger/callback/{id}` の
-両形式に対応する。Base送信を最初に行い、失敗した場合は後続の通知・メール・SMS・CAPIを
-開始せず、応募APIもHTTP 500を返す。これにより保存漏れを成功扱いせず、再送時の副作用重複を抑える。
-通知だけが失敗した場合は、保存済みBaseレコードをブラウザ再送で重複させないため、
-失敗をログへ残したうえで応募APIは成功扱いとする。
+通常モードではLark通知とBase保存を必須とする。Baseは専用アプリ資格情報によるBitable APIへの
+直接upsertを正本とし、直接接続が未設定の旧環境だけAnyCross / Base Automation Webhookへ
+フォールバックする。`submission_id` を検索キー、同じ値から作るLark `client_token` を作成時の
+冪等キーにするため、ブラウザ再送・同時送信でも同じ応募レコードへ収束する。Base保存を最初に行い、失敗した場合は後続の通知・メール・SMS・CAPIを
+開始せずHTTP 500を返す。通知成功後はBaseの `Lark通知送信済み` を更新し、後続処理の失敗で
+再送されても通知を重複させない。通知自体が失敗した場合もHTTP 500を返し、同じ
+`submission_id` で安全に再送できる。
 
-Webhookの `code=0` はオートメーションによる受理までを示す。Baseレコード作成完了の保証には、
-Base側の実レコード監視または永続キューが別途必要である。現環境にはLIFT JOB Baseの
-読み戻し権限がないため、本番疎通では受理とpayload生成までを検証対象とする。
+旧Webhook経路の `code=0` はオートメーションによる受理までを示す。直接接続ではBitable APIの
+record IDを受け取り、`submission_id` で検索して実レコードを読み戻す。LIFT JOB専用アプリの
+読み書き・削除権限は2026-09-16に本番Baseで確認済み。
 
 Lark通知へ埋め込む入力値は改行・制御文字を空白へ正規化し、`<` / `>` を全角化する。
 応募者入力による通知行の偽装や `<at ...>` メンション記法の成立を防ぐ。
@@ -30,6 +29,11 @@ Lark通知へ埋め込む入力値は改行・制御文字を空白へ正規化�
 
 複数の出所の値は混ぜない。例えば Cookie の `utm_source` と、
 別の着地 URL の `utm_content` を同じ応募に書き込まない。
+
+LIFT JOBに限り、応募時queryに `oppref` がありUTMがない場合は
+`utm_source=openai` / `utm_medium=cpc` として復元する。過去Cookieに残った `oppref` だけでは
+新しい自然流入をChatGPT広告へ上書きしない。`oppref` はBaseへ複製せず、OpenAI
+Conversions APIへの成果返却だけに使う。
 
 `rj_attr` は ridejob.jp 本体と共有する互換スキーマのため、Cookie へ保存するのは
 `source / medium / campaign / term / content`。LIFT JOBは同一ページで応募まで完結し、
@@ -51,9 +55,9 @@ Lark通知へ埋め込む入力値は改行・制御文字を空白へ正規化�
 UTM が取得できない場合は、実際に確認できない媒体名を推測で埋めず
 `経路不明（UTM未取得）` と表示する。
 
-## Base Webhook の受信キー
+## Base の保存項目
 
-AnyCross / Lark Base 側のオートメーションでは、次の対応で必ずマッピングする。
+直接接続では次の対応で保存する。旧Webhookフォールバックも同じキーのpayloadを送る。
 
 | Base での用途 | Webhook キー | 内容 |
 | --- | --- | --- |
@@ -73,16 +77,20 @@ AnyCross / Lark Base 側のオートメーションでは、次の対応で必�
 | 初回参照元 | `initial_referrer` | 着地時の referrer |
 | UTMの復元元 | `attribution_source` | `query` / `click_id` / `cookie` / `referrer` / `direct` |
 | フォーム識別 | `form_origin` | `coupang_rocketnow` |
+| 再送時の一意キー | `submission_id` | ブラウザ生成のUUID |
+| 通知重複防止 | `Lark通知送信済み` | Lark Bot受理後にtrue |
 
-`page_url` は Base 側の `LP_URL` へマッピングする。
+`page_url` からは `oppref` を除去して保存する。クリック識別子の生値はOpenAI CAPI以外へ複製しない。
 
 ## 本番反映前後の検証
 
 1. Vercel の認証付き `/api/health` が `ready` を返すこと。
-2. UTM v3 一式を入れたテスト応募を1件送ること。
-3. Lark 通知で配置・キャンペーンID・CR-ID・広告ID・LPを読み戻すこと。
-4. Base で上表の値を読み戻し、Webhook payload と一致すること。
-5. テストレコードを削除し、通知チャットにテストであることを残すこと。
+2. `x-e2e-token` で認証した `testMode` を使い、Meta / ChatGPTテスト応募を各1件送ること。
+3. `testMode` ではメール・SMS・Meta CAPIを抑止し、OpenAI CAPIは
+   `validate_only=true` にして本番コンバージョンへ計上しないこと。
+4. Lark 通知で配置・キャンペーンID・CR-ID・広告ID・LPを読み戻すこと。
+5. Baseで上表の値と `Lark通知送信済み=true` を読み戻すこと。
+6. 作成時のrecord IDを保持してテストレコードだけを削除し、同じ`submission_id`が0件になったことを確認すること。
 
 Webhook が HTTP 200 を返しても、Lark の `code=0` または `StatusCode=0` が
 JSON本文に明示されなければ送信失敗としてログに残す。空本文・非JSON・成功コード欠落も

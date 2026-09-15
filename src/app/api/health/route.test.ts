@@ -12,6 +12,12 @@ const LARK_ENV = {
   LARK_BASE_WEBHOOK_URL: 'https://open.larksuite.com/anycross/trigger/bbbb',
   LARK_WEBHOOK_URL_COUPANG_PROD: 'https://open.larksuite.com/open-apis/bot/v2/hook/cccc',
   LARK_BASE_WEBHOOK_URL_COUPANG_PROD: 'https://open.larksuite.com/anycross/trigger/dddd',
+  APP_ID_LIFTJOB: 'cli_liftjob',
+  APP_SECRET_LIFTJOB: 'secret_liftjob',
+  APP_TOKEN_LIFTJOB: 'app_liftjob',
+  LARK_BASE_TABLE_ID_LIFTJOB: 'tbl_liftjob',
+  OPENAI_ADS_PIXEL_ID: 'pixel_openai',
+  OPENAI_ADS_CAPI_KEY: 'key_openai',
 };
 
 describe('GET /api/health', () => {
@@ -65,6 +71,12 @@ describe('GET /api/health', () => {
       'LARK_WEBHOOK_URL_COUPANG',
       'LARK_BASE_WEBHOOK_URL_COUPANG_PROD',
       'LARK_BASE_WEBHOOK_URL_COUPANG',
+      'APP_ID_LIFTJOB',
+      'APP_SECRET_LIFTJOB',
+      'APP_TOKEN_LIFTJOB',
+      'LARK_BASE_TABLE_ID_LIFTJOB',
+      'OPENAI_ADS_PIXEL_ID',
+      'OPENAI_ADS_CAPI_KEY',
     ]) {
       vi.stubEnv(k, '');
     }
@@ -76,7 +88,12 @@ describe('GET /api/health', () => {
       'lark_notify',
       'lark_base',
       'lark_liftjob_notify',
-      'lark_liftjob_base',
+      'lark_liftjob_app_id',
+      'lark_liftjob_app_secret',
+      'lark_liftjob_app_token',
+      'lark_liftjob_table',
+      'openai_ads_pixel',
+      'openai_ads_capi_key',
     ]);
   });
 
@@ -91,15 +108,15 @@ describe('GET /api/health', () => {
     expect(await res.json()).toEqual({ status: 'degraded', missing: ['lark_liftjob_notify'] });
   });
 
-  it('LIFT JOB専用のBase Webhookが欠けたら degraded にする', async () => {
+  it('直接Base資格情報が揃えば旧Base Webhookがなくてもreadyにする', async () => {
     vi.stubEnv('HEALTH_CHECK_TOKEN', 'secret');
     for (const [k, v] of Object.entries(LARK_ENV)) vi.stubEnv(k, v);
     vi.stubEnv('LARK_BASE_WEBHOOK_URL_COUPANG_PROD', '');
     vi.stubEnv('LARK_BASE_WEBHOOK_URL_COUPANG', '');
 
     const res = await GET(makeRequest({ 'x-health-token': 'secret' }));
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ status: 'degraded', missing: ['lark_liftjob_base'] });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: 'ready' });
   });
 
   it('Base-onlyモードでは通知Webhookを必須扱いしない', async () => {

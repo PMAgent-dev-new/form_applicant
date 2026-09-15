@@ -59,6 +59,8 @@ export type OpenAiConversionInput = {
   phone?: string;
   clientIpAddress?: string;
   clientUserAgent?: string;
+  /** 本番計上せず、認証・payloadだけを検証する。E2E専用。 */
+  validateOnly?: boolean;
   /** テスト用。省略時は現在時刻。 */
   timestampMs?: number;
 };
@@ -81,6 +83,10 @@ type OpenAiEvent = {
  * どのクリックにも紐づけられない。レポートに乗らないイベントを積むだけなので送らない。
  */
 export function buildConversionEvent(input: OpenAiConversionInput): OpenAiEvent | null {
+  // Advanced Matching が有効でも、LIFT JOBでは広告クリック識別子を必須にする。
+  // oppref無しの応募者情報だけをOpenAIへ送らない。
+  if (!input.oppref) return null;
+
   const user: Record<string, unknown> = {};
   if (ADVANCED_MATCHING) {
     const em = hashEmail(input.email);
@@ -90,9 +96,6 @@ export function buildConversionEvent(input: OpenAiConversionInput): OpenAiEvent 
     if (input.clientIpAddress) user.ip_address = input.clientIpAddress;
     if (input.clientUserAgent) user.user_agent = input.clientUserAgent;
   }
-
-  const hasMatchSignal = Boolean(input.oppref) || Object.keys(user).length > 0;
-  if (!hasMatchSignal) return null;
 
   const event: OpenAiEvent = {
     id: input.eventId,
@@ -131,7 +134,7 @@ export async function sendOpenAiConversion(
         Authorization: `Bearer ${API_KEY}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ validate_only: false, events: [event] }),
+      body: JSON.stringify({ validate_only: input.validateOnly === true, events: [event] }),
       // タイムアウト必須。応募APIは全タスクを await してからレスポンスを返すため、
       // ここがハングすると応募者の待ち時間に直結する（最悪、保存済みなのにエラー画面）。
       signal: AbortSignal.timeout(5000),

@@ -7,11 +7,19 @@ import {
 } from '@/app/components/coupang-form/constants';
 import { resolveAdImageUrl, isLikelyAdId } from '@/lib/meta/resolveAdImage';
 import { sendMetaCapiLead } from '@/lib/meta/capi';
+import { sendOpenAiConversion } from '@/lib/openai/capi';
 import { sendApplicationConfirmationEmail } from '@/lib/email/send-application-confirmation';
 import { sendApplicationSms } from '@/lib/sms/send-application-sms';
 import { BASE_PATH } from '@/lib/basePath';
 import { getMediaName } from '@/lib/media-name';
 import { resolveApplicationSourceMasterName } from '@/lib/lark-masters';
+import { isMetaAdsAttribution, isOpenAiAdsAttribution } from '@/lib/attribution';
+import {
+  isLarkBaseConfigured,
+  upsertBaseRecordByTextField,
+  updateBaseRecord,
+  type LarkFieldValue,
+} from '@/lib/larkBase';
 
 /**
  * referer が取れないときに CAPI へ渡す既定の event_source_url。
@@ -27,6 +35,7 @@ const COUPANG_EVENT_SOURCE_URL = BASE_PATH
  * 既存の `src/app/api/entry-bp/route.ts` に合わせて 5 秒。
  */
 const LARK_FETCH_TIMEOUT_MS = 5000;
+const LIFTJOB_TABLE_ID = process.env.LARK_BASE_TABLE_ID_LIFTJOB || 'tblVBAB0nVCgWVWJ';
 
 type LarkWebhookResult = {
   code?: number | string;
@@ -110,6 +119,12 @@ export type UTMParams = {
 type CoupangSubmission = CoupangFormData & {
   utmParams?: UTMParams;
   metaEventId?: string;
+  /** 応募単位の安定ID。Base upsertと広告CAPIの重複排除に共用する。 */
+  submissionId?: string;
+  /** ChatGPT広告のクリック識別子。Baseには保存せずOpenAI CAPIだけに使う。 */
+  oppref?: string;
+  /** HEALTH_CHECK_TOKENで認証した本番E2E専用。 */
+  testMode?: boolean;
   /** 応募確定時のブラウザURL。Referer が短縮・欠落する環境の保険。 */
   pageUrl?: string;
   /** サイト内回遊前の最初の着地パス。 */
@@ -176,6 +191,17 @@ function pathnameFromUrl(value: string): string {
   }
 }
 
+/** opprefはOpenAI CAPI専用。通知・BaseのLP URLへ重複保存しない。 */
+function withoutOppref(value: string): string {
+  try {
+    const url = new URL(value);
+    url.searchParams.delete('oppref');
+    return url.toString();
+  } catch {
+    return '';
+  }
+}
+
 /**
  * LIFT JOBの通知に出す流入経路。キャンペーンはMeta配信だが、
  * {{site_source_name}} で取れる配置（fb / ig / threads / messenger）は潰さない。
@@ -223,10 +249,11 @@ export function buildLiftJobNotification(params: {
   desiredLocationLabel: string;
   ageLabel: string;
   birthDateLabel: string;
+  isTest?: boolean;
 }): string {
   const { utm } = params;
   return `
-LIFT JOB（ロケットナウ）の応募がありました！
+${params.isTest ? '【E2Eテスト・実応募ではありません】\n' : ''}LIFT JOB（ロケットナウ）の応募がありました！
 -------------------------
 	流入経路: ${larkLineText(describeLiftJobRoute(utm))}
 	キャンペーンID: ${larkLineText(utm.utm_campaign)}
@@ -262,6 +289,7 @@ export function buildLiftJobBasePayload(params: {
   userAgent: string;
   clientIp: string;
   submittedAt: string;
+  submissionId: string;
   environment?: string;
 }): Record<string, unknown> {
   // 共通resolverはUTMなしをRIDEJOB HPとみなすが、LIFT JOBは別サービス・別Base。
@@ -291,6 +319,7 @@ export function buildLiftJobBasePayload(params: {
     age: params.formData.age || '',
     birth_date: params.formData.birthDate || '',
     submitted_at: params.submittedAt,
+    submission_id: params.submissionId,
     environment: params.environment,
     user_agent: params.userAgent,
     client_ip: params.clientIp,
@@ -303,6 +332,42 @@ export function buildLiftJobBasePayload(params: {
   };
 }
 
+export function buildLiftJobDirectBaseFields(
+  payload: Record<string, unknown>,
+): Record<string, LarkFieldValue | undefined> {
+  const applicationSource = text(payload.application_source);
+  const submittedAt = text(payload.submitted_at);
+  const submittedAtMs = Date.parse(submittedAt);
+  return {
+    '求職者名': text(payload.full_name),
+    'フリガナ': text(payload.full_name_kana),
+    '電話番号': text(payload.phone_number),
+    'メールアドレス': text(payload.email),
+    '生年月日': text(payload.birth_date),
+    'マスタ-応募職種': text(payload.job_position),
+    '希望勤務地': text(payload.desired_location),
+    '応募経由(マスタ連動)': applicationSource ? [applicationSource] : undefined,
+    '流入媒体（自動判定）': text(payload.media_name),
+    '応募日': Number.isFinite(submittedAtMs) ? submittedAtMs : undefined,
+    'utm_source': text(payload.utm_source),
+    'utm_medium': text(payload.utm_medium),
+    'utm_campaign': text(payload.utm_campaign),
+    'utm_term': text(payload.utm_term),
+    'utm_content': text(payload.utm_content),
+    'utm_creative': text(payload.utm_creative),
+    'utm_id': text(payload.utm_id),
+    'ad_id': text(payload.ad_id),
+    'ad_creative_id': text(payload.ad_creative_id),
+    'ad_image_url': text(payload.ad_image_url),
+    'page_url': text(payload.page_url),
+    'landing_path': text(payload.landing_path),
+    'initial_referrer': text(payload.initial_referrer),
+    'attribution_source': text(payload.attribution_source),
+    'submission_id': text(payload.submission_id),
+    'ステータス': '応募者',
+  };
+}
+
 
 export async function POST(request: NextRequest) {
   try {
@@ -310,15 +375,31 @@ export async function POST(request: NextRequest) {
     const {
       utmParams: submittedUtmParams,
       metaEventId,
+      submissionId: submittedSubmissionId,
+      oppref: submittedOppref,
+      testMode: requestedTestMode,
       pageUrl: submittedPageUrl,
       landingPath: submittedLandingPath,
       initialReferrer: submittedInitialReferrer,
       attributionSource,
       ...formData
     } = submissionData;
+    const isTestMode = requestedTestMode === true;
+    if (isTestMode) {
+      const expected = process.env.HEALTH_CHECK_TOKEN || '';
+      const provided = request.headers.get('x-e2e-token') || '';
+      if (!expected || provided !== expected) {
+        return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
+      }
+    }
     const utmParams = normalizeUtmParams(submittedUtmParams);
+    const submissionId = firstText(submittedSubmissionId, metaEventId).slice(0, 128);
+    if (!submissionId) {
+      return NextResponse.json({ message: 'submissionId is required' }, { status: 400 });
+    }
+    const oppref = text(submittedOppref).slice(0, 2048) || undefined;
     const requestReferer = request.headers.get('referer') || '';
-    const pageUrl = firstText(submittedPageUrl, requestReferer, COUPANG_EVENT_SOURCE_URL);
+    const pageUrl = withoutOppref(firstText(submittedPageUrl, requestReferer, COUPANG_EVENT_SOURCE_URL));
     const landingPath = firstText(submittedLandingPath, pathnameFromUrl(pageUrl), BASE_PATH ? '/entry/coupang' : '/coupang');
     const initialReferrer = firstText(submittedInitialReferrer);
 
@@ -335,8 +416,10 @@ export async function POST(request: NextRequest) {
       ? process.env.LARK_BASE_WEBHOOK_URL_COUPANG_PROD || process.env.LARK_BASE_WEBHOOK_URL_COUPANG
       : process.env.LARK_BASE_WEBHOOK_URL_COUPANG_TEST || process.env.LARK_BASE_WEBHOOK_URL_COUPANG;
 
+    const directBaseConfigured = isLarkBaseConfigured('liftjob');
+
     // LIFT JOBは通知とBase保存がどちらも必須。誤設定URLへ応募者情報を送らない。
-    if (!baseWebhookUrl || !isAllowedLarkWebhookUrl(baseWebhookUrl, 'base')) {
+    if (!directBaseConfigured && (!baseWebhookUrl || !isAllowedLarkWebhookUrl(baseWebhookUrl, 'base'))) {
       console.error('Lark Base Webhook URL is missing or invalid for Coupang.');
       return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
     }
@@ -391,135 +474,148 @@ export async function POST(request: NextRequest) {
       console.log('Resolved Meta ad image (coupang):', { adId, adImageUrl: adImageUrl ? '(取得済)' : '(なし)', adCreativeId });
     }
 
-    // 並列送信
-    if (!sendBaseOnly) {
-      const tasks: Promise<void>[] = [];
+    const userAgent = request.headers.get('user-agent') || '';
+    const clientIp = (request.headers.get('x-forwarded-for') || '').split(',')[0]?.trim() || '';
+    const basePayload = buildLiftJobBasePayload({
+      utm: utmParams,
+      adId,
+      adCreativeId,
+      adImageUrl,
+      formData,
+      jobPositionLabel,
+      desiredLocationLabel,
+      pageUrl,
+      landingPath,
+      initialReferrer,
+      attributionSource,
+      userAgent,
+      clientIp,
+      submittedAt: new Date().toISOString(),
+      submissionId,
+      environment: process.env.NODE_ENV,
+    });
 
-      // Baseは必須保存先として先にawaitし、成功後の通知・メール・SMS・CAPIだけを
-      // Promise.allSettled に流している。ただし fetch が throw した場合、
-      // allSettled は握りつぶし **ログが1行も出ない**。
-      // 2026-09-10 のE2Eで、Lark通知もBase送信も無言のまま飛んでいないことが判明した
-      // （SMSのログだけが出て、通知系は成功ログも失敗ログも出ていなかった）。
-      // 例外を必ず記録し、最後にまとめて可視化する。
-      const taskFailures: string[] = [];
-      // 失敗を1箇所に集約する。throw だけでなく **HTTPエラーやLarkの非0コードも**
-      // ここへ入れないと、サマリ行が「失敗0件」と嘘をつく。
-      const markFailed = (label: string) => {
-        if (!taskFailures.includes(label)) taskFailures.push(label);
-      };
-      // run() は同期 throw しうるので Promise.resolve().then() でくるむ。
-      // 直接 run().then(...) にすると同期 throw が外側 catch まで飛び、
-      // 応募そのものを500で落としてしまう。
-      const trackTask = (label: string, run: () => Promise<unknown>): Promise<void> =>
-        Promise.resolve()
-          .then(run)
-          .then(
-            () => undefined,
-            (e: unknown) => {
-              markFailed(label);
-              // undici の fetch 失敗は message が 'fetch failed' としか出ないので cause まで出す。
-              const detail = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
-              const cause = e instanceof Error && e.cause ? ` cause=${String((e.cause as { code?: string })?.code ?? e.cause)}` : '';
-              console.error(`[coupang] ${label} threw and was swallowed: ${detail}${cause}`);
-            }
-          );
-
-      // Baseを先に確定する。保存失敗時に通知・メール・SMSを先行送信すると、
-      // 500を見た利用者の再送で副作用だけが重複するため、後続はBase受理後に開始する。
-      if (baseWebhookUrl) {
-        const userAgent = request.headers.get('user-agent') || '';
-        const clientIp = (request.headers.get('x-forwarded-for') || '').split(',')[0]?.trim() || '';
-
-        const basePayload = buildLiftJobBasePayload({
-          utm: utmParams,
-          adId,
-          adCreativeId,
-          adImageUrl,
-          formData,
-          jobPositionLabel,
-          desiredLocationLabel,
-          pageUrl,
-          landingPath,
-          initialReferrer,
-          attributionSource,
-          userAgent,
-          clientIp,
-          submittedAt: new Date().toISOString(),
-          environment: process.env.NODE_ENV,
-        });
-
-        await trackTask('lark-base-webhook', async () => {
-            const resp = await fetch(baseWebhookUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(basePayload),
-              signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
-            });
-            const result = (await resp.json().catch(() => ({}))) as LarkWebhookResult;
-            if (!resp.ok || !isLarkAccepted(result)) {
-              markFailed('lark-base-webhook');
-              console.error(
-                `[coupang] Failed to send to Lark Base Webhook (http=${resp.status} code=${result.code ?? result.StatusCode ?? 'n/a'} msg=${result.msg ?? result.StatusMessage ?? 'n/a'})`
-              );
-            } else {
-              console.log('[coupang] Lark Base webhook triggered successfully');
-            }
-          });
-
-        if (taskFailures.includes('lark-base-webhook')) {
-          console.log('[coupang] submission settled:', {
-            mode: 'full',
-            tasks: 1,
-            failed: taskFailures,
-            larkWebhookConfigured: Boolean(larkWebhookUrl),
-            baseWebhookConfigured: true,
-            emailEnabled: false,
-            smsEnabled: false,
-          });
-          return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
-        }
-      }
-
-      // Lark通知はBase受理後に送る。通知単独失敗は保存済み応募を再送させないため非致命。
-      if (larkWebhookUrl) {
-        const messageContent = buildLiftJobNotification({
-          utm: utmParams,
-          pageUrl,
-          email: formData.email,
-          fullName: formData.fullName,
-          fullNameKana: formData.fullNameKana,
-          phoneNumber: formData.phoneNumber,
-          jobPositionLabel,
-          desiredLocationLabel,
-          ageLabel,
-          birthDateLabel,
-        });
-
-        const larkPayload = {
-          msg_type: 'text',
-          content: { text: messageContent },
-        } as const;
-
-        tasks.push(
-          trackTask('lark-notification', async () => {
-            const resp = await fetch(larkWebhookUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(larkPayload),
-              signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
-            });
-            const result = (await resp.json().catch(() => ({}))) as LarkWebhookResult;
-            if (!resp.ok || !isLarkAccepted(result)) {
-              markFailed('lark-notification');
-              console.error(
-                `[coupang] Failed to send notification to Lark (http=${resp.status} code=${result.code ?? result.StatusCode ?? 'n/a'} msg=${result.msg ?? result.StatusMessage ?? 'n/a'})`
-              );
-            } else {
-              console.log('[coupang] Lark notification sent successfully');
-            }
-          })
+    // Baseは先に確定する。専用資格情報があればsubmission_idで直接upsertし、
+    // 未設定の旧環境だけAutomation Webhookへフォールバックする。
+    let baseRecordId = '';
+    let notificationAlreadySent = false;
+    try {
+      if (directBaseConfigured) {
+        const saved = await upsertBaseRecordByTextField(
+          LIFTJOB_TABLE_ID,
+          'submission_id',
+          submissionId,
+          buildLiftJobDirectBaseFields(basePayload),
+          'liftjob',
         );
+        baseRecordId = saved.recordId;
+        notificationAlreadySent = saved.previousFields['Lark通知送信済み'] === true;
+        console.log('[coupang] Lark Base direct upsert succeeded', {
+          recordId: saved.recordId,
+          created: saved.created,
+        });
+      } else if (baseWebhookUrl) {
+        const resp = await fetch(baseWebhookUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(basePayload),
+          signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
+        });
+        const result = (await resp.json().catch(() => ({}))) as LarkWebhookResult;
+        if (!resp.ok || !isLarkAccepted(result)) {
+          throw new Error(
+            `http=${resp.status} code=${result.code ?? result.StatusCode ?? 'n/a'} msg=${result.msg ?? result.StatusMessage ?? 'n/a'}`,
+          );
+        }
+        console.log('[coupang] Lark Base webhook triggered successfully');
       }
+    } catch (error) {
+      console.error('[coupang] Lark Base save failed:', error);
+      return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
+    }
+
+    if (sendBaseOnly) {
+      console.log('[coupang] submission settled:', {
+        mode: 'base-only',
+        directBaseConfigured,
+        baseRecordId: baseRecordId || undefined,
+      });
+      return NextResponse.json(
+        { message: 'Application submitted successfully!', ...(isTestMode ? { baseRecordId } : {}) },
+        { status: 200 },
+      );
+    }
+
+    const tasks: Promise<void>[] = [];
+    const taskFailures: string[] = [];
+    const markFailed = (label: string) => {
+      if (!taskFailures.includes(label)) taskFailures.push(label);
+    };
+    const trackTask = (label: string, run: () => Promise<unknown>): Promise<void> =>
+      Promise.resolve()
+        .then(run)
+        .then(
+          () => undefined,
+          (error: unknown) => {
+            markFailed(label);
+            const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+            const cause = error instanceof Error && error.cause
+              ? ` cause=${String((error.cause as { code?: string })?.code ?? error.cause)}`
+              : '';
+            console.error(`[coupang] ${label} failed: ${detail}${cause}`);
+          },
+        );
+
+    // Base upsertが冪等なので、通知失敗は500にして同じsubmission_idで安全に再送できる。
+    if (larkWebhookUrl && !notificationAlreadySent) {
+      const messageContent = buildLiftJobNotification({
+        utm: utmParams,
+        pageUrl,
+        email: formData.email,
+        fullName: formData.fullName,
+        fullNameKana: formData.fullNameKana,
+        phoneNumber: formData.phoneNumber,
+        jobPositionLabel,
+        desiredLocationLabel,
+        ageLabel,
+        birthDateLabel,
+        isTest: isTestMode,
+      });
+      try {
+        const resp = await fetch(larkWebhookUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ msg_type: 'text', content: { text: messageContent } }),
+          signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
+        });
+        const result = (await resp.json().catch(() => ({}))) as LarkWebhookResult;
+        if (!resp.ok || !isLarkAccepted(result)) {
+          throw new Error(
+            `http=${resp.status} code=${result.code ?? result.StatusCode ?? 'n/a'} msg=${result.msg ?? result.StatusMessage ?? 'n/a'}`,
+          );
+        }
+        console.log('[coupang] Lark notification sent successfully');
+        if (baseRecordId) {
+          try {
+            await updateBaseRecord(
+              LIFTJOB_TABLE_ID,
+              baseRecordId,
+              { 'Lark通知送信済み': true },
+              'liftjob',
+            );
+          } catch (error) {
+            // 通知は既に受理済み。ここで500にするとブラウザ再送で同じ通知を重複させる。
+            markFailed('lark-notification-state');
+            console.error('[coupang] Lark notification state update failed after successful send:', error);
+          }
+        }
+      } catch (error) {
+        console.error('[coupang] Failed to send notification to Lark:', error);
+        return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
+      }
+    } else if (notificationAlreadySent) {
+      console.log('[coupang] Lark notification already sent; skipping duplicate', { submissionId });
+    }
 
       // 自動返信メール — 非致命。クーパン専用の文面(COUPANG_CONTENT)を使う。
       // 共通ルートの実行時リスト SUPPORTED_ORIGINS は経由しない（専用ルートからの直接呼び出し）。
@@ -529,7 +625,7 @@ export async function POST(request: NextRequest) {
       // その瞬間から実送信が始まってしまう。既存の ENABLE_EMAIL_NOTIFICATION は
       // 全職種共通のグローバルスイッチで、止めるとタクシー・整備士の稼働中メールまで
       // 道連れになるため、クーパン単体で止められる口をここに用意する。
-      if (formData.email && process.env.COUPANG_EMAIL_ENABLED === 'true') {
+      if (!isTestMode && formData.email && process.env.COUPANG_EMAIL_ENABLED === 'true') {
         const recipientEmail = formData.email;
         tasks.push(
           trackTask('confirmation-email', async () => {
@@ -561,7 +657,7 @@ export async function POST(request: NextRequest) {
       // 未登録のまま送ると、eeasy 側が既定チャネルへフォールバックする実装だった場合に
       // **営業職の応募者へタクシー転職の文面が届く**（応募者から見える誤送信）。
       // こちら側からは eeasy の挙動を検証できないため、確認を人手のゲートにする。
-      if (formData.phoneNumber && process.env.COUPANG_SMS_ENABLED === 'true') {
+      if (!isTestMode && formData.phoneNumber && process.env.COUPANG_SMS_ENABLED === 'true') {
         const media = (utmParams?.utm_source || 'form').toLowerCase().slice(0, 32);
         tasks.push(
           trackTask('application-sms', async () => {
@@ -585,14 +681,14 @@ export async function POST(request: NextRequest) {
       }
 
       // Meta Conversions API（Lead）— 非致命。eventId が無ければスキップ
-      if (typeof metaEventId === 'string' && metaEventId) {
+      if (!isTestMode && isMetaAdsAttribution(utmParams)) {
         const capiUserAgent = request.headers.get('user-agent') || '';
         const capiClientIp = (request.headers.get('x-forwarded-for') || '').split(',')[0]?.trim() || '';
         // クロージャに入ると typeof による絞り込みが効かないので、ここで確定させる。
-        const capiEventId = metaEventId;
+        const capiEventId = submissionId;
         tasks.push(
-          trackTask('meta-capi', () =>
-            sendMetaCapiLead({
+          trackTask('meta-capi', async () => {
+            const result = await sendMetaCapiLead({
               eventId: capiEventId,
               // referer が取れない場合でも website イベントとして成立させる。
               eventSourceUrl: requestReferer || pageUrl || COUPANG_EVENT_SOURCE_URL,
@@ -606,12 +702,37 @@ export async function POST(request: NextRequest) {
               fbc: request.cookies.get('_fbc')?.value,
               clientIpAddress: capiClientIp || undefined,
               clientUserAgent: capiUserAgent || undefined,
-            })
-          )
+            });
+            if (!result.ok) throw new Error(`status=${result.status ?? 'unknown'}`);
+          })
+        );
+      }
+
+      // ChatGPT広告 Conversions API。opprefがある応募だけを送り、E2Eではvalidate-onlyにする。
+      if (oppref && isOpenAiAdsAttribution(utmParams)) {
+        tasks.push(
+          trackTask('openai-capi', async () => {
+            const result = await sendOpenAiConversion({
+              eventId: submissionId,
+              oppref,
+              sourceUrl: pageUrl || COUPANG_EVENT_SOURCE_URL,
+              validateOnly: isTestMode,
+            });
+            if (!result.ok) {
+              throw new Error(`status=${result.status ?? 'unknown'} skipped=${result.skipped ?? 'none'}`);
+            }
+          }),
         );
       }
 
       await Promise.allSettled(tasks);
+
+      if (isTestMode && oppref && taskFailures.includes('openai-capi')) {
+        return NextResponse.json(
+          { message: 'OpenAI validation failed', baseRecordId, failed: taskFailures },
+          { status: 502 },
+        );
+      }
 
       // 応募1件につき必ず1行出す。無言で壊れていることを検知するための足跡。
       console.log('[coupang] submission settled:', {
@@ -619,58 +740,19 @@ export async function POST(request: NextRequest) {
         tasks: tasks.length + 1,
         failed: taskFailures,
         larkWebhookConfigured: Boolean(larkWebhookUrl),
+        directBaseConfigured,
         baseWebhookConfigured: Boolean(baseWebhookUrl),
-        emailEnabled: process.env.COUPANG_EMAIL_ENABLED === 'true',
-        smsEnabled: process.env.COUPANG_SMS_ENABLED === 'true',
+        emailEnabled: !isTestMode && process.env.COUPANG_EMAIL_ENABLED === 'true',
+        smsEnabled: !isTestMode && process.env.COUPANG_SMS_ENABLED === 'true',
       });
-    } else {
-      // Baseのみ送信（テストモード）
-      if (baseWebhookUrl) {
-        const userAgent = request.headers.get('user-agent') || '';
-        const clientIp = (request.headers.get('x-forwarded-for') || '').split(',')[0]?.trim() || '';
 
-        const basePayload = buildLiftJobBasePayload({
-          utm: utmParams,
-          adId,
-          adCreativeId,
-          adImageUrl,
-          formData,
-          jobPositionLabel,
-          desiredLocationLabel,
-          pageUrl,
-          landingPath,
-          initialReferrer,
-          attributionSource,
-          userAgent,
-          clientIp,
-          submittedAt: new Date().toISOString(),
-          environment: process.env.NODE_ENV,
-        });
-
-        const resp = await fetch(baseWebhookUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(basePayload),
-          signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
-        });
-        const result = (await resp.json().catch(() => ({}))) as LarkWebhookResult;
-        if (!resp.ok || !isLarkAccepted(result)) {
-          console.error(
-            `[coupang] Failed to send to Lark Base Webhook (http=${resp.status} code=${result.code ?? result.StatusCode ?? 'n/a'} msg=${result.msg ?? result.StatusMessage ?? 'n/a'})`
-          );
-          return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
-        } else {
-          console.log('[coupang] Lark Base webhook triggered successfully');
-        }
-        // Baseのみ経路でも必ず足跡を残す（この行が無い＝無言の失敗、と読めるようにする）
-        console.log('[coupang] submission settled:', {
-          mode: 'base-only',
-          baseWebhookConfigured: true,
-        });
-      }
-    }
-
-    return NextResponse.json({ message: 'Application submitted successfully!' }, { status: 200 });
+    return NextResponse.json(
+      {
+        message: 'Application submitted successfully!',
+        ...(isTestMode ? { baseRecordId, failed: taskFailures } : {}),
+      },
+      { status: 200 },
+    );
   } catch (error) {
     console.error('Error processing Coupang application:', error);
     return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
