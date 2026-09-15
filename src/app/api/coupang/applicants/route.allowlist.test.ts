@@ -20,7 +20,8 @@ import type { CoupangFormData } from '@/app/components/coupang-form/types';
  */
 
 const ALLOWED_HOSTS = new Set([
-  'open.larksuite.com', // Lark 通知 webhook / Base webhook
+  'open.larksuite.com', // Lark Bot通知 webhook
+  'test-base.jp.larksuite.com', // Lark Base Automation webhook（本番と同じURL形式のダミー）
   'leomeet.pmagent.jp', // eeasy SMS 共通エンドポイント
   'graph.facebook.com', // Meta Conversions API
   // script.google.com は **意図的に外している**。
@@ -45,7 +46,8 @@ function hostOf(input: unknown): string {
 const ALLOWLISTED_ENV: Record<string, string> = {
   NODE_ENV: 'production',
   LARK_WEBHOOK_URL_COUPANG: 'https://open.larksuite.com/open-apis/bot/v2/hook/aaaaaaaa',
-  LARK_BASE_WEBHOOK_URL_COUPANG_PROD: 'https://open.larksuite.com/anycross/trigger/bbbbbbbb',
+  LARK_BASE_WEBHOOK_URL_COUPANG_PROD:
+    'https://test-base.jp.larksuite.com/base/automation/webhook/event/bbbbbbbb',
   GAS_COUPANG_STEP1_OPTIONS_API_URL: 'https://script.google.com/macros/s/dummy/exec',
   META_SMS_ENABLED: 'true',
   EEASY_SMS_SEND_URL: 'https://leomeet.pmagent.jp/api/sms/send',
@@ -132,12 +134,13 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     expect(offlist, `想定外の送信先: ${offlist.join(', ')}`).toEqual([]);
   });
 
-  it('Lark・SMS・CAPI の経路を実際に通っている(ガードが空振りでない)', async () => {
+  it('Lark通知・Base・SMS・CAPI の経路を実際に通っている(ガードが空振りでない)', async () => {
     const { POST } = await import('./route');
     await POST(makeRequest(coupangBody));
 
     const hosts = new Set(fetchSpy.mock.calls.map((call) => hostOf(call[0])));
     expect(hosts.has('open.larksuite.com')).toBe(true);
+    expect(hosts.has('test-base.jp.larksuite.com')).toBe(true);
     expect(hosts.has('leomeet.pmagent.jp')).toBe(true);
     expect(hosts.has('graph.facebook.com')).toBe(true);
   });
@@ -173,7 +176,7 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     await POST(makeRequest(coupangBody));
 
     const baseCall = fetchSpy.mock.calls.find((call) =>
-      String(call[0]).includes('/anycross/trigger/'),
+      String(call[0]).includes('/base/automation/webhook/event/'),
     );
     expect(baseCall, 'Base webhook が呼ばれていない').toBeTruthy();
     const payload = JSON.parse((baseCall![1] as RequestInit).body as string);
@@ -200,12 +203,33 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     expect(message).toContain('LP: https://ridejob.jp/entry/coupang?utm_source=ig&utm_medium=cpc');
   });
 
+  it('通知本文では改行とLarkメンション記法を無害化する', async () => {
+    const { buildLiftJobNotification } = await import('./route');
+    const message = buildLiftJobNotification({
+      utm: { ...coupangBody.utmParams, utm_campaign: 'campaign\n偽装行' },
+      pageUrl: coupangBody.pageUrl,
+      email: coupangBody.email,
+      fullName: 'テスト\n<at user_id="all">全員</at>',
+      fullNameKana: coupangBody.fullNameKana,
+      phoneNumber: coupangBody.phoneNumber,
+      jobPositionLabel: coupangBody.jobPosition,
+      desiredLocationLabel: coupangBody.desiredLocation,
+      ageLabel: `${coupangBody.age}歳`,
+      birthDateLabel: coupangBody.birthDate,
+    });
+
+    expect(message).toContain('キャンペーンID: campaign 偽装行');
+    expect(message).toContain('氏名（漢字）: テスト ＜at user_id="all"＞全員＜/at＞');
+    expect(message).not.toContain('<at');
+    expect(message).not.toContain('\n偽装行');
+  });
+
   it('Base payloadに経路の証跡とUTM v3を欠落なく載せる', async () => {
     const { POST } = await import('./route');
     await POST(makeRequest(coupangBody));
 
     const baseCall = fetchSpy.mock.calls.find((call) =>
-      String(call[0]).includes('/anycross/trigger/'),
+      String(call[0]).includes('/base/automation/webhook/event/'),
     );
     expect(baseCall, 'Base webhook が呼ばれていない').toBeTruthy();
     const payload = JSON.parse((baseCall![1] as RequestInit).body as string);
@@ -219,6 +243,9 @@ describe('coupang applicants POST — outbound host allowlist', () => {
       utm_content: 'CR-2608-30',
       utm_id: '120234567892',
       utm_creative: 'CR-2608-30_SALES_未経験から法人営業',
+      ad_id: '120234567892',
+      ad_creative_id: '',
+      ad_image_url: '',
       page_url: 'https://ridejob.jp/entry/coupang?utm_source=ig&utm_medium=cpc',
       landing_path: '/entry/coupang',
       initial_referrer: 'https://l.instagram.com/',
@@ -274,7 +301,7 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     expect(res.status).toBe(200);
 
     const baseCall = fetchSpy.mock.calls.find((call) =>
-      String(call[0]).includes('/anycross/trigger/'),
+      String(call[0]).includes('/base/automation/webhook/event/'),
     );
     const payload = JSON.parse((baseCall![1] as RequestInit).body as string);
     expect(payload.utm_source).toBe('123');
@@ -310,7 +337,7 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     await POST(makeRequest(legacyBody));
 
     const baseCall = fetchSpy.mock.calls.find((call) =>
-      String(call[0]).includes('/anycross/trigger/'),
+      String(call[0]).includes('/base/automation/webhook/event/'),
     );
     const payload = JSON.parse((baseCall![1] as RequestInit).body as string);
     expect(payload.landing_path).toBe('/entry/coupang');
@@ -358,11 +385,34 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     errorSpy.mockRestore();
   });
 
-  it('Base Webhookが HTTP200 でも StatusCode!==0 なら失敗として記録する', async () => {
+  it('Larkが HTTP200 でも空本文なら失敗として記録する', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input: unknown) => {
+      const isLarkNotify =
+        hostOf(input) === 'open.larksuite.com' && String(input).includes('/bot/v2/hook/');
+      return isLarkNotify
+        ? new Response('', { status: 200 })
+        : new Response(JSON.stringify({ code: 0, StatusCode: 0 }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(coupangBody));
+
+    expect(res.status).toBe(200);
+    const logged = errorSpy.mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(logged).toContain('Failed to send notification to Lark');
+    expect(logged).toContain('code=n/a');
+    errorSpy.mockRestore();
+  });
+
+  it('Base Webhookが HTTP200 でも StatusCode!==0 なら500にして失敗を記録する', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     fetchSpy.mockImplementation(async (input: unknown) => {
       const isBase =
-        hostOf(input) === 'open.larksuite.com' && String(input).includes('/anycross/trigger/');
+        hostOf(input) === 'test-base.jp.larksuite.com' &&
+        String(input).includes('/base/automation/webhook/event/');
       return new Response(
         JSON.stringify(isBase ? { StatusCode: 4001, StatusMessage: 'mapping failed' } : { code: 0 }),
         { status: 200, headers: { 'content-type': 'application/json' } },
@@ -371,10 +421,125 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     const { POST } = await import('./route');
     const res = await POST(makeRequest(coupangBody));
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
     const logged = errorSpy.mock.calls.map((c) => c.join(' ')).join('\n');
     expect(logged).toContain('Failed to send to Lark Base Webhook');
     expect(logged).toContain('4001');
+    expect(fetchSpy.mock.calls.some((call) => String(call[0]).includes('/bot/v2/hook/'))).toBe(false);
+    errorSpy.mockRestore();
+  });
+
+  it('Base Webhookが HTTP200 でも非JSONなら500にして失敗を記録する', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input: unknown) => {
+      const isBase =
+        hostOf(input) === 'test-base.jp.larksuite.com' &&
+        String(input).includes('/base/automation/webhook/event/');
+      return isBase
+        ? new Response('accepted', { status: 200, headers: { 'content-type': 'text/plain' } })
+        : new Response(JSON.stringify({ code: 0, StatusCode: 0 }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(coupangBody));
+
+    expect(res.status).toBe(500);
+    const logged = errorSpy.mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(logged).toContain('Failed to send to Lark Base Webhook');
+    expect(logged).toContain('code=n/a');
+    expect(fetchSpy.mock.calls.some((call) => String(call[0]).includes('/bot/v2/hook/'))).toBe(false);
+    errorSpy.mockRestore();
+  });
+
+  it('通常モードのBase通信例外は500にし、後続の通知等を開始しない', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input: unknown) => {
+      if (String(input).includes('/base/automation/webhook/event/')) {
+        throw new TypeError('fetch failed');
+      }
+      return Response.json({ code: 0, StatusCode: 0 });
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(coupangBody));
+
+    expect(res.status).toBe(500);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy.mock.calls.flat().join(' ')).toContain('lark-base-webhook threw');
+    errorSpy.mockRestore();
+  });
+
+  it('Base-onlyモードもHTTP200の非JSON本文を成功扱いしない', async () => {
+    vi.stubEnv('LARK_SEND_BASE_ONLY', 'true');
+    vi.resetModules();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchSpy.mockResolvedValue(
+      new Response('accepted', { status: 200, headers: { 'content-type': 'text/plain' } }),
+    );
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(coupangBody));
+
+    expect(res.status).toBe(500);
+    const logged = errorSpy.mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(logged).toContain('Failed to send to Lark Base Webhook');
+    expect(logged).toContain('code=n/a');
+    errorSpy.mockRestore();
+  });
+
+  it('Base-onlyモードのHTTPエラーを500にする', async () => {
+    vi.stubEnv('LARK_SEND_BASE_ONLY', 'true');
+    vi.resetModules();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchSpy.mockResolvedValue(Response.json({ code: 5001, msg: 'failed' }, { status: 502 }));
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(coupangBody));
+
+    expect(res.status).toBe(500);
+    expect(errorSpy.mock.calls.flat().join(' ')).toContain('http=502');
+    errorSpy.mockRestore();
+  });
+
+  it('AnyCrossのcallback形式をBase Webhookとして許可する', async () => {
+    vi.stubEnv(
+      'LARK_BASE_WEBHOOK_URL_COUPANG_PROD',
+      'https://open.larksuite.com/anycross/trigger/callback/bbbbbbbb',
+    );
+    vi.resetModules();
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(coupangBody));
+
+    expect(res.status).toBe(200);
+    expect(
+      fetchSpy.mock.calls.some((call) =>
+        String(call[0]).includes('/anycross/trigger/callback/bbbbbbbb'),
+      ),
+    ).toBe(true);
+  });
+
+  it('許可外の通知Webhookは応募者情報を送る前に拒否する', async () => {
+    vi.stubEnv('LARK_WEBHOOK_URL_COUPANG', 'https://evil.example.com/hook/test');
+    vi.resetModules();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(coupangBody));
+
+    expect(res.status).toBe(500);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith('Lark Webhook URL is missing or invalid for Coupang.');
+    errorSpy.mockRestore();
+  });
+
+  it('許可外のBase Webhookは応募者情報を送る前に拒否する', async () => {
+    vi.stubEnv('LARK_BASE_WEBHOOK_URL_COUPANG_PROD', 'https://evil.example.com/base/test');
+    vi.resetModules();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(coupangBody));
+
+    expect(res.status).toBe(500);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith('Lark Base Webhook URL is missing or invalid for Coupang.');
     errorSpy.mockRestore();
   });
 

@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && node --test scripts/post-deploy-guard.test.mjs",
     "test:watch": "vitest",
     "test:applicants": "node scripts/test-applicants.mjs",
     "webhook:local": "node scripts/local-webhook.mjs"
