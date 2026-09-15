@@ -65,6 +65,7 @@
 - 2026-09-15 13:08 JST／Astra判断: レビューで見つかったランタイムURL検証と空／非JSONレスポンス判定の強化は追加実装にあたるため、本タスクでは事実を記録し、勝手に本番変更しない。
 - 2026-09-15 13:11 JST／Astra判断: 既存のBase payload回帰テストで未検証だった `ad_id`、`ad_creative_id`、`ad_image_url` のアサーションを追加し、目標の期待値を実際のテストfixtureへ合わせた。
 - 2026-09-15 22:29 JST／ユーザー判断: 「全て本番反映して」。提示済みの本番設定修復、両Vercelプロジェクトの再デプロイ、GitHub Actions secret更新、およびテスト記録・追加アサーションのPR／マージを承認。追加の外部リソースは作成しない。
+- 2026-09-15 22:33 JST／Astra判断: `ridejob-form` の既存本番値を正本として、通知URLはLark Bot Incoming Webhook、Base URLはLark Base Automation WebhookのHTTPS形式を検証してから両プロジェクトへ同期した。秘密値は出力・コミットしない。
 
 ## 保留
 
@@ -134,11 +135,12 @@ LP: https://ridejob.jp/entry/coupang
 
 ### 本番環境変数とヘルスチェック
 
-- `ridejob-entry`: LIFT JOB通知URL、Base URL、`HEALTH_CHECK_TOKEN` は変数名のみ存在し、productionの実値は空。
-- `ridejob-form`: LIFT JOB通知URLとBase URLは実値あり。`HEALTH_CHECK_TOKEN` は空。
+- 修復前の `ridejob-entry`: LIFT JOB通知URL、Base URL、`HEALTH_CHECK_TOKEN` は変数名のみ存在し、productionの実値は空だった。
+- 修復前の `ridejob-form`: LIFT JOB通知URLとBase URLは実値あり。`HEALTH_CHECK_TOKEN` は空だった。
 - 無認証livenessは両方ともHTTP 200、`{"status":"ok"}`。
-- 認証付きreadinessの `{"status":"ready"}` は、両環境にトークン実値がないため確認不能。完了条件2は未達。
-- `ridejob-entry` は実配信URLに必要な通知・Base値が空のため、このままではLIFT JOBの本番応募POSTが通知前の必須設定検査で500になる構成。
+- 2026-09-15 22:33 JST、通知URLとBase URLを両Vercelプロジェクトのproductionへ同値で設定し、共通のランダムな `HEALTH_CHECK_TOKEN` を両プロジェクトとGitHub Actions secretへ設定した。
+- 設定後にproduction envを再取得し、通知／Base／health tokenがすべて非空、両プロジェクト間で一致、通知URLとBase URLがそれぞれ期待するLarkのHTTPS形式であることを実測した。実値は表示していない。
+- 認証付きreadinessの `{"status":"ready"}` は、設定を取り込む本番デプロイ完了後に確認する。
 
 ### AnyCross／Base
 
