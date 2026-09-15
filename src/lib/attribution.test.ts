@@ -1,6 +1,13 @@
 import { describe, expect, test } from 'vitest';
 
-import { captureAttribution, readAttribution, resolveUtmParams, touchFromReferrer, type Attribution } from './attribution';
+import {
+  captureAttribution,
+  readAttribution,
+  resolveUtmParams,
+  resolveUtmParamsWithSource,
+  touchFromReferrer,
+  type Attribution,
+} from './attribution';
 
 /**
  * ここで守りたいのは3つ。
@@ -152,6 +159,28 @@ describe('resolveUtmParams', () => {
       HOST,
     );
     expect(r.utm_source).toBe('google');
+  });
+});
+
+describe('resolveUtmParamsWithSource', () => {
+  test('クリックIDだけの着地を過去Cookie由来と誤記録しない', () => {
+    const r = resolveUtmParamsWithSource(
+      '?fbclid=abc',
+      { lastTouch: { source: 'google', medium: 'organic', at: 'x' } },
+      'https://l.facebook.com/',
+      HOST,
+    );
+    expect(r.utmParams.utm_source).toBe('');
+    expect(r.attributionSource).toBe('click_id');
+  });
+
+  test.each([
+    ['?utm_source=ig&utm_medium=cpc', {}, '', 'query'],
+    ['', { lastTouch: { source: 'ig', medium: 'cpc', at: 'x' } }, '', 'cookie'],
+    ['', {}, 'https://www.youtube.com/', 'referrer'],
+    ['', {}, '', 'direct'],
+  ] as const)('%s の採用元を %s と判定する', (search, attribution, referrer, expected) => {
+    expect(resolveUtmParamsWithSource(search, attribution, referrer, HOST).attributionSource).toBe(expected);
   });
 });
 

@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { CoupangFormData } from '@/app/components/coupang-form/types';
 
 /**
  * クーパン専用ルートの送信先ホスト許可リストガード。
@@ -81,7 +82,19 @@ const coupangBody = {
   age: '30',
   birthDate: '19960101',
   metaEventId: 'evt-coupang-allowlist-test',
-  utmParams: { utm_source: 'ig', utm_medium: 'cpc', utm_content: 'CR-2608-30' },
+  utmParams: {
+    utm_source: 'ig',
+    utm_medium: 'cpc',
+    utm_campaign: '120234567890',
+    utm_term: '120234567891',
+    utm_content: 'CR-2608-30',
+    utm_id: '120234567892',
+    utm_creative: 'CR-2608-30_SALES_未経験から法人営業',
+  },
+  pageUrl: 'https://ridejob.jp/entry/coupang?utm_source=ig&utm_medium=cpc',
+  landingPath: '/entry/coupang',
+  initialReferrer: 'https://l.instagram.com/',
+  attributionSource: 'query',
 };
 
 describe('coupang applicants POST — outbound host allowlist', () => {
@@ -168,6 +181,141 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     expect(payload.job_position).toBe('アカウントマネージャー');
   });
 
+  it('LIFT JOB通知に配置・キャンペーン・CR・広告・LPが載る', async () => {
+    const { POST } = await import('./route');
+    await POST(makeRequest(coupangBody));
+
+    const notifyCall = fetchSpy.mock.calls.find((call) =>
+      String(call[0]).includes('/bot/v2/hook/'),
+    );
+    expect(notifyCall, 'Lark通知 webhook が呼ばれていない').toBeTruthy();
+    const payload = JSON.parse((notifyCall![1] as RequestInit).body as string);
+    const message = payload.content.text as string;
+    expect(message).toContain('LIFT JOB（ロケットナウ）の応募');
+    expect(message).toContain('流入経路: Instagram広告（cpc）');
+    expect(message).toContain('キャンペーンID: 120234567890');
+    expect(message).toContain('広告セットID: 120234567891');
+    expect(message).toContain('CR-ID: CR-2608-30');
+    expect(message).toContain('広告ID: 120234567892');
+    expect(message).toContain('LP: https://ridejob.jp/entry/coupang?utm_source=ig&utm_medium=cpc');
+  });
+
+  it('Base payloadに経路の証跡とUTM v3を欠落なく載せる', async () => {
+    const { POST } = await import('./route');
+    await POST(makeRequest(coupangBody));
+
+    const baseCall = fetchSpy.mock.calls.find((call) =>
+      String(call[0]).includes('/anycross/trigger/'),
+    );
+    expect(baseCall, 'Base webhook が呼ばれていない').toBeTruthy();
+    const payload = JSON.parse((baseCall![1] as RequestInit).body as string);
+    expect(payload).toMatchObject({
+      media_name: 'Meta広告',
+      application_source: 'ig(ad)',
+      utm_source: 'ig',
+      utm_medium: 'cpc',
+      utm_campaign: '120234567890',
+      utm_term: '120234567891',
+      utm_content: 'CR-2608-30',
+      utm_id: '120234567892',
+      utm_creative: 'CR-2608-30_SALES_未経験から法人営業',
+      page_url: 'https://ridejob.jp/entry/coupang?utm_source=ig&utm_medium=cpc',
+      landing_path: '/entry/coupang',
+      initial_referrer: 'https://l.instagram.com/',
+      attribution_source: 'query',
+      form_origin: 'coupang_rocketnow',
+      is_coupang: true,
+    });
+  });
+
+  it('UTMが無い応募をRIDEJOB HPやMeta広告と推測で埋めない', async () => {
+    const { buildLiftJobBasePayload, describeLiftJobRoute, getLiftJobMediaName } = await import('./route');
+    expect(describeLiftJobRoute({})).toBe('経路不明（UTM未取得）');
+    expect(getLiftJobMediaName({})).toBe('経路不明');
+    const payload = buildLiftJobBasePayload({
+      utm: {},
+      adId: '',
+      adCreativeId: '',
+      adImageUrl: '',
+      formData: coupangBody as CoupangFormData,
+      jobPositionLabel: coupangBody.jobPosition,
+      desiredLocationLabel: coupangBody.desiredLocation,
+      pageUrl: coupangBody.pageUrl,
+      landingPath: coupangBody.landingPath,
+      initialReferrer: '',
+      attributionSource: 'direct',
+      userAgent: 'vitest',
+      clientIp: '',
+      submittedAt: '2026-09-15T00:00:00.000Z',
+    });
+    expect(payload.application_source).toBe('');
+  });
+
+  it('organicや区分不明のMeta系流入を広告と誤表示しない', async () => {
+    const { describeLiftJobRoute, getLiftJobMediaName } = await import('./route');
+    expect(describeLiftJobRoute({ utm_source: 'ig', utm_medium: 'organic' })).toBe(
+      'Instagram（organic）',
+    );
+    expect(getLiftJobMediaName({ utm_source: 'ig', utm_medium: 'organic' })).not.toBe('Meta広告');
+    expect(describeLiftJobRoute({ utm_source: 'fb' })).toBe('Facebook（流入区分未取得）');
+  });
+
+  it('壊れたCookie由来の非string UTMでも応募を500にしない', async () => {
+    const malformed = {
+      ...coupangBody,
+      utmParams: {
+        utm_source: 123,
+        utm_medium: { bad: true },
+        utm_campaign: null,
+      },
+    };
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(malformed));
+    expect(res.status).toBe(200);
+
+    const baseCall = fetchSpy.mock.calls.find((call) =>
+      String(call[0]).includes('/anycross/trigger/'),
+    );
+    const payload = JSON.parse((baseCall![1] as RequestInit).body as string);
+    expect(payload.utm_source).toBe('123');
+    expect(payload.utm_medium).toBe('');
+  });
+
+  it('toStringできないオブジェクト相当のUTMも空欄として扱う', async () => {
+    const hostileObject = { toString: null } as unknown as string;
+    const { buildLiftJobBasePayload } = await import('./route');
+    const payload = buildLiftJobBasePayload({
+      utm: { utm_source: hostileObject },
+      adId: '',
+      adCreativeId: '',
+      adImageUrl: '',
+      formData: coupangBody as CoupangFormData,
+      jobPositionLabel: coupangBody.jobPosition,
+      desiredLocationLabel: coupangBody.desiredLocation,
+      pageUrl: coupangBody.pageUrl,
+      landingPath: coupangBody.landingPath,
+      initialReferrer: '',
+      attributionSource: 'direct',
+      userAgent: 'vitest',
+      clientIp: '',
+      submittedAt: '2026-09-15T00:00:00.000Z',
+    });
+    expect(payload.utm_source).toBe('');
+  });
+
+  it('旧クライアントがlandingPathを送らなくてもpageUrlから/entryを復元する', async () => {
+    const legacyBody = { ...coupangBody } as Record<string, unknown>;
+    delete legacyBody.landingPath;
+    const { POST } = await import('./route');
+    await POST(makeRequest(legacyBody));
+
+    const baseCall = fetchSpy.mock.calls.find((call) =>
+      String(call[0]).includes('/anycross/trigger/'),
+    );
+    const payload = JSON.parse((baseCall![1] as RequestInit).body as string);
+    expect(payload.landing_path).toBe('/entry/coupang');
+  });
+
   it('Lark通知が落ちても応募は成立し、SMSとCAPIは送られる', async () => {
     // 応募を落とさないことの番人。通知の失敗で応募データまで失うのが最悪の壊れ方。
     fetchSpy.mockImplementation(async (input: unknown) => {
@@ -207,6 +355,26 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     const logged = errorSpy.mock.calls.map((c) => c.join(' ')).join('\n');
     expect(logged).toContain('Failed to send notification to Lark');
     expect(logged).toContain('19001');
+    errorSpy.mockRestore();
+  });
+
+  it('Base Webhookが HTTP200 でも StatusCode!==0 なら失敗として記録する', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input: unknown) => {
+      const isBase =
+        hostOf(input) === 'open.larksuite.com' && String(input).includes('/anycross/trigger/');
+      return new Response(
+        JSON.stringify(isBase ? { StatusCode: 4001, StatusMessage: 'mapping failed' } : { code: 0 }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(coupangBody));
+
+    expect(res.status).toBe(200);
+    const logged = errorSpy.mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(logged).toContain('Failed to send to Lark Base Webhook');
+    expect(logged).toContain('4001');
     errorSpy.mockRestore();
   });
 

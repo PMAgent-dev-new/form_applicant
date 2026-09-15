@@ -10,6 +10,8 @@ function makeRequest(headers: Record<string, string> = {}) {
 const LARK_ENV = {
   LARK_WEBHOOK_URL: 'https://open.larksuite.com/open-apis/bot/v2/hook/aaaa',
   LARK_BASE_WEBHOOK_URL: 'https://open.larksuite.com/anycross/trigger/bbbb',
+  LARK_WEBHOOK_URL_COUPANG_PROD: 'https://open.larksuite.com/open-apis/bot/v2/hook/cccc',
+  LARK_BASE_WEBHOOK_URL_COUPANG_PROD: 'https://open.larksuite.com/anycross/trigger/dddd',
 };
 
 describe('GET /api/health', () => {
@@ -42,7 +44,7 @@ describe('GET /api/health', () => {
 
   it('reports degraded (503) with a valid token when the Base webhook is missing', async () => {
     vi.stubEnv('HEALTH_CHECK_TOKEN', 'secret');
-    vi.stubEnv('LARK_WEBHOOK_URL', LARK_ENV.LARK_WEBHOOK_URL);
+    for (const [k, v] of Object.entries(LARK_ENV)) vi.stubEnv(k, v);
     vi.stubEnv('LARK_BASE_WEBHOOK_URL', '');
     vi.stubEnv('LARK_BASE_WEBHOOK_URL_PROD', '');
     vi.stubEnv('LARK_BASE_WEBHOOK_URL_TEST', '');
@@ -59,6 +61,10 @@ describe('GET /api/health', () => {
       'LARK_BASE_WEBHOOK_URL',
       'LARK_BASE_WEBHOOK_URL_PROD',
       'LARK_BASE_WEBHOOK_URL_TEST',
+      'LARK_WEBHOOK_URL_COUPANG_PROD',
+      'LARK_WEBHOOK_URL_COUPANG',
+      'LARK_BASE_WEBHOOK_URL_COUPANG_PROD',
+      'LARK_BASE_WEBHOOK_URL_COUPANG',
     ]) {
       vi.stubEnv(k, '');
     }
@@ -66,6 +72,47 @@ describe('GET /api/health', () => {
     expect(res.status).toBe(503);
     const body = await res.json();
     expect(body.status).toBe('degraded');
-    expect(body.missing).toEqual(['lark_notify', 'lark_base']);
+    expect(body.missing).toEqual([
+      'lark_notify',
+      'lark_base',
+      'lark_liftjob_notify',
+      'lark_liftjob_base',
+    ]);
+  });
+
+  it('LIFT JOB専用の通知Webhookが欠けたら degraded にする', async () => {
+    vi.stubEnv('HEALTH_CHECK_TOKEN', 'secret');
+    for (const [k, v] of Object.entries(LARK_ENV)) vi.stubEnv(k, v);
+    vi.stubEnv('LARK_WEBHOOK_URL_COUPANG_PROD', '');
+    vi.stubEnv('LARK_WEBHOOK_URL_COUPANG', '');
+
+    const res = await GET(makeRequest({ 'x-health-token': 'secret' }));
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ status: 'degraded', missing: ['lark_liftjob_notify'] });
+  });
+
+  it('LIFT JOB専用のBase Webhookが欠けたら degraded にする', async () => {
+    vi.stubEnv('HEALTH_CHECK_TOKEN', 'secret');
+    for (const [k, v] of Object.entries(LARK_ENV)) vi.stubEnv(k, v);
+    vi.stubEnv('LARK_BASE_WEBHOOK_URL_COUPANG_PROD', '');
+    vi.stubEnv('LARK_BASE_WEBHOOK_URL_COUPANG', '');
+
+    const res = await GET(makeRequest({ 'x-health-token': 'secret' }));
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ status: 'degraded', missing: ['lark_liftjob_base'] });
+  });
+
+  it('Base-onlyモードでは通知Webhookを必須扱いしない', async () => {
+    vi.stubEnv('HEALTH_CHECK_TOKEN', 'secret');
+    for (const [k, v] of Object.entries(LARK_ENV)) vi.stubEnv(k, v);
+    vi.stubEnv('LARK_SEND_BASE_ONLY', 'true');
+    vi.stubEnv('LARK_WEBHOOK_URL', '');
+    vi.stubEnv('LARK_WEBHOOK_URL_TEST', '');
+    vi.stubEnv('LARK_WEBHOOK_URL_COUPANG_PROD', '');
+    vi.stubEnv('LARK_WEBHOOK_URL_COUPANG', '');
+
+    const res = await GET(makeRequest({ 'x-health-token': 'secret' }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: 'ready' });
   });
 });

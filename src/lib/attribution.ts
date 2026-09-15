@@ -96,6 +96,14 @@ export const UTM_KEYS = [
 export type UtmKey = (typeof UTM_KEYS)[number];
 export type UtmParams = Record<UtmKey, string>;
 
+/** 送信したUTM一式をどの経路から採用したか。 */
+export type AttributionResolutionSource =
+  | 'query'
+  | 'click_id'
+  | 'cookie'
+  | 'referrer'
+  | 'direct';
+
 /** 全キーが空の utm。解決に失敗したときのフォールバックにも使う。 */
 export const EMPTY_UTM_PARAMS: UtmParams = {
   utm_source: '',
@@ -374,4 +382,34 @@ export function resolveUtmParams(
 
   // 5. どれも無い＝従来どおり直接アクセス。query の断片があればそのまま返す（旧挙動と同一）。
   return fromQuery;
+}
+
+/**
+ * UTM一式に加えて、実際に採用した出所も返す。
+ * 呼び出し側でCookieの有無だけを見て推測すると、クリックIDだけの着地を
+ * Cookie由来と誤記録するため、resolveUtmParams と同じ判定順をここで共有する。
+ */
+export function resolveUtmParamsWithSource(
+  search: string,
+  attribution: Attribution,
+  referrer: string,
+  currentHost: string,
+): { utmParams: UtmParams; attributionSource: AttributionResolutionSource } {
+  const params = new URLSearchParams(search);
+  const utmParams = resolveUtmParams(search, attribution, referrer, currentHost);
+
+  if (params.get('utm_source')?.trim()) {
+    return { utmParams, attributionSource: 'query' };
+  }
+  if (params.get('gclid')?.trim() || params.get('fbclid')?.trim() || params.get('oppref')?.trim()) {
+    return { utmParams, attributionSource: 'click_id' };
+  }
+  const touch = attribution.lastTouch ?? attribution.firstTouch;
+  if (touch?.source) {
+    return { utmParams, attributionSource: 'cookie' };
+  }
+  if (utmParams.utm_source) {
+    return { utmParams, attributionSource: 'referrer' };
+  }
+  return { utmParams, attributionSource: 'direct' };
 }
