@@ -152,6 +152,44 @@ export function deploymentGate(commitState, deployment, expectedSha) {
   return { ok: true, reason: `production SHA ${deployedSha.slice(0, 7)} is READY` };
 }
 
+function deploymentHost(value = '') {
+  return value.replace(/^https?:\/\//, '').replace(/\/$/, '');
+}
+
+/** rollback後に最新deploymentだけ作られ、実ドメインaliasが旧版のまま残る事故を防ぐ。 */
+export function productionAliasGate(alias, deployment) {
+  if (!alias) return { ok: false, reason: 'production alias is missing' };
+  if (alias.readyState !== 'READY') {
+    return { ok: false, reason: `production alias is ${alias.readyState ?? 'unknown'}` };
+  }
+  const aliasTarget = deploymentHost(alias.url);
+  const deploymentTarget = deploymentHost(deployment?.url);
+  if (!aliasTarget || aliasTarget !== deploymentTarget) {
+    return {
+      ok: false,
+      reason: `production alias points to ${aliasTarget || 'missing'}, expected ${deploymentTarget || 'missing'}`,
+    };
+  }
+  return { ok: true, reason: `production alias points to ${aliasTarget}` };
+}
+
+async function waitForProductionAlias(project, deployment, options = {}) {
+  const attempts = options.attempts ?? 6;
+  const retryDelayMs = options.retryDelayMs ?? 10_000;
+  let last = { ok: false, reason: 'production alias was not checked' };
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      last = productionAliasGate(inspectedAlias(project), deployment);
+    } catch (e) {
+      last = { ok: false, reason: `could not inspect production alias — ${e.message}` };
+    }
+    if (last.ok) return last;
+    log(`  ${project.name} alias attempt ${attempt}/${attempts}: ${last.reason}`);
+    if (attempt < attempts) await sleep(retryDelayMs);
+  }
+  return last;
+}
+
 export function guardPrerequisiteError({ vercelToken, healthToken }) {
   if (!vercelToken) return 'VERCEL_TOKEN is required to verify the production deployment SHA';
   if (!healthToken) return 'HEALTH_CHECK_TOKEN is required for authenticated readiness checks';
@@ -347,12 +385,16 @@ async function main() {
       const deployments = productionDeployments(project);
       const current = deployments[0];
       const gate = deploymentGate(commitState, current, GITHUB_SHA);
+      const aliasGate = gate.ok
+        ? await waitForProductionAlias(project, current)
+        : { ok: false, reason: 'deployment gate failed' };
       const rollbackTarget = selectRollbackTarget(deployments.slice(1), current?.url);
       if (!gate.ok) deployGateFailures.push(`${project.name}: ${gate.reason}`);
+      else if (!aliasGate.ok) deployGateFailures.push(`${project.name}: ${aliasGate.reason}`);
       else if (ARMED && !rollbackTarget) {
         deployGateFailures.push(`${project.name}: no READY production rollback target found`);
       } else {
-        log(`✓ ${project.name}: ${gate.reason}`);
+        log(`✓ ${project.name}: ${gate.reason}; ${aliasGate.reason}`);
         deployContexts.set(project.name, { current, rollbackTarget });
       }
     } catch (e) {
@@ -410,7 +452,12 @@ async function main() {
         // Gate後に別のproduction deployが出た競合ではrollbackしない。
         const latestBeforeRollback = productionDeployments(project)[0];
         const stillCurrent = deploymentGate('success', latestBeforeRollback, GITHUB_SHA);
-        if (!stillCurrent.ok || latestBeforeRollback?.url !== context.current.url) {
+        const aliasStillCurrent = productionAliasGate(inspectedAlias(project), latestBeforeRollback);
+        if (
+          !stillCurrent.ok ||
+          !aliasStillCurrent.ok ||
+          latestBeforeRollback?.url !== context.current.url
+        ) {
           throw new Error('production changed after verification; rollback aborted');
         }
 
