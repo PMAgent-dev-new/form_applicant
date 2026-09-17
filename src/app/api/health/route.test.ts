@@ -9,7 +9,15 @@ function makeRequest(headers: Record<string, string> = {}) {
 
 const LARK_ENV = {
   LARK_WEBHOOK_URL: 'https://open.larksuite.com/open-apis/bot/v2/hook/aaaa',
+  LARK_SUBMIT_CHAT_ID_RIDEJOB: 'oc_ridejob',
+  LARK_SUBMIT_CHAT_ID_MECHANIC: 'oc_mechanic',
   LARK_BASE_WEBHOOK_URL: 'https://open.larksuite.com/anycross/trigger/bbbb',
+  APP_ID_RIDEJOB: 'cli_ridejob',
+  APP_SECRET_RIDEJOB: 'secret_ridejob',
+  APP_TOKEN_RIDEJOB: 'app_ridejob',
+  APP_ID_MECHANIC: 'cli_mechanic',
+  APP_SECRET_MECHANIC: 'secret_mechanic',
+  APP_TOKEN_MECHANIC: 'app_mechanic',
   LARK_WEBHOOK_URL_COUPANG_PROD: 'https://open.larksuite.com/open-apis/bot/v2/hook/cccc',
   LARK_BASE_WEBHOOK_URL_COUPANG_PROD: 'https://open.larksuite.com/anycross/trigger/dddd',
   APP_ID_LIFTJOB: 'cli_liftjob',
@@ -61,14 +69,31 @@ describe('GET /api/health', () => {
     expect(await res.json()).toEqual({ status: 'degraded', missing: ['lark_base'] });
   });
 
+  it('RIDE JOBの直接Base資格情報が欠けたら求人帰属を守るためdegradedにする', async () => {
+    vi.stubEnv('HEALTH_CHECK_TOKEN', 'secret');
+    for (const [k, v] of Object.entries(LARK_ENV)) vi.stubEnv(k, v);
+    vi.stubEnv('APP_SECRET_RIDEJOB', '');
+    const res = await GET(makeRequest({ 'x-health-token': 'secret' }));
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ status: 'degraded', missing: ['lark_ridejob_app_secret'] });
+  });
+
   it('reports both groups missing when no Lark env is set', async () => {
     vi.stubEnv('HEALTH_CHECK_TOKEN', 'secret');
     for (const k of [
       'LARK_WEBHOOK_URL',
       'LARK_WEBHOOK_URL_TEST',
+      'LARK_SUBMIT_CHAT_ID_RIDEJOB',
+      'LARK_SUBMIT_CHAT_ID_MECHANIC',
       'LARK_BASE_WEBHOOK_URL',
       'LARK_BASE_WEBHOOK_URL_PROD',
       'LARK_BASE_WEBHOOK_URL_TEST',
+      'APP_ID_RIDEJOB',
+      'APP_SECRET_RIDEJOB',
+      'APP_TOKEN_RIDEJOB',
+      'APP_ID_MECHANIC',
+      'APP_SECRET_MECHANIC',
+      'APP_TOKEN_MECHANIC',
       'LARK_WEBHOOK_URL_COUPANG_PROD',
       'LARK_WEBHOOK_URL_COUPANG',
       'LARK_BASE_WEBHOOK_URL_COUPANG_PROD',
@@ -90,7 +115,15 @@ describe('GET /api/health', () => {
     expect(body.status).toBe('degraded');
     expect(body.missing).toEqual([
       'lark_notify',
+      'lark_ridejob_chat',
+      'lark_mechanic_chat',
       'lark_base',
+      'lark_ridejob_app_id',
+      'lark_ridejob_app_secret',
+      'lark_ridejob_app_token',
+      'lark_mechanic_app_id',
+      'lark_mechanic_app_secret',
+      'lark_mechanic_app_token',
       'lark_liftjob_notify',
       'lark_liftjob_app_id',
       'lark_liftjob_app_secret',

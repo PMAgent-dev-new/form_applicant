@@ -44,7 +44,15 @@ function hostOf(input: unknown): string {
 const ALLOWLISTED_ENV: Record<string, string> = {
   NODE_ENV: 'production',
   LARK_WEBHOOK_URL: 'https://open.larksuite.com/open-apis/bot/v2/hook/aaaaaaaa',
+  LARK_SUBMIT_CHAT_ID_RIDEJOB: 'oc_ridejob',
+  LARK_SUBMIT_CHAT_ID_MECHANIC: 'oc_mechanic',
   LARK_BASE_WEBHOOK_URL: 'https://open.larksuite.com/anycross/trigger/bbbbbbbb',
+  APP_ID_RIDEJOB: 'cli_ridejob',
+  APP_SECRET_RIDEJOB: 'secret_ridejob',
+  APP_TOKEN_RIDEJOB: 'app_ridejob',
+  APP_ID_MECHANIC: 'cli_mechanic',
+  APP_SECRET_MECHANIC: 'secret_mechanic',
+  APP_TOKEN_MECHANIC: 'app_mechanic',
   META_SMS_ENABLED: 'true',
   EEASY_SMS_SEND_URL: 'https://leomeet.pmagent.jp/api/sms/send',
   SMS_SEND_SECRET: 'test-secret',
@@ -85,16 +93,30 @@ const applicantBody = {
 describe('applicants POST — outbound host allowlist', () => {
   let fetchSpy: ReturnType<typeof vi.fn>;
 
+  const successResponse = async (input: unknown, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes('tenant_access_token')) {
+      return Response.json({ code: 0, tenant_access_token: 'token', expire: 7200 });
+    }
+    if (url.includes('/records/search')) return Response.json({ code: 0, data: { items: [] } });
+    if (url.includes('/fields')) return Response.json({ code: 0, data: { items: [] } });
+    if (new URL(url).pathname.endsWith('/records') && init?.method === 'POST') {
+      return Response.json({ code: 0, data: { record: { record_id: 'rec-test' } } });
+    }
+    if (url.includes('/im/v1/messages')) {
+      return Response.json({ code: 0, data: { message_id: 'om-test' } });
+    }
+    return new Response(JSON.stringify({ ok: true, code: 0, StatusCode: 0 }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
   beforeEach(() => {
     for (const [key, value] of Object.entries(ALLOWLISTED_ENV)) {
       vi.stubEnv(key, value);
     }
-    fetchSpy = vi.fn(async () =>
-      new Response(JSON.stringify({ ok: true, code: 0, StatusCode: 0 }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      }),
-    );
+    fetchSpy = vi.fn(successResponse);
     vi.stubGlobal('fetch', fetchSpy);
     // capi.ts snapshots env at module load, so force a fresh module graph.
     vi.resetModules();
@@ -125,6 +147,32 @@ describe('applicants POST — outbound host allowlist', () => {
     expect(hosts.has('open.larksuite.com')).toBe(true);
     expect(hosts.has('leomeet.pmagent.jp')).toBe(true);
     expect(hosts.has('graph.facebook.com')).toBe(true);
+  });
+
+  it('treats an HTTP 200 Lark API error body as a notification failure', async () => {
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/im/v1/messages')) return Response.json({ code: 19021, msg: 'message rejected' });
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+    expect(res.status).toBe(502);
+  });
+
+  it('treats an HTTP 200 Bitable error body as a Base failure and skips notification', async () => {
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (new URL(url).pathname.endsWith('/records') && init?.method === 'POST') {
+        return Response.json({ code: 4001, msg: 'mapping failed' });
+      }
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+    expect(res.status).toBe(500);
+    const messageCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/im/v1/messages'));
+    expect(messageCalls).toHaveLength(0);
   });
 
   it('the allowlist check itself has teeth', () => {
