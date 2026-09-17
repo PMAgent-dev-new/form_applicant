@@ -25,11 +25,21 @@ const REQUIRED_ENV_GROUPS: EnvGroup[] = [
     anyOf: ['LARK_WEBHOOK_URL', 'LARK_WEBHOOK_URL_TEST'],
     notifyOnly: true,
   },
+  { name: 'lark_ridejob_chat', anyOf: ['LARK_SUBMIT_CHAT_ID_RIDEJOB'], notifyOnly: true },
+  { name: 'lark_mechanic_chat', anyOf: ['LARK_SUBMIT_CHAT_ID_MECHANIC'], notifyOnly: true },
   // 応募レコード保存(Base) — 応募データの保存先
   {
     name: 'lark_base',
     anyOf: ['LARK_BASE_WEBHOOK_URL', 'LARK_BASE_WEBHOOK_URL_PROD', 'LARK_BASE_WEBHOOK_URL_TEST'],
   },
+  // カタログ求人帰属はWebhookの既存マッピングには存在しないため、RIDE JOB／整備士とも
+  // Bitable APIの直接書き込み資格情報を必須にする。欠落時のWebhook縮退をreadyにしない。
+  { name: 'lark_ridejob_app_id', anyOf: ['APP_ID_RIDEJOB'] },
+  { name: 'lark_ridejob_app_secret', anyOf: ['APP_SECRET_RIDEJOB'] },
+  { name: 'lark_ridejob_app_token', anyOf: ['APP_TOKEN_RIDEJOB'] },
+  { name: 'lark_mechanic_app_id', anyOf: ['APP_ID_MECHANIC'] },
+  { name: 'lark_mechanic_app_secret', anyOf: ['APP_SECRET_MECHANIC'] },
+  { name: 'lark_mechanic_app_token', anyOf: ['APP_TOKEN_MECHANIC'] },
   // LIFT JOB（クーパン）は共通経路と別のWebhookを使う。共通側だけの検査では
   // LIFT JOBのみ無言で切れても /api/health が ready のままになるため、別ゲートにする。
   {
@@ -37,7 +47,8 @@ const REQUIRED_ENV_GROUPS: EnvGroup[] = [
     anyOf: ['LARK_WEBHOOK_URL_COUPANG_PROD', 'LARK_WEBHOOK_URL_COUPANG'],
     notifyOnly: true,
   },
-  // LIFT JOBはWebhook受理だけでなく、submission_idによる直接upsertを正本にする。
+  // LIFT JOBは専用routeがsubmission_idによる直接upsertを正本にしているため、
+  // 共通のRIDE JOB／整備士向け資格情報を追加しても既存ゲートを外さない。
   { name: 'lark_liftjob_app_id', anyOf: ['APP_ID_LIFTJOB'] },
   { name: 'lark_liftjob_app_secret', anyOf: ['APP_SECRET_LIFTJOB'] },
   { name: 'lark_liftjob_app_token', anyOf: ['APP_TOKEN_LIFTJOB'] },

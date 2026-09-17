@@ -20,10 +20,16 @@ import { sendOpenAiConversion } from '@/lib/openai/capi';
 import {
   createBaseRecord,
   isLarkBaseConfigured,
+  sendLarkTextMessage,
+  updateBaseRecord,
+  upsertBaseRecordByTextField,
   type LarkFieldValue,
   type LarkLinkedRecordName,
   type LarkProfile,
 } from '@/lib/larkBase';
+import { assessCatalogTouch, type CatalogAttributionStatus } from '@/lib/catalog-attribution';
+import { isMetaCatalogJob } from '@/lib/catalog-eligibility';
+import { fetchJobById } from '@/lib/microcms';
 
 // Bitable 直書きの投入先テーブル（env で上書き可）。
 //   default / bus       → 求職者DB🚕   （ridejob base：APP_*_RIDEJOB）
@@ -31,6 +37,30 @@ import {
 // ※ coupang は今回対象外（従来どおり Base Webhook 送信）。
 const RIDEJOB_TABLE_ID = process.env.LARK_BASE_TABLE_ID_RIDEJOB || 'tblO0pPqFyHqpVcj';
 const MECHANIC_TABLE_ID = process.env.LARK_BASE_TABLE_ID_MECHANIC_APPLICANTS || 'tblXcvtQJqoD2PIV';
+const LARK_FETCH_TIMEOUT_MS = 5000;
+
+type LarkWebhookResult = {
+  code?: number | string;
+  msg?: string;
+  StatusCode?: number | string;
+  StatusMessage?: string;
+};
+
+const isZeroCode = (value: number | string | undefined): boolean =>
+  typeof value === 'number'
+    ? value === 0
+    : typeof value === 'string' && value.trim() !== '' && Number(value) === 0;
+
+const isNonZeroCode = (value: number | string | undefined): boolean =>
+  typeof value === 'number'
+    ? value !== 0
+    : typeof value === 'string' && value.trim() !== '' && Number(value) !== 0;
+
+/** Lark Bot / AnyCross はHTTP 200でも本文で失敗を返すため、明示的な成功コードまで確認する。 */
+const isLarkAccepted = (result: LarkWebhookResult): boolean =>
+  (isZeroCode(result.code) || isZeroCode(result.StatusCode))
+  && !isNonZeroCode(result.code)
+  && !isNonZeroCode(result.StatusCode);
 
 // Bitable 直書きに必要な、リクエスト内で算出済みの値をまとめたもの。
 export type BaseWriteContext = {
@@ -56,7 +86,30 @@ export type BaseWriteContext = {
   qualificationFieldLabel: string;
   pageUrl: string;
   submittedAtMs: number; // 応募日（DateTime）用 epoch ms
+  submissionId: string;
+  appliedJobId?: string;
+  catalogJobId?: string;
+  catalogJobName?: string;
+  catalogClickedAtMillis?: number;
+  catalogAttributionStatus?: CatalogAttributionStatus;
 };
+
+const submissionMarker = (submissionId: string): string => `[submission_id:${submissionId}]`;
+const notificationMarker = (submissionId: string): string => `[lark_notified:${submissionId}]`;
+export const appendLarkNotificationMarker = (memo: string, submissionId: string): string => {
+  const marker = notificationMarker(submissionId);
+  if (memo.includes(marker)) return memo;
+  return [memo.trim(), marker].filter(Boolean).join('\n');
+};
+
+const buildCatalogMemoLines = (ctx: BaseWriteContext): string[] => [
+  ctx.submissionId ? submissionMarker(ctx.submissionId) : '',
+  ctx.appliedJobId ? `応募求人ID: ${ctx.appliedJobId}` : '',
+  ctx.catalogJobId ? `広告クリック求人ID: ${ctx.catalogJobId}` : '',
+  ctx.catalogJobName ? `広告クリック求人名: ${ctx.catalogJobName}` : '',
+  ctx.catalogClickedAtMillis ? `カタログクリック日時: ${new Date(ctx.catalogClickedAtMillis).toISOString()}` : '',
+  ctx.catalogAttributionStatus ? `カタログ求人一致判定: ${ctx.catalogAttributionStatus}` : '',
+].filter(Boolean);
 
 type DirectBaseWrite = {
   profile: LarkProfile;
@@ -127,6 +180,12 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
         ad_image_url: ctx.adImageUrl,
         LP_URL: ctx.pageUrl,
         '流入媒体（自動判定）': ctx.mediaName,
+        submission_id: ctx.submissionId,
+        応募求人ID: ctx.appliedJobId,
+        広告クリック求人ID: ctx.catalogJobId,
+        広告クリック求人名: ctx.catalogJobName,
+        カタログクリック日時: ctx.catalogClickedAtMillis,
+        カタログ求人一致判定: ctx.catalogAttributionStatus,
         // 整備士Baseの応募経由マスタは tblzMUVSWmTzmGfA。リンク先はフィールド定義から解決するので
         // テーブルIDはここに書かない。職種は専用の Select「登録職種」で持っているため対象外。
         '応募経由(マスタ連動)': applicationSourceLink,
@@ -138,7 +197,8 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
   // 職種と保有免許は専用フィールドへ保存し、転職時期だけ対応履歴メモへ残す。
   const memo = [
     ctx.jobTimingLabel ? `転職時期: ${ctx.jobTimingLabel}` : '',
-  ].filter(Boolean).join(' / ') || undefined;
+    ...buildCatalogMemoLines(ctx),
+  ].filter(Boolean).join('\n') || undefined;
 
   // 応募職種マスタ側のレコード名。タクシーLPは1本で「タクシー」と「ハイヤー転向」の両方を受けるため、
   // どちらの求人として扱うかはクリエイティブで振り分ける（lark-masters.ts）。
@@ -186,20 +246,102 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
 
 // Base への保存。可能なら Bitable API で直書きし、未設定 or 失敗 or 対象外(coupang) なら
 // 既存の Base 自動化 Webhook にフォールバックする（応募データを取りこぼさないため）。
+type BaseSaveResult = {
+  recordId?: string;
+  notificationAlreadySent: boolean;
+  notificationInProgress?: boolean;
+  notificationRecoveryOnly?: boolean;
+  notificationRecoveryExpired?: boolean;
+  profile?: LarkProfile;
+  tableId?: string;
+  memo?: string;
+};
+
 async function saveToBase(
   ctx: BaseWriteContext,
   baseWebhookUrl: string | undefined,
   basePayload: Record<string, unknown>
-): Promise<void> {
+): Promise<BaseSaveResult> {
   const target = resolveDirectBaseWrite(ctx);
   if (target && isLarkBaseConfigured(target.profile)) {
     try {
+      if (ctx.submissionId) {
+        const usesMemoMarker = target.profile === 'ridejob';
+        const uniqueValue = usesMemoMarker ? submissionMarker(ctx.submissionId) : ctx.submissionId;
+        let saved = await upsertBaseRecordByTextField(
+          target.tableId,
+          usesMemoMarker ? '対応履歴メモ' : 'submission_id',
+          uniqueValue,
+          target.fields,
+          target.profile,
+          usesMemoMarker ? 'contains' : 'is',
+          false,
+        );
+        const hasNotificationMarker = (fields: Record<string, unknown>): boolean => usesMemoMarker
+          ? String(fields['対応履歴メモ'] ?? '').includes(notificationMarker(ctx.submissionId))
+          : fields['Lark通知送信済み'] === true;
+        let notificationAlreadySent = hasNotificationMarker(saved.previousFields);
+
+        // 同じsubmission_idが同時到着した場合、作成の敗者は先着の通知完了を待つ。
+        // 先着が落ちたケースだけは30秒後の再送が引き継げるようにする。
+        if (!saved.created && !notificationAlreadySent) {
+          for (let attempt = 0; attempt < 12 && !notificationAlreadySent; attempt += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 250));
+            saved = await upsertBaseRecordByTextField(
+              target.tableId,
+              usesMemoMarker ? '対応履歴メモ' : 'submission_id',
+              uniqueValue,
+              target.fields,
+              target.profile,
+              usesMemoMarker ? 'contains' : 'is',
+              false,
+            );
+            notificationAlreadySent = hasNotificationMarker(saved.previousFields);
+          }
+        }
+        const submittedAt = Number(saved.previousFields['応募日']);
+        const notificationAge = Number.isFinite(submittedAt) ? Date.now() - submittedAt : undefined;
+        const notificationInProgress = !saved.created
+          && !notificationAlreadySent
+          && (notificationAge === undefined || notificationAge < 30_000);
+        const notificationRecoveryExpired = !saved.created
+          && !notificationAlreadySent
+          && notificationAge !== undefined
+          && notificationAge >= 55 * 60_000;
+        const notificationRecoveryOnly = !saved.created
+          && !notificationAlreadySent
+          && !notificationInProgress
+          && !notificationRecoveryExpired;
+        console.log(`Lark Base upsert成功 (${target.profile} / ${target.tableId})`, {
+          recordId: saved.recordId,
+          created: saved.created,
+        });
+        return {
+          recordId: saved.recordId,
+          notificationAlreadySent,
+          notificationInProgress,
+          notificationRecoveryOnly,
+          notificationRecoveryExpired,
+          profile: target.profile,
+          tableId: target.tableId,
+          memo: usesMemoMarker
+            ? String(saved.previousFields['対応履歴メモ'] ?? target.fields['対応履歴メモ'] ?? '').trim()
+            : undefined,
+        };
+      }
       await createBaseRecord(target.tableId, target.fields, target.profile);
       console.log(`Lark Base 直書き成功 (${target.profile} / ${target.tableId})`);
-      return;
+      return { notificationAlreadySent: false };
     } catch (e) {
       console.error(`Lark Base 直書き失敗、Webhook にフォールバック (${target.profile}):`, e);
+      // submission_id を持つ新経路は直接Base upsertが冪等性の正本。
+      // Webhookへ落とすと同じ応募が別レコードになり得るため、失敗を呼び出し側へ返す。
+      if (ctx.submissionId) throw e;
     }
+  }
+
+  if (target && ctx.submissionId) {
+    throw new Error(`Lark Base direct credentials are not configured (${target.profile}).`);
   }
 
   if (baseWebhookUrl) {
@@ -207,15 +349,18 @@ async function saveToBase(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(basePayload),
+      signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
     });
-    if (!resp.ok) {
-      const errorBody = await resp.text();
-      console.error(`Failed to send to Lark Base Webhook (${resp.status}): ${errorBody}`);
-    } else {
-      console.log('Lark Base webhook triggered successfully');
+    const result = (await resp.json().catch(() => ({}))) as LarkWebhookResult;
+    if (!resp.ok || !isLarkAccepted(result)) {
+      throw new Error(
+        `Lark Base Webhook failed: http=${resp.status} code=${result.code ?? result.StatusCode ?? 'n/a'} msg=${result.msg ?? result.StatusMessage ?? 'n/a'}`,
+      );
     }
+    console.log('Lark Base webhook triggered successfully');
+    return { notificationAlreadySent: false };
   } else {
-    console.warn('Lark Base Webhook URL is not configured. Skipping Base record creation.');
+    throw new Error('Lark Base direct credentials and webhook URL are both not configured.');
   }
 }
 
@@ -261,6 +406,16 @@ type ApplicantSubmission = ApplicantFormData & {
   metaEventId?: string;
   /** ChatGPT広告のクリック識別子。OpenAI Conversions API の突合キー。 */
   oppref?: string;
+  submissionId?: string;
+  appliedJobId?: string;
+  catalogJobId?: string;
+  catalogClickedAt?: string;
+  catalogLandingPath?: string;
+  catalogSource?: string;
+  catalogMedium?: string;
+  catalogEvidence?: 'utm' | 'fbclid';
+  fbclid?: string;
+  attributionLastTouchAt?: string;
 };
 
 // UTM parameters to media name mapping function
@@ -293,6 +448,35 @@ export async function POST(request: NextRequest) {
   try {
     const submissionData = (await request.json()) as ApplicantSubmission;
     const { utmParams, formOrigin, ...formData } = submissionData;
+    const submissionId = String(submissionData.submissionId || submissionData.metaEventId || '').trim().slice(0, 128);
+    if (!submissionId) {
+      return NextResponse.json({ message: 'submissionId is required' }, { status: 400 });
+    }
+    const catalog = assessCatalogTouch({
+      catalogJobId: submissionData.catalogJobId,
+      catalogClickedAt: submissionData.catalogClickedAt,
+      catalogSource: submissionData.catalogSource,
+      catalogMedium: submissionData.catalogMedium,
+      catalogEvidence: submissionData.catalogEvidence,
+      fbclid: submissionData.fbclid,
+      appliedJobId: submissionData.appliedJobId,
+      utmSource: utmParams?.utm_source,
+      utmMedium: utmParams?.utm_medium,
+      utmContent: utmParams?.utm_content,
+      utmLastTouchAt: submissionData.attributionLastTouchAt,
+    });
+    let catalogJobName: string | undefined;
+    if ((catalog.status === 'same_job' || catalog.status === 'changed_job' || catalog.status === 'applied_job_missing') && catalog.jobId) {
+      try {
+        const catalogJob = await fetchJobById(catalog.jobId);
+        catalogJobName = catalogJob?.jobName || catalogJob?.title;
+        if (!catalogJob || !isMetaCatalogJob(catalogJob)) catalog.status = 'invalid';
+      } catch (error) {
+        // 一時障害をinvalidとして永久保存せず、Base作成前に再送可能な失敗にする。
+        console.warn('カタログ求人名の取得に失敗:', error);
+        return NextResponse.json({ message: 'Catalog job source is temporarily unavailable' }, { status: 503 });
+      }
+    }
     
     // Determine env and feature flags
     const isProduction = process.env.NODE_ENV === 'production';
@@ -327,6 +511,11 @@ export async function POST(request: NextRequest) {
     const larkWebhookUrl = isMechanic && larkWebhookUrlMechanic
       ? larkWebhookUrlMechanic
       : (isCoupang && larkWebhookUrlCoupang) ? larkWebhookUrlCoupang : larkWebhookUrlCommon;
+    const larkChatId = isCoupang
+      ? undefined
+      : isMechanic
+        ? process.env.LARK_SUBMIT_CHAT_ID_MECHANIC
+        : process.env.LARK_SUBMIT_CHAT_ID_RIDEJOB;
 
     const baseWebhookUrlCommon = isProduction
       ? process.env.LARK_BASE_WEBHOOK_URL_PROD
@@ -355,8 +544,12 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
       }
     } else {
-      if (!larkWebhookUrl) {
-        console.error('Lark Webhook URL is not configured in environment variables.');
+      if (!isCoupang && !larkChatId) {
+        console.error('Idempotent Lark chat ID is not configured.');
+        return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
+      }
+      if (!larkChatId && !larkWebhookUrl) {
+        console.error('Lark chat ID and Webhook URL are both not configured.');
         return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
       }
     }
@@ -422,14 +615,105 @@ export async function POST(request: NextRequest) {
       qualificationFieldLabel,
       pageUrl: referer,
       submittedAtMs: Date.now(),
+      submissionId,
+      appliedJobId: submissionData.appliedJobId,
+      catalogJobId: catalog.jobId,
+      catalogJobName,
+      catalogClickedAtMillis: catalog.clickedAtMillis,
+      catalogAttributionStatus: catalog.status,
     };
 
-    // 並列送信（Baseのみテスト中は直下の単独送信へ）
+    const userAgent = request.headers.get('user-agent') || '';
+    const clientIp = (request.headers.get('x-forwarded-for') || '').split(',')[0]?.trim() || '';
+    const basePayload = {
+      media_name: mediaName,
+      utm_source: utmParams?.utm_source || '',
+      utm_medium: utmParams?.utm_medium || '',
+      utm_campaign: utmParams?.utm_campaign || '',
+      utm_term: utmParams?.utm_term || '',
+      utm_creative: utmParams?.utm_creative || '',
+      utm_content: utmParams?.utm_content || '',
+      utm_id: utmParams?.utm_id || '',
+      ad_id: adId,
+      ad_creative_id: adCreativeId,
+      ad_image_url: adImageUrl,
+      birth_date: formData.birthDate || '',
+      full_name: formData.fullName || '',
+      full_name_kana: formData.fullNameKana || '',
+      postal_code: formData.postalCode || '',
+      prefecture_id: formData.prefectureId || '',
+      prefecture_name: formData.prefectureName || '',
+      municipality_id: formData.municipalityId || '',
+      municipality_name: formData.municipalityName || '',
+      town_name: formData.townName || '',
+      phone_number: formData.phoneNumber || '',
+      email: formData.email || '',
+      job_timing: baseJobTimingLabel,
+      job_intent: baseJobIntentLabel,
+      desired_income: baseDesiredIncomeLabel,
+      mechanic_qualifications: mechanicQualificationsLabel,
+      truck_licenses: truckLicensesLabel,
+      experiment_name: submissionData?.experiment?.name || '',
+      experiment_variant: submissionData?.experiment?.variant || '',
+      submitted_at: new Date().toISOString(),
+      environment: process.env.NODE_ENV,
+      user_agent: userAgent,
+      client_ip: clientIp,
+      form_origin: formOrigin || '',
+      is_coupang: isCoupang,
+      page_url: referer,
+      submission_id: submissionId,
+      applied_job_id: submissionData.appliedJobId || '',
+      catalog_job_id: catalog.jobId || '',
+      catalog_job_name: catalogJobName || '',
+      catalog_clicked_at: catalog.clickedAtMillis
+        ? new Date(catalog.clickedAtMillis).toISOString()
+        : '',
+      catalog_attribution_status: catalog.status || '',
+    } as Record<string, unknown>;
+
+    let baseSave: BaseSaveResult;
+    try {
+      baseSave = await saveToBase(baseWriteCtx, baseWebhookUrl, basePayload);
+    } catch (error) {
+      console.error('Lark Base save failed; notification was not sent:', error);
+      return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
+    }
+
+    if (sendBaseOnly) {
+      return NextResponse.json({
+        message: 'Application submitted successfully!',
+        recordId: baseSave.recordId,
+      }, { status: 200 });
+    }
+    if (baseSave.notificationAlreadySent) {
+      console.log('Duplicate submission already notified; skipping side effects', { submissionId });
+      return NextResponse.json({ message: 'Application submitted successfully!', duplicate: true }, { status: 200 });
+    }
+    if (baseSave.notificationInProgress) {
+      console.warn('Duplicate submission is still being processed', { submissionId });
+      return NextResponse.json(
+        { message: 'Application is still being processed; retry shortly' },
+        { status: 503 },
+      );
+    }
+    if (baseSave.notificationRecoveryExpired) {
+      console.error('Lark通知の安全な自動復旧期限を超過したため再送を停止:', {
+        submissionId,
+        recordId: baseSave.recordId,
+      });
+      return NextResponse.json(
+        { message: 'Notification recovery requires manual confirmation' },
+        { status: 503 },
+      );
+    }
+
+    // Base確定後に通知し、成功状態をBaseへ書き戻す。以降のメール/SMS/CAPIは並列・非致命。
     if (!sendBaseOnly) {
       const tasks: Promise<void>[] = [];
 
       // Lark 送信タスク
-      if (larkWebhookUrl) {
+      if (larkChatId || larkWebhookUrl) {
         const title = isMechanic
           ? '整備士の応募がありました！'
           : isCoupang ? 'クーパンの応募がありました！'
@@ -462,11 +746,27 @@ export async function POST(request: NextRequest) {
           .filter(Boolean)
           .join('\n');
         const ageDisplay = calculateAge(formData.birthDate) ?? '未入力';
+        const catalogStatusLabels: Record<CatalogAttributionStatus, string> = {
+          same_job: '広告で見た求人と同じ',
+          changed_job: '広告クリック後に別求人へ応募',
+          missing: 'カタログ求人IDを取得できず',
+          applied_job_missing: '応募求人IDを取得できず',
+          stale: 'クリックから7日以上',
+          invalid: '無効なカタログ求人情報',
+        };
+        const catalogDisplay = catalog.status
+          ? [
+              `カタログ判定: ${catalogStatusLabels[catalog.status]}`,
+              `広告クリック求人ID: ${catalog.jobId || '取得できず'}`,
+              `広告クリック求人名: ${catalogJobName || '取得できず'}`,
+              `実際の応募求人ID: ${submissionData.appliedJobId || '取得できず'}`,
+            ].join('\n')
+          : '';
         const messageContent = `
 ${title}
 -------------------------
 流入元: ${utmDisplay}
-生年月日: ${formData.birthDate || '未入力'}
+${catalogDisplay ? `${catalogDisplay}\n` : ''}生年月日: ${formData.birthDate || '未入力'}
 年齢: ${ageDisplay}
 氏名: ${formData.fullName || '未入力'} (${formData.fullNameKana || '未入力'})
 郵便番号: ${formData.postalCode || '未入力'}
@@ -481,68 +781,84 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
           content: { text: messageContent },
         } as const;
 
-        tasks.push(
-          (async () => {
-            const resp = await fetch(larkWebhookUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(larkPayload),
+        let notificationSent = false;
+        if (larkChatId) {
+          const apiResult = await sendLarkTextMessage(
+            larkChatId,
+            messageContent,
+            submissionId,
+            // 両chatともRIDE JOB通知アプリを参加済みとして実測した共通送信経路。
+            'ridejob',
+          );
+          if (apiResult.ok) {
+            notificationSent = true;
+            console.log('Lark API notification sent successfully:', { messageId: apiResult.messageId });
+          } else {
+            // Webhookへ落とすと同じ応募が別経路で二重通知されるため、同じuuidでの再送に任せる。
+            console.error('Lark API notification failed:', {
+              status: apiResult.status,
+              code: apiResult.code,
+              message: apiResult.message,
+              ambiguous: apiResult.ambiguous,
             });
-            if (!resp.ok) {
-              const errorBody = await resp.text();
-              console.error(`Failed to send notification to Lark (${resp.status}): ${errorBody}`);
-            } else {
-              const result = await resp.json();
-              console.log('Lark notification sent successfully:', result);
+            return NextResponse.json({ message: 'Internal Server Error' }, { status: 502 });
+          }
+        }
+        if (!notificationSent && larkWebhookUrl) {
+          const resp = await fetch(larkWebhookUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(larkPayload),
+            signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
+          });
+          const result = (await resp.json().catch(() => ({}))) as LarkWebhookResult;
+          if (!resp.ok || !isLarkAccepted(result)) {
+            console.error('Failed to send notification to Lark', {
+              status: resp.status,
+              code: result.code ?? result.StatusCode,
+              message: result.msg ?? result.StatusMessage,
+            });
+            return NextResponse.json({ message: 'Internal Server Error' }, { status: 502 });
+          }
+          notificationSent = true;
+          console.log('Lark webhook notification sent successfully:', result);
+        }
+        if (!notificationSent) {
+          return NextResponse.json({ message: 'Internal Server Error' }, { status: 502 });
+        }
+        if (baseSave.recordId) {
+          const notificationFields = baseSave.profile === 'ridejob'
+            ? {
+                対応履歴メモ: appendLarkNotificationMarker(baseSave.memo || '', submissionId),
+              }
+            : { 'Lark通知送信済み': true };
+          let notificationStatePersisted = false;
+          let lastPersistError: unknown;
+          for (let attempt = 1; attempt <= 3; attempt += 1) {
+            try {
+              await updateBaseRecord(
+                baseSave.tableId || (baseWriteCtx.isMechanic ? MECHANIC_TABLE_ID : RIDEJOB_TABLE_ID),
+                baseSave.recordId,
+                notificationFields,
+                baseSave.profile || (baseWriteCtx.isMechanic ? 'mechanic' : 'ridejob'),
+              );
+              notificationStatePersisted = true;
+              break;
+            } catch (error) {
+              lastPersistError = error;
+              if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 100));
             }
-          })()
-        );
+          }
+          if (!notificationStatePersisted) {
+            console.error('Lark通知送信済みの書き戻しが3回失敗:', lastPersistError);
+            return NextResponse.json({ message: 'Internal Server Error' }, { status: 503 });
+          }
+        }
       }
 
-      // Base 送信タスク（Bitable API 直書き優先・未設定/失敗/対象外は Webhook フォールバック）
-      {
-        const userAgent = request.headers.get('user-agent') || '';
-        const clientIp = (request.headers.get('x-forwarded-for') || '').split(',')[0]?.trim() || '';
-        const basePayload = {
-          media_name: mediaName,
-          utm_source: utmParams?.utm_source || '',
-          utm_medium: utmParams?.utm_medium || '',
-          utm_campaign: utmParams?.utm_campaign || '',
-          utm_term: utmParams?.utm_term || '',
-          utm_creative: utmParams?.utm_creative || '',
-          utm_content: utmParams?.utm_content || '',
-          utm_id: utmParams?.utm_id || '',
-          ad_id: adId,
-          ad_creative_id: adCreativeId,
-          ad_image_url: adImageUrl,
-          birth_date: formData.birthDate || '',
-          full_name: formData.fullName || '',
-          full_name_kana: formData.fullNameKana || '',
-          postal_code: formData.postalCode || '',
-          prefecture_id: formData.prefectureId || '',
-          prefecture_name: formData.prefectureName || '',
-          municipality_id: formData.municipalityId || '',
-          municipality_name: formData.municipalityName || '',
-          town_name: formData.townName || '',
-          phone_number: formData.phoneNumber || '',
-          email: formData.email || '',
-          job_timing: baseJobTimingLabel,
-          job_intent: baseJobIntentLabel,
-          desired_income: baseDesiredIncomeLabel,
-          mechanic_qualifications: mechanicQualificationsLabel,
-          truck_licenses: truckLicensesLabel,
-          experiment_name: submissionData?.experiment?.name || '',
-          experiment_variant: submissionData?.experiment?.variant || '',
-          submitted_at: new Date().toISOString(),
-          environment: process.env.NODE_ENV,
-          user_agent: userAgent,
-          client_ip: clientIp,
-          form_origin: formOrigin || '',
-          is_coupang: isCoupang,
-          page_url: referer,
-        } as Record<string, unknown>;
-
-        tasks.push(saveToBase(baseWriteCtx, baseWebhookUrl, basePayload));
+      // 先着は通知済み印の確定前に後続へ進まないため、復旧側でメール・SMS・CAPIまで完了する。
+      if (baseSave.notificationRecoveryOnly) {
+        console.log('通知復旧後の後続処理を再開:', { submissionId });
       }
 
       // 応募受付完了 自動返信メール送信タスク
@@ -632,6 +948,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
             fbc: request.cookies.get('_fbc')?.value,
             clientIpAddress: capiClientIp || undefined,
             clientUserAgent: capiUserAgent || undefined,
+            contentIds: submissionData.appliedJobId ? [submissionData.appliedJobId] : undefined,
           }).then(() => {})
         );
 
@@ -653,51 +970,8 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
         );
       }
 
-      // どれかが失敗しても応募自体は成功扱い (Lark/Base/メール全て)
+      // 応募者メール/SMS/CAPIは非致命。BaseとLark通知は上で確定済み。
       await Promise.allSettled(tasks);
-    } else {
-      // Baseのみ送信（テストモード）— 直書き優先・フォールバック Webhook
-      const userAgent = request.headers.get('user-agent') || '';
-      const clientIp = (request.headers.get('x-forwarded-for') || '').split(',')[0]?.trim() || '';
-      const basePayload = {
-        media_name: isCoupang ? 'Meta広告' : (getMediaName(utmParams || {})),
-        utm_source: utmParams?.utm_source || '',
-        utm_medium: utmParams?.utm_medium || '',
-        utm_campaign: utmParams?.utm_campaign || '',
-        utm_term: utmParams?.utm_term || '',
-        utm_creative: utmParams?.utm_creative || '',
-        utm_content: utmParams?.utm_content || '',
-        utm_id: utmParams?.utm_id || '',
-        ad_id: adId,
-        ad_creative_id: adCreativeId,
-        ad_image_url: adImageUrl,
-        birth_date: formData.birthDate || '',
-        full_name: formData.fullName || '',
-        full_name_kana: formData.fullNameKana || '',
-        postal_code: formData.postalCode || '',
-        prefecture_id: formData.prefectureId || '',
-        prefecture_name: formData.prefectureName || '',
-        municipality_id: formData.municipalityId || '',
-        municipality_name: formData.municipalityName || '',
-        town_name: formData.townName || '',
-        phone_number: formData.phoneNumber || '',
-        email: formData.email || '',
-        job_timing: baseJobTimingLabel,
-        job_intent: baseJobIntentLabel,
-        desired_income: baseDesiredIncomeLabel,
-        mechanic_qualifications: mechanicQualificationsLabel,
-        experiment_name: submissionData?.experiment?.name || '',
-        experiment_variant: submissionData?.experiment?.variant || '',
-        submitted_at: new Date().toISOString(),
-        environment: process.env.NODE_ENV,
-        user_agent: userAgent,
-        client_ip: clientIp,
-        form_origin: formOrigin || '',
-        is_coupang: isCoupang,
-        page_url: referer,
-      } as Record<string, unknown>;
-
-      await saveToBase(baseWriteCtx, baseWebhookUrl, basePayload);
     }
 
     // クライアントには成功したことを返す

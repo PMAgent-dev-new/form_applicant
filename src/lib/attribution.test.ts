@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 
 import {
+  catalogTouchFromSearch,
   captureAttribution,
   readAttribution,
   resolveUtmParams,
@@ -24,6 +25,46 @@ import {
  */
 
 const HOST = 'ridejob.jp';
+
+describe('catalogTouchFromSearch', () => {
+  test('Metaカタログ専用IDを同じ着地のUTMと結び付ける', () => {
+    expect(
+      catalogTouchFromSearch(
+        '?job_id=job-1&catalog_job_id=job-1&utm_source=ig&utm_medium=ad&utm_content=Catalog_Mechanic',
+        '/entry/mechanic',
+        '2026-09-17T00:00:00.000Z',
+      ),
+    ).toEqual({
+      jobId: 'job-1',
+      at: '2026-09-17T00:00:00.000Z',
+      landing: '/entry/mechanic',
+      source: 'ig',
+      medium: 'ad',
+      evidence: 'utm',
+    });
+  });
+
+  test('fbclidがあればUTM欠落時もMetaカタログ接触として保持する', () => {
+    expect(
+      catalogTouchFromSearch(
+        '?catalog_job_id=27010-41545161&fbclid=abc',
+        '/external-job/hellowork/27010-41545161',
+        '2026-09-17T00:00:00.000Z',
+      )?.evidence,
+    ).toBe('fbclid');
+  });
+
+  test('catalog_job_id単独とMeta以外のUTMはカタログ接触にしない', () => {
+    expect(catalogTouchFromSearch('?catalog_job_id=job-1', '/job/job-1', '2026-09-17T00:00:00.000Z')).toBeUndefined();
+    expect(
+      catalogTouchFromSearch(
+        '?catalog_job_id=job-1&utm_source=google&utm_medium=cpc',
+        '/job/job-1',
+        '2026-09-17T00:00:00.000Z',
+      ),
+    ).toBeUndefined();
+  });
+});
 
 describe('touchFromReferrer', () => {
   test('YouTubeからの流入を referral として拾う（今回の張り替えの本題）', () => {

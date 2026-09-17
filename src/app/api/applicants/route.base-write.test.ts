@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveDirectBaseWrite, type BaseWriteContext } from './route';
+import { appendLarkNotificationMarker, resolveDirectBaseWrite, type BaseWriteContext } from './route';
 
 function mechanicContext(): BaseWriteContext {
   return {
@@ -39,6 +39,32 @@ function mechanicContext(): BaseWriteContext {
 }
 
 describe('resolveDirectBaseWrite', () => {
+  it('担当者が追記したメモを保持して通知済み印を追加する', () => {
+    expect(appendLarkNotificationMarker('[submission_id:submission-1]\n電話済み', 'submission-1'))
+      .toBe('[submission_id:submission-1]\n電話済み\n[lark_notified:submission-1]');
+  });
+
+  it('カタログで見た求人と実際の応募求人を専用欄へ保存する', () => {
+    const target = resolveDirectBaseWrite({
+      ...mechanicContext(),
+      submissionId: 'submission-1',
+      appliedJobId: 'job-1',
+      catalogJobId: 'job-1',
+      catalogJobName: '自動車整備士（正社員）',
+      catalogClickedAtMillis: 1_700_000_000_000,
+      catalogAttributionStatus: 'same_job',
+    });
+
+    expect(target?.fields).toMatchObject({
+      submission_id: 'submission-1',
+      応募求人ID: 'job-1',
+      広告クリック求人ID: 'job-1',
+      広告クリック求人名: '自動車整備士（正社員）',
+      カタログクリック日時: 1_700_000_000_000,
+      カタログ求人一致判定: 'same_job',
+    });
+  });
+
   it('Mechanic応募の転職時期と資格を専用欄へ保存する', () => {
     const target = resolveDirectBaseWrite(mechanicContext());
 
@@ -108,6 +134,24 @@ function truckContext(): BaseWriteContext {
 }
 
 describe('resolveDirectBaseWrite (truck)', () => {
+  it('RIDE JOB Baseでは既存メモ列に求人帰属とsubmission_idを保存する', () => {
+    const target = resolveDirectBaseWrite({
+      ...truckContext(),
+      submissionId: 'submission-ridejob-1',
+      appliedJobId: 'job-2',
+      catalogJobId: 'job-1',
+      catalogJobName: 'タクシードライバー',
+      catalogClickedAtMillis: Date.parse('2026-09-17T00:00:00.000Z'),
+      catalogAttributionStatus: 'changed_job',
+    });
+
+    expect(target?.fields.submission_id).toBeUndefined();
+    expect(target?.fields.対応履歴メモ).toContain('[submission_id:submission-ridejob-1]');
+    expect(target?.fields.対応履歴メモ).toContain('広告クリック求人ID: job-1');
+    expect(target?.fields.対応履歴メモ).toContain('広告クリック求人名: タクシードライバー');
+    expect(target?.fields.対応履歴メモ).toContain('応募求人ID: job-2');
+  });
+
   // 求職者DB🚕 に「登録職種」列は存在せず、職種は関連フィールド「マスタ-応募職種」で持つ。
   it('トラック応募は職種と保有免許を専用欄へ、転職時期を対応履歴メモへ保存する', () => {
     const target = resolveDirectBaseWrite(truckContext());

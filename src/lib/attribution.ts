@@ -40,9 +40,8 @@
  * 結果として、反映日を境に **Lark上の広告経由の応募数が増え、直接アクセスが減る**方向に
  * 段差が出る。CPAは見かけ上改善する。施策の効果と読み違えないこと。
  *
- * 帰属窓は Cookie の 90日で、`touch.at` に取得時刻を持っているが**送信ボディには載せていない**。
- * つまり集計側で「89日前のクリック」と「今日のクリック」を区別できない。窓を狭めるべきかは
- * ビジネス判断なので、必要になったらここか集計側で切る。
+ * Cookie自体は90日保持するが、`touch.at` は送信ボディにも載せる。
+ * Metaカタログの求人帰属だけはサーバー側で7日窓を適用し、期限超過を `stale` として区別する。
  */
 
 export type AttributionTouch = {
@@ -53,6 +52,19 @@ export type AttributionTouch = {
   term?: string;
   /** 取得時刻（ISO 8601, UTC） */
   at: string;
+};
+
+export type CatalogAttributionTouch = {
+  /** Metaカタログの商品ID（RIDE JOBの求人ID）。 */
+  jobId: string;
+  /** カタログ商品URLへ着地した時刻（ISO 8601, UTC）。 */
+  at: string;
+  /** 商品URLのランディングパス。 */
+  landing: string;
+  /** 同じ着地URLに含まれていたMeta流入情報。後続UTMで上書きしない。 */
+  source?: string;
+  medium?: string;
+  evidence: 'utm' | 'fbclid';
 };
 
 export type Attribution = {
@@ -70,6 +82,8 @@ export type Attribution = {
   landing?: string;
   /** 初回接触時の document.referrer */
   referrer?: string;
+  /** Metaカタログで直近に見た求人。サイト内回遊後も独立して保持する。 */
+  catalogTouch?: CatalogAttributionTouch;
 };
 
 const COOKIE_NAME = 'rj_attr';
@@ -192,6 +206,38 @@ export const touchFromReferrer = (
 const isMeaningful = (t: Partial<AttributionTouch>): boolean =>
   Boolean(t.source || t.medium || t.campaign || t.content || t.term);
 
+const META_SOURCES = new Set(['meta', 'facebook', 'fb', 'instagram', 'ig', 'msg', 'an', 'th']);
+const META_PAID_MEDIUMS = new Set(['catalog', 'ad', 'cpc', 'paid_social', 'paid-social']);
+
+/**
+ * 同一着地URLにカタログ専用IDとMeta広告の証拠がそろう場合だけ、独立した接触として採用する。
+ * `catalog_job_id` 単独は共有URL・手入力でも作れるため採用しない。
+ */
+export function catalogTouchFromSearch(
+  search: string,
+  path: string,
+  nowIso: string,
+): CatalogAttributionTouch | undefined {
+  const params = new URLSearchParams(search);
+  const jobId = params.get('catalog_job_id')?.trim();
+  if (!jobId || jobId.length > 128) return undefined;
+  const source = params.get('utm_source')?.trim().toLowerCase() || undefined;
+  const medium = params.get('utm_medium')?.trim().toLowerCase() || undefined;
+  const forwardedAt = params.get('catalog_clicked_at')?.trim();
+  const capturedAt = forwardedAt && Number.isFinite(Date.parse(forwardedAt)) ? forwardedAt : nowIso;
+  const hasMetaUtm = Boolean(source && medium && META_SOURCES.has(source) && META_PAID_MEDIUMS.has(medium));
+  const hasFbclid = Boolean(params.get('fbclid')?.trim());
+  if (!hasMetaUtm && !hasFbclid) return undefined;
+  return {
+    jobId,
+    at: capturedAt,
+    landing: path,
+    source,
+    medium,
+    evidence: hasMetaUtm ? 'utm' : 'fbclid',
+  };
+}
+
 const parseCookies = (): Record<string, string> => {
   if (typeof document === 'undefined') return {};
   return document.cookie.split('; ').reduce(
@@ -279,13 +325,14 @@ export function captureAttribution(
   const fbclid = params.get('fbclid')?.trim() || undefined;
   const gclid = params.get('gclid')?.trim() || undefined;
   const oppref = params.get('oppref')?.trim() || undefined;
+  const catalogTouch = catalogTouchFromSearch(search, path, nowIso);
 
   const current = readAttribution();
 
   // oppref をここに含めないと、UTMが欠けた広告クリック（付け忘れ・中間リダイレクトでの脱落）が
   // referrer 推定に落ちて chatgpt.com → 「ChatGPT（自然流入）」として記録される。
   // 広告費が自然流入KPIに混入するので、クリックIDがある限り referrer 推定へは行かせない。
-  if (!isMeaningful(touchParams) && !fbclid && !gclid && !oppref) {
+  if (!isMeaningful(touchParams) && !fbclid && !gclid && !oppref && !catalogTouch) {
     if (current.lastTouch || current.firstTouch) return current;
 
     const host = currentHost ?? (typeof window !== 'undefined' ? window.location.host : '');
@@ -308,6 +355,7 @@ export function captureAttribution(
 
   const touch: AttributionTouch = { ...touchParams, at: nowIso };
   const next: Attribution = {
+    ...current,
     firstTouch: current.firstTouch ?? (isMeaningful(touchParams) ? touch : current.firstTouch),
     lastTouch: isMeaningful(touchParams) ? touch : current.lastTouch,
     fbclid: fbclid ?? current.fbclid,
@@ -315,6 +363,9 @@ export function captureAttribution(
     oppref: oppref ?? current.oppref,
     landing: current.landing ?? path,
     referrer: current.referrer ?? (referrer || undefined),
+    ...((catalogTouch ?? current.catalogTouch)
+      ? { catalogTouch: catalogTouch ?? current.catalogTouch }
+      : {}),
   };
 
   writeCookie(COOKIE_NAME, JSON.stringify(next), MAX_AGE_SEC);

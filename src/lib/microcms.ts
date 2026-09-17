@@ -57,6 +57,25 @@ async function fetchFromMicroCMS<T>(endpoint: string, searchParams?: URLSearchPa
   return response.json();
 }
 
+/** 公開済みコンテンツをIDで1件取得する。存在しない場合はnull。 */
+export async function fetchJobById(jobId: string): Promise<Job | null> {
+  if (!hasMicrocmsEnv) {
+    throw new Error('microCMS environment variables are not set');
+  }
+  const url = new URL(`${BASE_URL}/jobs/${encodeURIComponent(jobId)}`);
+  url.searchParams.set('depth', '1');
+  const response = await fetch(url.toString(), {
+    headers: { 'X-MICROCMS-API-KEY': API_KEY! },
+    cache: 'no-store',
+    signal: AbortSignal.timeout(5000),
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    throw new Error(`microCMS API error: ${response.status} ${response.statusText}`);
+  }
+  return response.json() as Promise<Job>;
+}
+
 async function fetchAllFromMicroCMS<T>(endpoint: string, baseParams?: URLSearchParams): Promise<T[]> {
   const results: T[] = [];
   const baseParamsString = baseParams ? baseParams.toString() : undefined;

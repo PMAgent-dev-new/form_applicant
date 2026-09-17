@@ -34,6 +34,7 @@ interface TokenCache {
 
 // tenant_access_token はアプリ（プロファイル）単位で払い出されるためプロファイル別にキャッシュする。
 const tokenCacheByProfile = new Map<LarkProfile, TokenCache>();
+const TOKEN_ERROR_CODES = new Set([99991661, 99991663, 99991664]);
 
 // マスタ（応募経由・応募職種）はほぼ変わらないのに、リンク解決のたびに fields と records を取りに行くと
 // 応募1件あたり4リクエスト増える。応募の待ち時間に直結するのでプロセス内で短時間だけ持つ。
@@ -109,6 +110,21 @@ async function fetchTenantAccessToken(cfg: LarkBaseConfig, profile: LarkProfile)
     expiresAt: now + (data.expire ?? 7200) * 1000,
   });
   return token;
+}
+
+async function withTokenRefresh<T extends { code?: number }>(
+  cfg: LarkBaseConfig,
+  profile: LarkProfile,
+  operation: (token: string) => Promise<T>,
+): Promise<T> {
+  let token = await fetchTenantAccessToken(cfg, profile);
+  let result = await operation(token);
+  if (typeof result.code === "number" && TOKEN_ERROR_CODES.has(result.code)) {
+    tokenCacheByProfile.delete(profile);
+    token = await fetchTenantAccessToken(cfg, profile);
+    result = await operation(token);
+  }
+  return result;
 }
 
 async function postRecord(
@@ -310,35 +326,39 @@ type SearchRecord = {
 
 async function searchRecordsByTextField(
   cfg: LarkBaseConfig,
-  token: string,
+  profile: LarkProfile,
   tableId: string,
   fieldName: string,
   value: string,
+  operator: "is" | "contains" = "is",
 ): Promise<SearchRecord[]> {
   const url = `${cfg.domain}/open-apis/bitable/v1/apps/${cfg.appToken}/tables/${tableId}/records/search?page_size=2`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json; charset=utf-8",
-    },
-    body: JSON.stringify({
-      filter: {
-        conjunction: "and",
-        conditions: [{ field_name: fieldName, operator: "is", value: [value] }],
+  const result = await withTokenRefresh(cfg, profile, async (token) => {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json; charset=utf-8",
       },
-    }),
-    signal: AbortSignal.timeout(5000),
+      body: JSON.stringify({
+        filter: {
+          conjunction: "and",
+          conditions: [{ field_name: fieldName, operator, value: [value] }],
+        },
+      }),
+      signal: AbortSignal.timeout(5000),
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      code?: number;
+      msg?: string;
+      data?: { items?: SearchRecord[] };
+    };
+    return { ok: res.ok, ...data };
   });
-  const data = (await res.json().catch(() => ({}))) as {
-    code?: number;
-    msg?: string;
-    data?: { items?: SearchRecord[] };
-  };
-  if (!res.ok || data.code !== 0) {
-    throw new Error(`Base レコード検索失敗: code=${data.code} msg=${data.msg}`);
+  if (!result.ok || result.code !== 0) {
+    throw new Error(`Base レコード検索失敗: code=${result.code} msg=${result.msg}`);
   }
-  return data.data?.items ?? [];
+  return result.data?.items ?? [];
 }
 
 // 指定プロファイルのアプリで、指定テーブルにレコードを1件作成する。失敗時は throw。
@@ -361,7 +381,7 @@ export async function createBaseRecord(
 
   // トークン失効（99991661/99991663 など）時はキャッシュを捨てて1度だけ再試行。
   if (!result.ok || (typeof result.code !== "undefined" && result.code !== 0)) {
-    if (result.code === 99991661 || result.code === 99991663) {
+    if (typeof result.code === "number" && TOKEN_ERROR_CODES.has(result.code)) {
       tokenCacheByProfile.delete(profile);
       token = await fetchTenantAccessToken(cfg, profile);
       result = await postRecord(cfg, token, tableId, cleaned);
@@ -379,13 +399,15 @@ export type BaseUpsertResult = {
   previousFields: Record<string, unknown>;
 };
 
-/** Text列の一意キーで既存なら更新、無ければ作成する。 */
+/** Text列の一意キーで既存なら任意で更新し、無ければ作成する。 */
 export async function upsertBaseRecordByTextField(
   tableId: string,
   uniqueFieldName: string,
   uniqueValue: string,
   fields: Record<string, LarkFieldValue | LarkLinkedRecordName | undefined>,
   profile: LarkProfile = DEFAULT_PROFILE,
+  operator: "is" | "contains" = "is",
+  updateExisting = true,
 ): Promise<BaseUpsertResult> {
   const cfg = readConfig(profile);
   if (!cfg) {
@@ -394,22 +416,37 @@ export async function upsertBaseRecordByTextField(
   }
   if (!uniqueValue.trim()) throw new Error("Base upsertの一意キーが空です。");
 
-  const token = await fetchTenantAccessToken(cfg, profile);
-  const records = await searchRecordsByTextField(
+  const searchCurrent = () => searchRecordsByTextField(
     cfg,
-    token,
+    profile,
     tableId,
     uniqueFieldName,
     uniqueValue,
+    operator,
   );
+  const records = await searchCurrent();
   if (records.length > 1) {
     throw new Error(`Base upsertの一意キー「${uniqueValue}」が複数件あります。`);
   }
 
-  const cleaned = await prepareFields(cfg, token, tableId, fields);
   const existing = records[0];
   if (existing?.record_id) {
-    const result = await putRecord(cfg, token, tableId, existing.record_id, cleaned);
+    // 応募受付の再送では、通知済み印を含む既存レコードを読み取り専用で扱う。
+    // 更新すると通知済み印が消え、次回の再送で二重通知になるため。
+    if (!updateExisting) {
+      return {
+        recordId: existing.record_id,
+        created: false,
+        previousFields: existing.fields ?? {},
+      };
+    }
+    const token = await fetchTenantAccessToken(cfg, profile);
+    const cleaned = await prepareFields(cfg, token, tableId, fields);
+    const result = await withTokenRefresh(
+      cfg,
+      profile,
+      (freshToken) => putRecord(cfg, freshToken, tableId, existing.record_id!, cleaned),
+    );
     if (!result.ok || result.code !== 0) {
       throw new Error(`Base レコード更新失敗: code=${result.code} msg=${result.msg}`);
     }
@@ -420,14 +457,32 @@ export async function upsertBaseRecordByTextField(
     };
   }
 
+  const token = await fetchTenantAccessToken(cfg, profile);
+  const cleaned = await prepareFields(cfg, token, tableId, fields);
   // 検索→作成の間に同じsubmission_idが同時到着しても、Lark側で作成を1件に畳む。
-  const result = await postRecord(
+  const result = await withTokenRefresh(
     cfg,
-    token,
-    tableId,
-    cleaned,
-    idempotencyToken(`${cfg.appToken}/${tableId}/${uniqueFieldName}/${uniqueValue}`),
+    profile,
+    (freshToken) => postRecord(
+      cfg,
+      freshToken,
+      tableId,
+      cleaned,
+      idempotencyToken(`${cfg.appToken}/${tableId}/${uniqueFieldName}/${uniqueValue}`),
+    ),
   );
+  if (result.code === 1254608) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const replayed = await searchCurrent();
+    if (replayed.length !== 1 || !replayed[0]?.record_id) {
+      throw new Error(`Base client_token重複後の再検索に失敗しました: matches=${replayed.length}`);
+    }
+    return {
+      recordId: replayed[0].record_id,
+      created: false,
+      previousFields: replayed[0].fields ?? {},
+    };
+  }
   if (!result.ok || result.code !== 0 || !result.recordId) {
     throw new Error(`Base レコード作成失敗: code=${result.code} msg=${result.msg}`);
   }
@@ -447,8 +502,93 @@ export async function updateBaseRecord(
   }
   const token = await fetchTenantAccessToken(cfg, profile);
   const cleaned = await prepareFields(cfg, token, tableId, fields);
-  const result = await putRecord(cfg, token, tableId, recordId, cleaned);
+  const result = await withTokenRefresh(
+    cfg,
+    profile,
+    (freshToken) => putRecord(cfg, freshToken, tableId, recordId, cleaned),
+  );
   if (!result.ok || result.code !== 0) {
     throw new Error(`Base レコード更新失敗: code=${result.code} msg=${result.msg}`);
+  }
+}
+
+export type LarkMessageSendResult = {
+  ok: boolean;
+  status: number;
+  code?: number;
+  message?: string;
+  messageId?: string;
+  /** 通信例外で、Lark側だけ成功した可能性がある状態。Webhookへ即時フォールバックしない。 */
+  ambiguous?: boolean;
+};
+
+/** 最大50文字の制約内で、長い応募IDも先頭一致による衝突を起こさないuuidへ変換する。 */
+const larkMessageUuid = (value: string): string =>
+  createHash('sha256').update(value.trim(), 'utf8').digest('hex').slice(0, 50);
+
+/**
+ * Lark IM APIでテキスト通知を送る。uuidは同一応募の同時・再送通知を1時間重複排除する。
+ */
+export async function sendLarkTextMessage(
+  chatId: string,
+  text: string,
+  uuid: string,
+  profile: LarkProfile = 'ridejob',
+): Promise<LarkMessageSendResult> {
+  const cfg = readConfig(profile);
+  if (!cfg) return { ok: false, status: 0, message: 'Lark API credentials are not configured' };
+  const endpoint = `${cfg.domain}/open-apis/im/v1/messages?receive_id_type=chat_id`;
+  const call = async (token: string) => {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json; charset=utf-8',
+      },
+      body: JSON.stringify({
+        receive_id: chatId,
+        msg_type: 'text',
+        content: JSON.stringify({ text }),
+        uuid: larkMessageUuid(uuid),
+      }),
+      signal: AbortSignal.timeout(5000),
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      code?: number;
+      msg?: string;
+      data?: { message_id?: string };
+    };
+    return { res, data };
+  };
+
+  try {
+    let token = await fetchTenantAccessToken(cfg, profile);
+    let result = await call(token);
+    if (result.data.code === 99991661 || result.data.code === 99991663 || result.data.code === 99991664) {
+      tokenCacheByProfile.delete(profile);
+      token = await fetchTenantAccessToken(cfg, profile);
+      result = await call(token);
+    }
+    if (!result.res.ok || result.data.code !== 0) {
+      return {
+        ok: false,
+        status: result.res.status,
+        code: result.data.code,
+        message: result.data.msg,
+      };
+    }
+    return {
+      ok: true,
+      status: result.res.status,
+      code: 0,
+      messageId: result.data.data?.message_id,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      message: error instanceof Error ? error.message : String(error),
+      ambiguous: true,
+    };
   }
 }

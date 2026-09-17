@@ -1,7 +1,7 @@
 'use client';
 
 import { apiPath } from '@/lib/basePath';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import type { FormData, FormErrors, FormOrigin, JobCountResult, PeopleImageVariant, TruckLicense } from '../types';
@@ -58,6 +58,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
   const [pendingNavigation, setPendingNavigation] = useState<{ type: 'history-back' } | null>(null);
   const [exitModalVariant, setExitModalVariant] = useState<'default' | 'phone'>('default');
   const [jobResult, setJobResult] = useState<JobCountResult>({ jobCount: null, message: '', isLoading: false, error: '' });
+  const submissionIdRef = useRef<string | null>(null);
 
   const markFormClean = useCallback(() => {
     setIsFormDirty(false);
@@ -654,16 +655,18 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         // 全項目を入力し終えた応募者を、計測用コードの都合で失うことになる。
         // 流入元が取れなくても応募は必ず通す。
         let utmParams: UtmParams;
+        let attribution = readAttribution();
         try {
           utmParams = resolveUtmParams(
             window.location.search,
-            readAttribution(),
+            attribution,
             document.referrer,
             window.location.host,
           );
         } catch (e) {
           console.warn('[attribution] 流入元の解決に失敗しました（送信は継続します）', e);
           utmParams = EMPTY_UTM_PARAMS;
+          attribution = {};
         }
 
         // ChatGPT広告のクリック識別子。OpenAI の Conversions API は oppref を自前で拾って
@@ -673,7 +676,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         try {
           oppref =
             new URLSearchParams(window.location.search).get('oppref')?.trim() ||
-            readAttribution().oppref;
+            attribution.oppref;
         } catch (e) {
           console.warn('[attribution] oppref の取得に失敗しました（送信は継続します）', e);
           oppref = undefined;
@@ -701,7 +704,11 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
           }
         }
 
-        const metaEventId = genEventId();
+        const metaEventId = submissionIdRef.current || genEventId();
+        submissionIdRef.current = metaEventId;
+        const query = new URLSearchParams(window.location.search);
+        const appliedJobId = query.get('job_id')?.trim() || undefined;
+        const catalog = attribution.catalogTouch;
         const body = {
           ...formData,
           birthDate: birthDateString,
@@ -713,6 +720,16 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
           experiment: { name: 'people_image', variant },
           formOrigin,
           metaEventId,
+          submissionId: metaEventId,
+          appliedJobId,
+          catalogJobId: catalog?.jobId,
+          catalogClickedAt: catalog?.at,
+          catalogLandingPath: catalog?.landing,
+          catalogSource: catalog?.source,
+          catalogMedium: catalog?.medium,
+          catalogEvidence: catalog?.evidence,
+          fbclid: attribution.fbclid,
+          attributionLastTouchAt: attribution.lastTouch?.at,
         } as Record<string, unknown>;
 
         const response = await fetch(apiPath('/api/applicants'), {
@@ -732,7 +749,11 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         setIsFormDirty(false);
 
         // 送信成功時に Meta Lead を発火（サーバーCAPIと同一 eventId で重複排除）
-        trackMeta('Lead', { value: 0, currency: 'JPY' }, metaEventId);
+        trackMeta('Lead', {
+          contentIds: appliedJobId ? [appliedJobId] : undefined,
+          value: 0,
+          currency: 'JPY',
+        }, metaEventId);
         // GA4 側にも GA4 推奨イベント名で応募完了を送る。GTM で generate_lead タグを作り
         // GA4 のキーイベントに登録すると、チャネル別のCVとして集計できるようになる。
         // （従来は step_view / form_submit しか無く、CV が別プロパティ側にしか無かった）

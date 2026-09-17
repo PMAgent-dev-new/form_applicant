@@ -499,17 +499,40 @@ export async function POST(request: NextRequest) {
     // 未設定の旧環境だけAutomation Webhookへフォールバックする。
     let baseRecordId = '';
     let notificationAlreadySent = false;
+    let notificationInProgress = false;
     try {
       if (directBaseConfigured) {
-        const saved = await upsertBaseRecordByTextField(
+        let saved = await upsertBaseRecordByTextField(
           LIFTJOB_TABLE_ID,
           'submission_id',
           submissionId,
           buildLiftJobDirectBaseFields(basePayload),
           'liftjob',
+          'is',
+          false,
         );
         baseRecordId = saved.recordId;
         notificationAlreadySent = saved.previousFields['Lark通知送信済み'] === true;
+        // 同時送信の作成競合では、敗者が先着の通知済み更新を短時間待つ。
+        // Webhook通知にはuuid重複排除が無いため、処理中のままなら送信せず再試行を促す。
+        if (!saved.created && !notificationAlreadySent) {
+          for (let attempt = 0; attempt < 12 && !notificationAlreadySent; attempt += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 250));
+            saved = await upsertBaseRecordByTextField(
+              LIFTJOB_TABLE_ID,
+              'submission_id',
+              submissionId,
+              buildLiftJobDirectBaseFields(basePayload),
+              'liftjob',
+              'is',
+              false,
+            );
+            notificationAlreadySent = saved.previousFields['Lark通知送信済み'] === true;
+          }
+          const submittedAt = Number(saved.previousFields['応募日']);
+          notificationInProgress = !notificationAlreadySent
+            && (!Number.isFinite(submittedAt) || Date.now() - submittedAt < 30_000);
+        }
         console.log('[coupang] Lark Base direct upsert succeeded', {
           recordId: saved.recordId,
           created: saved.created,
@@ -543,6 +566,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { message: 'Application submitted successfully!', ...(isTestMode ? { baseRecordId } : {}) },
         { status: 200 },
+      );
+    }
+
+    if (notificationInProgress) {
+      console.warn('[coupang] Duplicate submission is still being processed', { submissionId });
+      return NextResponse.json(
+        { message: 'Application is still being processed; retry shortly' },
+        { status: 503 },
       );
     }
 
