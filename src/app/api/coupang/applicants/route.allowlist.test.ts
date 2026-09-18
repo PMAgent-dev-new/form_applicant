@@ -206,6 +206,8 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     expect(message).toContain('CR-ID: CR-2608-30');
     expect(message).toContain('広告ID: 120234567892');
     expect(message).toContain('LP: https://ridejob.jp/entry/coupang?utm_source=ig&utm_medium=cpc');
+    expect(message).toContain('希望勤務地: 東京');
+    expect(message).toContain('生年月日: 1996/01/01');
   });
 
   it('通知本文では改行とLarkメンション記法を無害化する', async () => {
@@ -257,6 +259,8 @@ describe('coupang applicants POST — outbound host allowlist', () => {
       attribution_source: 'query',
       form_origin: 'coupang_rocketnow',
       is_coupang: true,
+      desired_location: '東京',
+      birth_date: '1996/01/01',
     });
   });
 
@@ -283,6 +287,7 @@ describe('coupang applicants POST — outbound host allowlist', () => {
       '求職者名': coupangBody.fullName,
       'マスタ-応募職種': coupangBody.jobPosition,
       '希望勤務地': coupangBody.desiredLocation,
+      '生年月日': '1996/01/01',
       '応募経由(マスタ連動)': ['ig(ad)'],
       '流入媒体（自動判定）': 'Meta広告',
       utm_term: '120234567891',
@@ -294,6 +299,24 @@ describe('coupang applicants POST — outbound host allowlist', () => {
       ad_image_url: 'https://example.com/ad.jpg',
       submission_id: 'submission-direct-map',
     });
+  });
+
+  it('区切り付き生年月日もLark向けのYYYY/MM/DDへ正規化する', async () => {
+    const { formatLiftJobBirthDate } = await import('./route');
+    expect(formatLiftJobBirthDate('2000-02-29')).toBe('2000/02/29');
+    expect(formatLiftJobBirthDate('1986-08-16')).toBe('1986/08/16');
+    expect(formatLiftJobBirthDate('1986.08.16')).toBe('1986/08/16');
+    expect(formatLiftJobBirthDate('19860816')).toBe('1986/08/16');
+    expect(formatLiftJobBirthDate('19860230')).toBe('');
+    expect(formatLiftJobBirthDate('1986-08.16')).toBe('');
+    expect(formatLiftJobBirthDate('1986-0816')).toBe('');
+  });
+
+  it('不正な生年月日は外部送信前に400で拒否する', async () => {
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest({ ...coupangBody, birthDate: '19860230' }));
+    expect(res.status).toBe(400);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('直接Baseはsubmission_idでupsertし、再送時の通知重複を防ぐ', async () => {
