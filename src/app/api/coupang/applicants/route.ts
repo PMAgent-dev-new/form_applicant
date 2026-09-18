@@ -167,6 +167,34 @@ function larkLineText(value: unknown, fallback = '未取得'): string {
   return normalized || fallback;
 }
 
+/**
+ * LIFT JOBフォームの8桁生年月日を、Lark Baseの年齢計算式が解釈できる表記へ揃える。
+ * 既に区切り文字付きで届いた旧クライアントの値も同じ形式へ正規化する。
+ */
+export function formatLiftJobBirthDate(value: unknown): string {
+  const raw = text(value);
+  const compact = raw.match(/^(\d{4})(\d{2})(\d{2})$/);
+  const separated = raw.match(/^(\d{4})([-/.])(\d{2})\2(\d{2})$/);
+  const yearText = compact?.[1] ?? separated?.[1];
+  const monthText = compact?.[2] ?? separated?.[3];
+  const dayText = compact?.[3] ?? separated?.[4];
+  if (!yearText || !monthText || !dayText) return '';
+
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return '';
+  }
+
+  return `${yearText}/${monthText}/${dayText}`;
+}
+
 /** リクエスト/Cookie由来の値は型注釈を信用せず、サーバー境界で文字列へ正規化する。 */
 function normalizeUtmParams(value: unknown): UTMParams {
   const input = value && typeof value === 'object' && !Array.isArray(value)
@@ -269,7 +297,7 @@ ${params.isTest ? '【E2Eテスト・実応募ではありません】\n' : ''}L
 	希望職種: ${larkLineText(params.jobPositionLabel, '未入力')}
 	希望勤務地: ${larkLineText(params.desiredLocationLabel, '未入力')}
 	年齢: ${larkLineText(params.ageLabel, '未入力')}
-	生年月日: ${larkLineText(params.birthDateLabel, '未入力')}
+	生年月日: ${larkLineText(formatLiftJobBirthDate(params.birthDateLabel), '未入力')}
 -------------------------
   `.trim();
 }
@@ -317,7 +345,7 @@ export function buildLiftJobBasePayload(params: {
     job_position: params.jobPositionLabel,
     desired_location: params.desiredLocationLabel,
     age: params.formData.age || '',
-    birth_date: params.formData.birthDate || '',
+    birth_date: formatLiftJobBirthDate(params.formData.birthDate),
     submitted_at: params.submittedAt,
     submission_id: params.submissionId,
     environment: params.environment,
@@ -391,6 +419,9 @@ export async function POST(request: NextRequest) {
       if (!expected || provided !== expected) {
         return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
       }
+    }
+    if (!formatLiftJobBirthDate(formData.birthDate)) {
+      return NextResponse.json({ message: 'Invalid birthDate' }, { status: 400 });
     }
     const utmParams = normalizeUtmParams(submittedUtmParams);
     const submissionId = firstText(submittedSubmissionId, metaEventId).slice(0, 128);
