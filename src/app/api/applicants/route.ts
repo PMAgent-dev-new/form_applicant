@@ -30,6 +30,7 @@ import {
 import { assessCatalogTouch, type CatalogAttributionStatus } from '@/lib/catalog-attribution';
 import { isMetaCatalogJob } from '@/lib/catalog-eligibility';
 import { fetchJobById } from '@/lib/microcms';
+import { describeError } from '@/lib/describe-error';
 
 // Bitable 直書きの投入先テーブル（env で上書き可）。
 //   default / bus       → 求職者DB🚕   （ridejob base：APP_*_RIDEJOB）
@@ -333,7 +334,7 @@ async function saveToBase(
       console.log(`Lark Base 直書き成功 (${target.profile} / ${target.tableId})`);
       return { notificationAlreadySent: false };
     } catch (e) {
-      console.error(`Lark Base 直書き失敗、Webhook にフォールバック (${target.profile}):`, e);
+      console.error(`Lark Base 直書き失敗、Webhook にフォールバック (${target.profile}):`, describeError(e));
       // submission_id を持つ新経路は直接Base upsertが冪等性の正本。
       // Webhookへ落とすと同じ応募が別レコードになり得るため、失敗を呼び出し側へ返す。
       if (ctx.submissionId) throw e;
@@ -473,7 +474,7 @@ export async function POST(request: NextRequest) {
         if (!catalogJob || !isMetaCatalogJob(catalogJob)) catalog.status = 'invalid';
       } catch (error) {
         // 一時障害をinvalidとして永久保存せず、Base作成前に再送可能な失敗にする。
-        console.warn('カタログ求人名の取得に失敗:', error);
+        console.warn('カタログ求人名の取得に失敗:', describeError(error));
         return NextResponse.json({ message: 'Catalog job source is temporarily unavailable' }, { status: 503 });
       }
     }
@@ -676,7 +677,7 @@ export async function POST(request: NextRequest) {
     try {
       baseSave = await saveToBase(baseWriteCtx, baseWebhookUrl, basePayload);
     } catch (error) {
-      console.error('Lark Base save failed; notification was not sent:', error);
+      console.error('Lark Base save failed; notification was not sent:', `submission=${submissionId} ${describeError(error)}`);
       return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
     }
 
@@ -884,19 +885,19 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
             });
             if (result.sent) {
               console.log('Confirmation email sent:', {
-                to: recipientEmail,
+                submissionId,
                 messageId: result.messageId,
                 formOrigin: origin,
               });
             } else if (result.reason === 'error') {
               console.error('Confirmation email failed:', {
-                to: recipientEmail,
+                submissionId,
                 error: result.error,
                 formOrigin: origin,
               });
             } else {
               console.log('Confirmation email skipped:', {
-                to: recipientEmail,
+                submissionId,
                 reason: result.reason,
                 formOrigin: origin,
               });
@@ -979,7 +980,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
     return NextResponse.json({ message: 'Application submitted successfully!' }, { status: 200 });
 
   } catch (error) {
-    console.error('Error processing application in API route:', error);
+    console.error('Error processing application in API route:', describeError(error));
     // 予期せぬエラー
     return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
   }

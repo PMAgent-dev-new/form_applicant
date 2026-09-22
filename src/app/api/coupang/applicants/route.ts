@@ -14,6 +14,7 @@ import { BASE_PATH } from '@/lib/basePath';
 import { getMediaName } from '@/lib/media-name';
 import { resolveApplicationSourceMasterName } from '@/lib/lark-masters';
 import { isMetaAdsAttribution, isOpenAiAdsAttribution } from '@/lib/attribution';
+import { describeError } from '@/lib/describe-error';
 import {
   isLarkBaseConfigured,
   upsertBaseRecordByTextField,
@@ -584,7 +585,7 @@ export async function POST(request: NextRequest) {
         console.log('[coupang] Lark Base webhook triggered successfully');
       }
     } catch (error) {
-      console.error('[coupang] Lark Base save failed:', error);
+      console.error('[coupang] Lark Base save failed:', `submission=${submissionId} ${describeError(error)}`);
       return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
     }
 
@@ -668,11 +669,11 @@ export async function POST(request: NextRequest) {
           } catch (error) {
             // 通知は既に受理済み。ここで500にするとブラウザ再送で同じ通知を重複させる。
             markFailed('lark-notification-state');
-            console.error('[coupang] Lark notification state update failed after successful send:', error);
+            console.error('[coupang] Lark notification state update failed after successful send:', `submission=${submissionId} ${describeError(error)}`);
           }
         }
       } catch (error) {
-        console.error('[coupang] Failed to send notification to Lark:', error);
+        console.error('[coupang] Failed to send notification to Lark:', `submission=${submissionId} ${describeError(error)}`);
         return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
       }
     } else if (notificationAlreadySent) {
@@ -816,7 +817,7 @@ export async function POST(request: NextRequest) {
       { status: 200 },
     );
   } catch (error) {
-    console.error('Error processing Coupang application:', error);
+    console.error('Error processing Coupang application:', describeError(error));
     return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
   }
 }
