@@ -6,6 +6,7 @@
  * - 送信失敗時も throw せず SendResult として返す (呼び出し側でフォーム送信成功は維持)
  */
 
+import { describeError } from '../describe-error';
 import { sendGmailMessage } from './gmail-client';
 import {
   buildApplicationConfirmationHtml,
@@ -80,14 +81,16 @@ export async function sendApplicationConfirmationEmail(
   const bcc = parseEmailList(process.env.GMAIL_BCC);
 
   if (process.env.EMAIL_DRY_RUN === 'true') {
-    console.log('[EMAIL_DRY_RUN] Would send confirmation email', {
-      to,
-      cc,
-      bcc,
+    // 宛先（応募者のメールアドレス）はログに残さない。dry-run は本番の環境変数でも
+    // 有効にできてしまうため、「検証用だから」を理由に個人情報を出さない。
+      console.log('[EMAIL_DRY_RUN] Would send confirmation email', {
+      hasTo: Boolean(to),
+      ccCount: cc.length,
+      bccCount: bcc.length,
       from: senderEmail,
       fromName,
       subject,
-      formOrigin: input.formOrigin,
+      hasFormOrigin: Boolean(input.formOrigin),
     });
     return { sent: false, reason: 'dry-run' };
   }
@@ -105,7 +108,8 @@ export async function sendApplicationConfirmationEmail(
     });
     return { sent: true, messageId: result.messageId };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return { sent: false, reason: 'error', error: message };
+    // error は呼び出し側がログに出す。message だけだと undici の 'fetch failed' の原因（ECONNRESET 等）が
+    // 消えるので describeError で1行にする（送信のタイムアウトは 'TimeoutError: ...' になる）。
+    return { sent: false, reason: 'error', error: describeError(error) };
   }
 }
