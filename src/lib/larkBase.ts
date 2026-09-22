@@ -6,6 +6,8 @@
 
 import { createHash } from "node:crypto";
 
+import { describeError } from "./describe-error";
+
 // 認証プロファイル。投入先 Base（Bitable アプリ）ごとに異なるアプリ資格情報を使う。
 //   mechanic … 求職者DB👷‍♂️ / IDOM_新卒2027 等（既存 APP_*_MECHANIC）
 //   ridejob  … 求職者DB🚕 等（APP_*_RIDEJOB）
@@ -310,7 +312,9 @@ async function prepareFields(
         }
         cleaned[k] = [await resolveLinkedRecordId(cfg, token, tableId, k, v.linkedRecordName)];
       } catch (e) {
-        console.error(`Lark Base リンク解決に失敗したため「${k}」を省略します:`, e);
+        // エラーオブジェクトを丸ごと渡さない。message にリンク先の値（市区町村名など）が
+        // 載ることがあり、スタックごとログに出すと個人情報の断片が残る（describeError 参照）。
+        console.error(`Lark Base リンク解決に失敗したため「${k}」を省略します:`, describeError(e));
       }
     } else if (v !== undefined && v !== "") {
       cleaned[k] = v as LarkFieldValue;
