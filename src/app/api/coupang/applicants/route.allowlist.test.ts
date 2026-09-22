@@ -1,3 +1,4 @@
+import { format } from 'node:util';
 import { NextRequest } from 'next/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -58,7 +59,8 @@ const ALLOWLISTED_ENV: Record<string, string> = {
   COUPANG_SMS_ENABLED: 'true',
 };
 
-function makeRequest(body: unknown) {
+/** 本文を文字列のまま渡す（壊れた JSON を送るため）。 */
+function makeRawRequest(rawBody: string) {
   // ハンドラが request.cookies を読むため、素の Request では落ちる。
   return new NextRequest('https://ridejob.jp/entry/api/coupang/applicants', {
     method: 'POST',
@@ -67,8 +69,19 @@ function makeRequest(body: unknown) {
       referer: 'https://ridejob.jp/entry/coupang',
       'user-agent': 'vitest',
     },
-    body: JSON.stringify(body),
+    body: rawBody,
   });
+}
+
+function makeRequest(body: unknown) {
+  return makeRawRequest(JSON.stringify(body));
+}
+
+type ConsoleSpy = { mock: { calls: unknown[][] } };
+
+/** console に実際に出る文字列（Error はスタック込み、オブジェクトは inspect 済み）に直す。 */
+function printed(...spies: ConsoleSpy[]) {
+  return spies.flatMap((spy) => spy.mock.calls.map((call) => format(call[0], ...call.slice(1))));
 }
 
 const coupangBody = {
@@ -105,6 +118,7 @@ describe('coupang applicants POST — outbound host allowlist', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   it('許可リスト外のホストへ送信しない', async () => {
@@ -270,5 +284,54 @@ describe('coupang applicants POST — outbound host allowlist', () => {
   it('許可リストの判定自体が機能する', () => {
     expect(ALLOWED_HOSTS.has('evil.example.com')).toBe(false);
     expect(hostOf('https://open.larksuite.com/x')).toBe('open.larksuite.com');
+  });
+
+  describe('ログに個人情報を出さない', () => {
+    // V8 の JSON の SyntaxError は message 自体に入力の断片を載せる（Node v25.3.0 で実測）。
+    // エラーを丸ごと（あるいは name と message だけでも）ログに出すと、そのまま漏れる。
+    // 共通ルート（src/app/api/applicants/route.allowlist.test.ts）の同名のテストと同じ作り。
+    const brokenBody = '{"fullName":TANAKA TARO,"email":"taro@example.com"}';
+    const engineEchoesJsonInput = (() => {
+      try {
+        JSON.parse(brokenBody);
+      } catch (e) {
+        return e instanceof Error && e.message.includes('TANAKA');
+      }
+      return false;
+    })();
+
+    // 断片を載せない処理系では、この経路の漏れ自体が起きない。空振りで通すと気づけないので skip で見せる
+    // （CI は Node 20。手元で実測したのは Node 25 のみ）。
+    it.skipIf(!engineEchoesJsonInput)('応募本文の JSON が壊れていても、氏名などの断片をログに出さない', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const { POST } = await import('./route');
+      const res = await POST(makeRawRequest(brokenBody));
+
+      expect(res.status).toBe(500);
+      const logged = printed(errorSpy).join('\n');
+      expect(logged).toContain('SyntaxError');
+      expect(logged).not.toContain('TANAKA');
+    });
+
+    it('副作用が SyntaxError を投げても、message（入力の断片を含みうる）をログに出さない', async () => {
+      // 処理系の文言に依存しないよう、断片入りの SyntaxError をこちらで作り、Lark 通知の送信から投げる。
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      fetchSpy.mockImplementation(async (input: unknown) => {
+        if (String(input).includes('/bot/v2/hook/')) {
+          throw new SyntaxError(`Unexpected token 'T', ..."fullName":TANAKA TAR"... is not valid JSON`);
+        }
+        return new Response(JSON.stringify({ ok: true, code: 0, StatusCode: 0 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      });
+      const { POST } = await import('./route');
+      const res = await POST(makeRequest(coupangBody));
+
+      expect(res.status).toBe(200);
+      const logged = printed(errorSpy).join('\n');
+      expect(logged).toContain('lark-notification threw and was swallowed: SyntaxError');
+      expect(logged).not.toContain('TANAKA');
+    });
   });
 });

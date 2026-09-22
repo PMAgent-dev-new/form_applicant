@@ -10,6 +10,8 @@
  * - 応募処理を止めないため、失敗・タイムアウト時は null を返すだけにする（呼び出し側で握りつぶす）。
  */
 
+import { describeError } from '../describe-error';
+
 const GRAPH_VERSION = process.env.META_GRAPH_VERSION || 'v23.0';
 const DEFAULT_TIMEOUT_MS = 2500;
 
@@ -91,7 +93,8 @@ export async function resolveAdImageUrl(
     if ((error as Error)?.name === 'AbortError') {
       console.warn('[meta] ad image resolution timed out for adId:', adId);
     } else {
-      console.warn('[meta] ad image resolution error:', error);
+      // エラーオブジェクトを丸ごと渡さない（describeError 参照）。
+      console.warn('[meta] ad image resolution error:', describeError(error));
     }
     return null;
   } finally {

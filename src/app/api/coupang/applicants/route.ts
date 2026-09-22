@@ -11,6 +11,7 @@ import { sendMetaCapiLead } from '@/lib/meta/capi';
 import { sendApplicationConfirmationEmail } from '@/lib/email/send-application-confirmation';
 import { sendApplicationSms } from '@/lib/sms/send-application-sms';
 import { BASE_PATH } from '@/lib/basePath';
+import { describeError } from '@/lib/describe-error';
 
 /**
  * referer が取れないときに CAPI へ渡す既定の event_source_url。
@@ -156,10 +157,7 @@ export async function POST(request: NextRequest) {
             () => undefined,
             (e: unknown) => {
               markFailed(label);
-              // undici の fetch 失敗は message が 'fetch failed' としか出ないので cause まで出す。
-              const detail = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
-              const cause = e instanceof Error && e.cause ? ` cause=${String((e.cause as { code?: string })?.code ?? e.cause)}` : '';
-              console.error(`[coupang] ${label} threw and was swallowed: ${detail}${cause}`);
+              console.error(`[coupang] ${label} threw and was swallowed: ${describeError(e)}`);
             }
           ));
 
@@ -436,7 +434,9 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ message: 'Application submitted successfully!' }, { status: 200 });
   } catch (error) {
-    console.error('Error processing Coupang application:', error);
+    // エラーオブジェクトを丸ごと渡さない。応募本文の JSON が壊れていると、
+    // SyntaxError の message に氏名・メール・電話の断片が載る（describeError 参照）。
+    console.error('Error processing Coupang application:', describeError(error));
     return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
   }
 }
