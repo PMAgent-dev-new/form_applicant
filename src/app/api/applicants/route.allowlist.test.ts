@@ -160,7 +160,9 @@ describe('applicants POST — outbound host allowlist', () => {
     expect(res.status).toBe(502);
   });
 
-  it('treats an HTTP 200 Bitable error body as a Base failure and skips notification', async () => {
+  // 2026-09-17〜09-23: Base 保存が失敗すると 500 を返して通知も出していなかったため、
+  // 自社LP経由の応募が5日間まるごと失われた（約90件）。Base に入らなくても通知だけは必ず出す。
+  it('Bitable が HTTP200 でエラー本文を返しても、応募は通して通知を出す', async () => {
     fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
       const url = String(input);
       if (new URL(url).pathname.endsWith('/records') && init?.method === 'POST') {
@@ -170,9 +172,30 @@ describe('applicants POST — outbound host allowlist', () => {
     });
     const { POST } = await import('./route');
     const res = await POST(makeRequest(applicantBody));
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(200);
     const messageCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/im/v1/messages'));
-    expect(messageCalls).toHaveLength(0);
+    // 直書きは失敗しても Base Webhook へフォールバックするので、レコードは残る
+    expect(messageCalls.length, 'Base が落ちたときこそ通知が唯一の記録になる').toBeGreaterThan(0);
+  });
+
+  it('直書きも Base Webhook も落ちたら、通知に「Base未登録」を立てたうえで応募は通す', async () => {
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (new URL(url).pathname.endsWith('/records') && init?.method === 'POST') {
+        return Response.json({ code: 4001, msg: 'mapping failed' });
+      }
+      if (url.includes('/anycross/trigger/')) {
+        return Response.json({ code: 4001, msg: 'automation stopped' });
+      }
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+    expect(res.status).toBe(200);
+    const messageCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/im/v1/messages'));
+    expect(messageCalls.length, 'Base に残らない応募こそ通知が唯一の記録').toBeGreaterThan(0);
+    const sent = messageCalls.map(([, init]) => String((init as RequestInit)?.body ?? '')).join('\n');
+    expect(sent, '手入力が要ることが通知の先頭で分かること').toContain('Base未登録');
   });
 
   it('the allowlist check itself has teeth', () => {

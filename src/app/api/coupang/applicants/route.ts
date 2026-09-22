@@ -532,6 +532,8 @@ export async function POST(request: NextRequest) {
     let baseRecordId = '';
     let notificationAlreadySent = false;
     let notificationInProgress = false;
+    /** 直書き・Webhook ともに失敗したときの理由。応募は通すが通知に印を付ける。 */
+    let baseSaveFailed = '';
     try {
       if (directBaseConfigured) {
         let saved = await upsertBaseRecordByTextField(
@@ -585,11 +587,14 @@ export async function POST(request: NextRequest) {
         console.log('[coupang] Lark Base webhook triggered successfully');
       }
     } catch (error) {
-      console.error('[coupang] Lark Base save failed:', `submission=${submissionId} ${describeError(error)}`);
-      return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
+      // ⚠️ 500 を返さない。この行より後ろに Lark通知・確認メール・SMS・CAPI が全部ある。
+      // RIDE JOB 側（applicants/route.ts）では同型の分岐で応募が5日間失われた（2026-09-17〜09-23）。
+      // Base に入らなくても通知だけは必ず出す。
+      baseSaveFailed = describeError(error);
+      console.error('[coupang] Lark Base save failed; 通知は継続する:', `submission=${submissionId} ${baseSaveFailed}`);
     }
 
-    if (sendBaseOnly) {
+    if (sendBaseOnly && !baseSaveFailed) {
       console.log('[coupang] submission settled:', {
         mode: 'base-only',
         directBaseConfigured,
@@ -599,6 +604,16 @@ export async function POST(request: NextRequest) {
         { message: 'Application submitted successfully!', ...(isTestMode ? { baseRecordId } : {}) },
         { status: 200 },
       );
+    }
+
+    // 不変条件: Base 保存が全滅したうえ通知先も無いなら、応募はどこにも残らない。
+    // 200 を返すと応募者は「送信できた」と思って離脱し、こちらは応募があったことすら分からない。
+    if (baseSaveFailed && !larkWebhookUrl) {
+      console.error(
+        '[coupang] 応募をどこにも記録できない（Base保存が失敗し、通知先も未設定）:',
+        `submission=${submissionId} ${baseSaveFailed}`,
+      );
+      return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
     }
 
     if (notificationInProgress) {
@@ -644,11 +659,15 @@ export async function POST(request: NextRequest) {
         birthDateLabel,
         isTest: isTestMode,
       });
+      // Base に保存できなかった応募は、この通知が唯一の記録になる。手入力が要ることを先頭で示す。
+      const notificationText = baseSaveFailed
+        ? `⚠️Base未登録（手入力が必要）\n${messageContent}`
+        : messageContent;
       try {
         const resp = await fetch(larkWebhookUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ msg_type: 'text', content: { text: messageContent } }),
+          body: JSON.stringify({ msg_type: 'text', content: { text: notificationText } }),
           signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
         });
         const result = (await resp.json().catch(() => ({}))) as LarkWebhookResult;

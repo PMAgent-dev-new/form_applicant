@@ -249,6 +249,8 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
 // 既存の Base 自動化 Webhook にフォールバックする（応募データを取りこぼさないため）。
 type BaseSaveResult = {
   recordId?: string;
+  /** Base への保存が直書き・Webhook ともに失敗した。応募は通すが通知に印を付ける。 */
+  baseSaveFailed?: string;
   notificationAlreadySent: boolean;
   notificationInProgress?: boolean;
   notificationRecoveryOnly?: boolean;
@@ -335,14 +337,19 @@ async function saveToBase(
       return { notificationAlreadySent: false };
     } catch (e) {
       console.error(`Lark Base 直書き失敗、Webhook にフォールバック (${target.profile}):`, describeError(e));
-      // submission_id を持つ新経路は直接Base upsertが冪等性の正本。
-      // Webhookへ落とすと同じ応募が別レコードになり得るため、失敗を呼び出し側へ返す。
-      if (ctx.submissionId) throw e;
+      // ⚠️ ここで throw してはいけない。
+      //
+      // #89 は「submission_id を持つ新経路は直接 Base upsert が冪等性の正本で、Webhook へ落とすと
+      // 同じ応募が別レコードになり得る」として失敗を呼び出し側へ返していた。その結果、
+      // 2026-09-17 17:55 のデプロイ直後から直書きの失敗が 500 になり、通知もメールもSMSもCAPIも
+      // 走らないまま応募が消えた。自社LP経由の応募は5日間ゼロ（約90件）。
+      //
+      // 重複レコードは後から統合できる。失われた応募は戻らない。フォールバックを優先する。
     }
   }
 
-  if (target && ctx.submissionId) {
-    throw new Error(`Lark Base direct credentials are not configured (${target.profile}).`);
+  if (target && !isLarkBaseConfigured(target.profile)) {
+    console.error(`Lark Base 直書きの認証情報が未設定、Webhook にフォールバック (${target.profile})`);
   }
 
   if (baseWebhookUrl) {
@@ -677,11 +684,30 @@ export async function POST(request: NextRequest) {
     try {
       baseSave = await saveToBase(baseWriteCtx, baseWebhookUrl, basePayload);
     } catch (error) {
-      console.error('Lark Base save failed; notification was not sent:', `submission=${submissionId} ${describeError(error)}`);
+      // ⚠️ ここで 500 を返してはいけない。この行より後ろに Lark通知・確認メール・SMS・
+      // Meta CAPI・OpenAI CAPI が全部ある。500 で抜けると応募者の氏名・電話・メールが
+      // どこにも残らない（2026-09-17〜09-23 の障害。自社LP経由の応募が5日間ゼロ）。
+      // Base に入らなくても、Lark通知の本文には応募内容が全部載る。通知だけは必ず出す。
+      const reason = describeError(error);
+      console.error('Lark Base save failed; 通知は継続する:', `submission=${submissionId} ${reason}`);
+      baseSave = { notificationAlreadySent: false, baseSaveFailed: reason };
+    }
+
+    // 不変条件: 直書き・Base Webhook・Lark通知のいずれか1つに応募内容が残ったときだけ 200 を返す。
+    // どこにも残せないなら 200 にしてはいけない。応募者が「送信できた」と思って離脱し、
+    // こちらは応募があったことすら分からなくなる（それが 2026-09-17〜09-23 の障害）。
+    if (baseSave.baseSaveFailed && !larkChatId && !larkWebhookUrl) {
+      console.error(
+        '応募をどこにも記録できない（Base保存が失敗し、通知先も未設定）:',
+        `submission=${submissionId} ${baseSave.baseSaveFailed}`,
+      );
       return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
     }
 
-    if (sendBaseOnly) {
+    // Base 保存が全滅したときは LARK_SEND_BASE_ONLY を無視して通知へ進む。
+    // base-only のまま 200 を返すと、記録も通知も無いまま応募が消える。
+    let larkNotified = false;
+    if (sendBaseOnly && !baseSave.baseSaveFailed) {
       return NextResponse.json({
         message: 'Application submitted successfully!',
         recordId: baseSave.recordId,
@@ -710,15 +736,19 @@ export async function POST(request: NextRequest) {
     }
 
     // Base確定後に通知し、成功状態をBaseへ書き戻す。以降のメール/SMS/CAPIは並列・非致命。
-    if (!sendBaseOnly) {
+    if (!sendBaseOnly || baseSave.baseSaveFailed) {
       const tasks: Promise<void>[] = [];
 
       // Lark 送信タスク
       if (larkChatId || larkWebhookUrl) {
-        const title = isMechanic
+        const baseTitle = isMechanic
           ? '整備士の応募がありました！'
           : isCoupang ? 'クーパンの応募がありました！'
           : isTruck ? 'トラックドライバーの応募がありました！' : '新しい応募がありました！';
+        // Base に保存できなかった応募は、この通知が唯一の記録になる。手入力が要ることを本文の先頭で示す。
+        const title = baseSave.baseSaveFailed
+          ? `⚠️Base未登録（手入力が必要）／${baseTitle}`
+          : baseTitle;
         // Base列と同じ語彙(getMediaName)に揃えたうえで、生の medium を括弧で残す。
         // 以前は displaySource だけを通していたため、同じ応募が通知では「youtube(referral)」・
         // Baseでは「YouTube」と別名で出ていた。一方で媒体名だけにすると meta+cpc と meta+ad が
@@ -793,6 +823,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
           );
           if (apiResult.ok) {
             notificationSent = true;
+            larkNotified = true;
             console.log('Lark API notification sent successfully:', { messageId: apiResult.messageId });
           } else {
             // Webhookへ落とすと同じ応募が別経路で二重通知されるため、同じuuidでの再送に任せる。
@@ -822,6 +853,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
             return NextResponse.json({ message: 'Internal Server Error' }, { status: 502 });
           }
           notificationSent = true;
+          larkNotified = true;
           console.log('Lark webhook notification sent successfully:', result);
         }
         if (!notificationSent) {
@@ -973,6 +1005,15 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
 
       // 応募者メール/SMS/CAPIは非致命。BaseとLark通知は上で確定済み。
       await Promise.allSettled(tasks);
+    }
+
+    if (baseSave.baseSaveFailed && !larkNotified) {
+      // Base にも Lark にも残らなかった。200 を返すと応募がそのまま消える。
+      console.error(
+        '応募をどこにも記録できなかった（Base保存も Lark通知も失敗）:',
+        `submission=${submissionId} ${baseSave.baseSaveFailed}`,
+      );
+      return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
     }
 
     // クライアントには成功したことを返す
