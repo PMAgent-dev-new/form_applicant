@@ -31,6 +31,7 @@ import { assessCatalogTouch, type CatalogAttributionStatus } from '@/lib/catalog
 import { isMetaCatalogJob } from '@/lib/catalog-eligibility';
 import { fetchJobById } from '@/lib/microcms';
 import { describeError } from '@/lib/describe-error';
+import { findRecentRecordByPhone } from '@/lib/larkBase';
 import { saveToSubmissionVault } from '@/lib/submissionVault';
 
 // Bitable 直書きの投入先テーブル（env で上書き可）。
@@ -40,6 +41,12 @@ import { saveToSubmissionVault } from '@/lib/submissionVault';
 const RIDEJOB_TABLE_ID = process.env.LARK_BASE_TABLE_ID_RIDEJOB || 'tblO0pPqFyHqpVcj';
 const MECHANIC_TABLE_ID = process.env.LARK_BASE_TABLE_ID_MECHANIC_APPLICANTS || 'tblXcvtQJqoD2PIV';
 const LARK_FETCH_TIMEOUT_MS = 5000;
+/**
+ * Base Webhook フォールバックで「同じ電話番号なら同じ応募」とみなす時間窓。
+ * 送信ボタンの連打・再読み込みによる再送を束ねるのが目的で、
+ * 同じ人が日をまたいで別職種に応募し直すのは別の応募として通す。
+ */
+const DUPLICATE_WINDOW_MS = 30 * 60 * 1000;
 
 type LarkWebhookResult = {
   code?: number | string;
@@ -361,6 +368,31 @@ async function saveToBase(
   }
 
   if (baseWebhookUrl) {
+    // Base 自動化 Webhook には冪等性が無い。直書きが失敗し続けている間、
+    // 応募者が送信を繰り返すと同じ応募が何行も増える（2026-09-23 に実際に発生。
+    // 自社LP経由45レコードに対し実人数8人・最多15行）。
+    // 作る前に、同じ電話番号の応募が直近にないかを1回だけ確かめる。
+    if (target && ctx.form.phoneNumber) {
+      const dup = await findRecentRecordByPhone(
+        target.tableId, ctx.form.phoneNumber, DUPLICATE_WINDOW_MS, target.profile,
+      ).catch((e) => {
+        // 重複チェックの失敗で応募を落とさない。確認できなければ作る（消すより重複の方がまし）。
+        console.error('重複チェックに失敗、Webhookへ進む:', describeError(e));
+        return null;
+      });
+      if (dup) {
+        console.warn('同じ電話番号の応募が直近にあるため Base Webhook を呼ばない:', {
+          profile: target.profile, recordId: dup.recordId,
+        });
+        return {
+          recordId: dup.recordId,
+          savedVia: 'webhook',
+          notificationAlreadySent: false,
+          profile: target.profile,
+          tableId: target.tableId,
+        };
+      }
+    }
     const resp = await fetch(baseWebhookUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -862,9 +894,12 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
               ambiguous: apiResult.ambiguous,
               baseSaveFailed: Boolean(baseSave.baseSaveFailed),
             });
-            if (!baseSave.baseSaveFailed) {
-              return NextResponse.json({ message: 'Internal Server Error' }, { status: 502 });
-            }
+            // ⚠️ ここで 502 を返してはいけない。
+            // 応募者には「エラーが発生しました」と出て、送信を繰り返す。
+            // Base Webhook には冪等性が無いので、再送のたびにレコードが増える
+            // （2026-09-23: 自社LP経由45レコードに対し実人数8人・最多15行）。
+            // 応募が Base に残っているなら、通知の失敗は応募者の責任ではない。
+            // 通知が出せなかった事実は下の退避と invariant で拾う。
           }
         }
         if (!notificationSent && larkWebhookUrl) {
@@ -881,14 +916,26 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
               code: result.code ?? result.StatusCode,
               message: result.msg ?? result.StatusMessage,
             });
-            return NextResponse.json({ message: 'Internal Server Error' }, { status: 502 });
+            // ①と同じ理由で 502 を返さない。再送は重複を増やすだけ。
+          } else {
+            notificationSent = true;
+            larkNotified = true;
+            console.log('Lark webhook notification sent successfully:', result);
           }
-          notificationSent = true;
-          larkNotified = true;
-          console.log('Lark webhook notification sent successfully:', result);
         }
         if (!notificationSent) {
-          return NextResponse.json({ message: 'Internal Server Error' }, { status: 502 });
+          // 通知が1つも出せなかった。応募は Base に残っているので 200 で返すが、
+          // 誰も気づいていないので退避に残して監視で拾う。
+          console.error('Lark通知を1つも出せなかった（応募自体は記録済み）:', `submission=${submissionId}`);
+          vaultSaved = await saveToSubmissionVault({
+            source: 'form_applicant/applicants',
+            kind: 'application',
+            submissionId,
+            profile: resolveDirectBaseWrite(baseWriteCtx)?.profile,
+            reason: 'Lark通知に失敗（Base への保存は成功）',
+            notified: false,
+            payload: basePayload,
+          }) || vaultSaved;
         }
         if (baseSave.recordId) {
           const notificationFields = baseSave.profile === 'ridejob'

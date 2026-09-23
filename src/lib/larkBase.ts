@@ -404,6 +404,48 @@ export type BaseUpsertResult = {
 };
 
 /** Text列の一意キーで既存なら任意で更新し、無ければ作成する。 */
+/**
+ * 同じ応募が直近に入っていないかを、電話番号で1件だけ確かめる。
+ *
+ * ## なぜ電話番号で見るのか
+ *
+ * 冪等キー（submission_id）は Bitable への直書き経路にしか実装されていない。
+ * 直書きが失敗して Base 自動化 Webhook に落ちると、自動化は submission_id を
+ * 対応履歴メモに書かないため、次の再送で「既存レコードあり」と判定できず
+ * 同じ応募が何行も増える。
+ *
+ * 2026-09-23 に実際そうなった。#93 で Webhook フォールバックを戻した直後、
+ * 自社LP経由 45レコードに対し実人数は 8人（電話番号ベース・最多の人は15行）。
+ * 障害前の 9/16 は 25レコード / 24人 だった。
+ *
+ * 電話番号は必須項目で全件埋まっており、この経路で使える唯一の実質的な鍵。
+ * **完全な冪等キーではない**（同じ人が別職種へ応募する場合がある）ので、
+ * 直近の短い時間窓に限って「取り違え」より「重複」を止めることを優先する。
+ * 本来の解は直書きを直すことで、これはその間のつっかえ棒。
+ */
+export async function findRecentRecordByPhone(
+  tableId: string,
+  phoneNumber: string,
+  withinMs: number,
+  profile: LarkProfile = DEFAULT_PROFILE,
+): Promise<{ recordId: string; fields: Record<string, unknown> } | null> {
+  const cfg = readConfig(profile);
+  const phone = (phoneNumber || "").trim();
+  if (!cfg || !phone) return null;
+  const found = await searchRecordsByTextField(cfg, profile, tableId, "電話番号", phone, "is");
+  const now = Date.now();
+  for (const r of found) {
+    if (!r.record_id) continue;
+    const submittedAt = Number(r.fields?.["応募日"]);
+    // 応募日が読めない行は判定できない。**古いものとして扱わず、重複として扱う**。
+    // 取り違えるより、直近に同じ番号があるなら作らない方が被害が小さい。
+    if (!Number.isFinite(submittedAt) || now - submittedAt <= withinMs) {
+      return { recordId: r.record_id, fields: r.fields ?? {} };
+    }
+  }
+  return null;
+}
+
 export async function upsertBaseRecordByTextField(
   tableId: string,
   uniqueFieldName: string,

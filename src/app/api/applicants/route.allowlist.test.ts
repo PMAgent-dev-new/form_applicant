@@ -152,15 +152,25 @@ describe('applicants POST — outbound host allowlist', () => {
     expect(hosts.has('graph.facebook.com')).toBe(true);
   });
 
-  it('treats an HTTP 200 Lark API error body as a notification failure', async () => {
+  // 2026-09-23: 通知の失敗で 502 を返していたため、応募者に「エラーが発生しました」が出て
+  // 送信を繰り返し、冪等性の無い Base Webhook 経由で同じ応募が最大15行に増えた。
+  // 応募が Base に残っているなら、通知の失敗は応募者に再送させる理由にならない。
+  it('通知が HTTP200 のエラー本文で失敗しても、応募は通して退避に残す', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
       const url = String(input);
       if (url.includes('/im/v1/messages')) return Response.json({ code: 19021, msg: 'message rejected' });
+      if (url.includes('/bot/v2/hook/')) return Response.json({ code: 19021, msg: 'message rejected' });
       return successResponse(input, init);
     });
     const { POST } = await import('./route');
     const res = await POST(makeRequest(applicantBody));
-    expect(res.status).toBe(502);
+    expect(res.status, '再送させないこと。再送は重複を増やすだけ').toBe(200);
+    const vaultCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/rest/v1/submission_vault'));
+    expect(vaultCalls.length, '誰も気づいていないので退避に残すこと').toBe(1);
+    const body = JSON.parse(String((vaultCalls[0][1] as RequestInit)?.body ?? '{}'));
+    expect(body.notified, '通知は出せていないと記録すること').toBe(false);
+    errorSpy.mockRestore();
   });
 
   // 2026-09-17〜09-23: Base 保存が失敗すると 500 を返して通知も出していなかったため、
@@ -277,6 +287,59 @@ describe('applicants POST — outbound host allowlist', () => {
     const messageCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/im/v1/messages'));
     const sent = messageCalls.map(([, init]) => String((init as RequestInit)?.body ?? '')).join('\n');
     expect(sent, '退避にも失敗したことが通知で分かること').toContain('退避も失敗');
+    errorSpy.mockRestore();
+  });
+
+  // 2026-09-23 の重複事故の回帰テスト。
+  it('直近に同じ電話番号の応募があれば Base Webhook を呼ばない', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      const path = new URL(url).pathname;
+      // 直書きは失敗させる（いまの本番と同じ状況）
+      if (path.endsWith('/records') && init?.method === 'POST') {
+        return Response.json({ code: 4001, msg: 'mapping failed' });
+      }
+      // 重複チェックの検索には「直近の同じ電話番号」を1件返す
+      if (path.endsWith('/records/search')) {
+        const body = JSON.parse(String(init?.body ?? '{}'));
+        const cond = body?.filter?.conditions?.[0];
+        if (cond?.field_name === '電話番号') {
+          return Response.json({
+            code: 0,
+            data: { items: [{ record_id: 'rec_existing', fields: { 応募日: Date.now() } }] },
+          });
+        }
+        return Response.json({ code: 0, data: { items: [] } });
+      }
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+    expect(res.status).toBe(200);
+    const webhookCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/anycross/trigger/'));
+    expect(webhookCalls.length, '重複を作らないこと').toBe(0);
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it('直近に同じ電話番号が無ければ、これまでどおり Base Webhook で保存する', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      const path = new URL(url).pathname;
+      if (path.endsWith('/records') && init?.method === 'POST') {
+        return Response.json({ code: 4001, msg: 'mapping failed' });
+      }
+      if (path.endsWith('/records/search')) return Response.json({ code: 0, data: { items: [] } });
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+    expect(res.status).toBe(200);
+    const webhookCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/anycross/trigger/'));
+    expect(webhookCalls.length, '新規の応募は取りこぼさないこと').toBe(1);
     errorSpy.mockRestore();
   });
 
