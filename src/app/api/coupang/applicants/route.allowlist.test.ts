@@ -769,6 +769,33 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     errorSpy.mockRestore();
   });
 
+  // レビュー②の指摘: 上の base-only 2件は全 fetch を失敗させているため、
+  // 「Base が落ちたら通知へ進む」ことを検証できていない（通知の失敗で 500 になっている）。
+  it('Base-onlyモードでもBase保存が全滅したら通知へ進み、応募は通す', async () => {
+    vi.stubEnv('LARK_SEND_BASE_ONLY', 'true');
+    vi.resetModules();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input: unknown) => {
+      const url = String(input);
+      const isBase =
+        url.includes('/base/automation/webhook/event/')
+        || url.includes('/anycross/trigger/')
+        || url.includes('/records');
+      return isBase
+        ? Response.json({ StatusCode: 4001, StatusMessage: 'mapping failed' })
+        : Response.json({ code: 0 });
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(coupangBody));
+
+    expect(res.status).toBe(200);
+    const hookCalls = fetchSpy.mock.calls.filter((call) => String(call[0]).includes('/bot/v2/hook/'));
+    expect(hookCalls.length, 'base-only でも Base が落ちたら通知を出すこと').toBeGreaterThan(0);
+    const sent = hookCalls.map((call) => String((call[1] as RequestInit)?.body ?? '')).join('\n');
+    expect(sent, '手入力が要ることが通知から分かること').toContain('Base未登録');
+    errorSpy.mockRestore();
+  });
+
   it('AnyCrossのcallback形式をBase Webhookとして許可する', async () => {
     vi.stubEnv(
       'LARK_BASE_WEBHOOK_URL_COUPANG_PROD',

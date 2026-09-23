@@ -251,6 +251,12 @@ type BaseSaveResult = {
   recordId?: string;
   /** Base への保存が直書き・Webhook ともに失敗した。応募は通すが通知に印を付ける。 */
   baseSaveFailed?: string;
+  /**
+   * どの経路で Base に保存したか。通知の見出しに出して、Lark 側で件数を数えられるようにする。
+   * 直書きが失敗し続けていても `webhook` なら通知は普通に届くため、印が無いと
+   * 「直った」のか「静かに壊れたまま」なのかが区別できない（§4 の黙って壊れるもの）。
+   */
+  savedVia?: 'direct' | 'webhook';
   notificationAlreadySent: boolean;
   notificationInProgress?: boolean;
   notificationRecoveryOnly?: boolean;
@@ -321,6 +327,7 @@ async function saveToBase(
         });
         return {
           recordId: saved.recordId,
+          savedVia: 'direct',
           notificationAlreadySent,
           notificationInProgress,
           notificationRecoveryOnly,
@@ -334,14 +341,14 @@ async function saveToBase(
       }
       await createBaseRecord(target.tableId, target.fields, target.profile);
       console.log(`Lark Base 直書き成功 (${target.profile} / ${target.tableId})`);
-      return { notificationAlreadySent: false };
+      return { savedVia: 'direct', notificationAlreadySent: false };
     } catch (e) {
       console.error(`Lark Base 直書き失敗、Webhook にフォールバック (${target.profile}):`, describeError(e));
       // ⚠️ ここで throw してはいけない。
       //
       // #89 は「submission_id を持つ新経路は直接 Base upsert が冪等性の正本で、Webhook へ落とすと
       // 同じ応募が別レコードになり得る」として失敗を呼び出し側へ返していた。その結果、
-      // 2026-09-17 17:55 のデプロイ直後から直書きの失敗が 500 になり、通知もメールもSMSもCAPIも
+      // 2026-09-17 17:55:35 JST のデプロイ（ridejob-entry dpl_8STaHdMpMh6GEkV8zNWn7h5o9rGa）直後から直書きの失敗が 500 になり、通知もメールもSMSもCAPIも
       // 走らないまま応募が消えた。自社LP経由の応募は5日間ゼロ（約90件）。
       //
       // 重複レコードは後から統合できる。失われた応募は戻らない。フォールバックを優先する。
@@ -366,7 +373,7 @@ async function saveToBase(
       );
     }
     console.log('Lark Base webhook triggered successfully');
-    return { notificationAlreadySent: false };
+    return { savedVia: 'webhook', notificationAlreadySent: false };
   } else {
     throw new Error('Lark Base direct credentials and webhook URL are both not configured.');
   }
@@ -748,7 +755,11 @@ export async function POST(request: NextRequest) {
         // Base に保存できなかった応募は、この通知が唯一の記録になる。手入力が要ることを本文の先頭で示す。
         const title = baseSave.baseSaveFailed
           ? `⚠️Base未登録（手入力が必要）／${baseTitle}`
-          : baseTitle;
+          // Webhook 経由は直書きが失敗した証拠。AnyCross が受理だけして
+          // レコードを作らない「静かな失敗」もあるので、届いたレコードの確認を促す。
+          : baseSave.savedVia === 'webhook'
+            ? `⚠️Base直書き失敗（Webhook経由・要確認）／${baseTitle}`
+            : baseTitle;
         // Base列と同じ語彙(getMediaName)に揃えたうえで、生の medium を括弧で残す。
         // 以前は displaySource だけを通していたため、同じ応募が通知では「youtube(referral)」・
         // Baseでは「YouTube」と別名で出ていた。一方で媒体名だけにすると meta+cpc と meta+ad が
@@ -826,14 +837,19 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
             larkNotified = true;
             console.log('Lark API notification sent successfully:', { messageId: apiResult.messageId });
           } else {
-            // Webhookへ落とすと同じ応募が別経路で二重通知されるため、同じuuidでの再送に任せる。
+            // 通常は Webhook へ落とすと同じ応募が別経路で二重通知されるため、同じuuidでの再送に任せる。
+            // ただし Base 保存が全滅しているときは、この通知が唯一の記録になる。
+            // 502 で抜けると応募がどこにも残らないので、そのときだけ Webhook へフォールバックする。
             console.error('Lark API notification failed:', {
               status: apiResult.status,
               code: apiResult.code,
               message: apiResult.message,
               ambiguous: apiResult.ambiguous,
+              baseSaveFailed: Boolean(baseSave.baseSaveFailed),
             });
-            return NextResponse.json({ message: 'Internal Server Error' }, { status: 502 });
+            if (!baseSave.baseSaveFailed) {
+              return NextResponse.json({ message: 'Internal Server Error' }, { status: 502 });
+            }
           }
         }
         if (!notificationSent && larkWebhookUrl) {
