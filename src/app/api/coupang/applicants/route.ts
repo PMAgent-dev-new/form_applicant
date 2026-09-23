@@ -15,6 +15,7 @@ import { getMediaName } from '@/lib/media-name';
 import { resolveApplicationSourceMasterName } from '@/lib/lark-masters';
 import { isMetaAdsAttribution, isOpenAiAdsAttribution } from '@/lib/attribution';
 import { describeError } from '@/lib/describe-error';
+import { saveToSubmissionVault } from '@/lib/submissionVault';
 import {
   isLarkBaseConfigured,
   upsertBaseRecordByTextField,
@@ -539,6 +540,8 @@ export async function POST(request: NextRequest) {
     let notificationInProgress = false;
     /** 直書き・Webhook ともに失敗したときの理由。応募は通すが通知に印を付ける。 */
     let baseSaveFailed = '';
+    /** Base に入らなかった応募を Supabase の退避先に残せたか */
+    let vaultSaved = false;
     try {
       if (directBaseConfigured) {
         let saved = await upsertBaseRecordByTextField(
@@ -597,6 +600,16 @@ export async function POST(request: NextRequest) {
       // Base に入らなくても通知だけは必ず出す。
       baseSaveFailed = describeError(error);
       console.error('[coupang] Lark Base save failed; 通知は継続する:', `submission=${submissionId} ${baseSaveFailed}`);
+      // Lark に入らなかった応募を構造化して退避する（応募の成否には影響させない）。
+      vaultSaved = await saveToSubmissionVault({
+        source: 'form_applicant/coupang',
+        kind: 'application',
+        submissionId,
+        profile: 'liftjob',
+        reason: baseSaveFailed,
+        notified: false,
+        payload: basePayload,
+      });
     }
 
     if (sendBaseOnly && !baseSaveFailed) {
@@ -613,9 +626,9 @@ export async function POST(request: NextRequest) {
 
     // 不変条件: Base 保存が全滅したうえ通知先も無いなら、応募はどこにも残らない。
     // 200 を返すと応募者は「送信できた」と思って離脱し、こちらは応募があったことすら分からない。
-    if (baseSaveFailed && !notifyWebhookUrl) {
+    if (baseSaveFailed && !notifyWebhookUrl && !vaultSaved) {
       console.error(
-        '[coupang] 応募をどこにも記録できない（Base保存が失敗し、通知先も未設定）:',
+        '[coupang] 応募をどこにも記録できない（Base保存が失敗し、通知先も退避先も無い）:',
         `submission=${submissionId} ${baseSaveFailed}`,
       );
       return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
@@ -666,7 +679,7 @@ export async function POST(request: NextRequest) {
       });
       // Base に保存できなかった応募は、この通知が唯一の記録になる。手入力が要ることを先頭で示す。
       const notificationText = baseSaveFailed
-        ? `⚠️Base未登録（手入力が必要）\n${messageContent}`
+        ? `⚠️Base未登録（${vaultSaved ? '退避済み・要取り込み' : '退避も失敗・この通知が唯一の記録'}）\n${messageContent}`
         : messageContent;
       try {
         const resp = await fetch(notifyWebhookUrl, {

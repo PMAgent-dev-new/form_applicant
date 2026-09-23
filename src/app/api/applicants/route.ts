@@ -31,6 +31,7 @@ import { assessCatalogTouch, type CatalogAttributionStatus } from '@/lib/catalog
 import { isMetaCatalogJob } from '@/lib/catalog-eligibility';
 import { fetchJobById } from '@/lib/microcms';
 import { describeError } from '@/lib/describe-error';
+import { saveToSubmissionVault } from '@/lib/submissionVault';
 
 // Bitable 直書きの投入先テーブル（env で上書き可）。
 //   default / bus       → 求職者DB🚕   （ridejob base：APP_*_RIDEJOB）
@@ -688,6 +689,8 @@ export async function POST(request: NextRequest) {
     } as Record<string, unknown>;
 
     let baseSave: BaseSaveResult;
+    /** Base に入らなかった応募を Supabase の退避先に残せたか */
+    let vaultSaved = false;
     try {
       baseSave = await saveToBase(baseWriteCtx, baseWebhookUrl, basePayload);
     } catch (error) {
@@ -698,14 +701,26 @@ export async function POST(request: NextRequest) {
       const reason = describeError(error);
       console.error('Lark Base save failed; 通知は継続する:', `submission=${submissionId} ${reason}`);
       baseSave = { notificationAlreadySent: false, baseSaveFailed: reason };
+      // Lark に入らなかった応募を構造化して退避する。通知は流れて埋もれるため、
+      // 後から「取りこぼした応募」を機械的に数えられる受け皿を1つ持たせる。
+      // 退避の成否は応募の成否に影響させない（saveToSubmissionVault は投げない）。
+      vaultSaved = await saveToSubmissionVault({
+        source: 'form_applicant/applicants',
+        kind: 'application',
+        submissionId,
+        profile: resolveDirectBaseWrite(baseWriteCtx)?.profile,
+        reason,
+        notified: false,
+        payload: basePayload,
+      });
     }
 
     // 不変条件: 直書き・Base Webhook・Lark通知のいずれか1つに応募内容が残ったときだけ 200 を返す。
     // どこにも残せないなら 200 にしてはいけない。応募者が「送信できた」と思って離脱し、
     // こちらは応募があったことすら分からなくなる（それが 2026-09-17〜09-23 の障害）。
-    if (baseSave.baseSaveFailed && !larkChatId && !larkWebhookUrl) {
+    if (baseSave.baseSaveFailed && !larkChatId && !larkWebhookUrl && !vaultSaved) {
       console.error(
-        '応募をどこにも記録できない（Base保存が失敗し、通知先も未設定）:',
+        '応募をどこにも記録できない（Base保存が失敗し、通知先も退避先も無い）:',
         `submission=${submissionId} ${baseSave.baseSaveFailed}`,
       );
       return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
@@ -754,7 +769,7 @@ export async function POST(request: NextRequest) {
           : isTruck ? 'トラックドライバーの応募がありました！' : '新しい応募がありました！';
         // Base に保存できなかった応募は、この通知が唯一の記録になる。手入力が要ることを本文の先頭で示す。
         const title = baseSave.baseSaveFailed
-          ? `⚠️Base未登録（手入力が必要）／${baseTitle}`
+          ? `⚠️Base未登録（${vaultSaved ? '退避済み・要取り込み' : '退避も失敗・この通知が唯一の記録'}）／${baseTitle}`
           // Webhook 経由は直書きが失敗した証拠。AnyCross が受理だけして
           // レコードを作らない「静かな失敗」もあるので、届いたレコードの確認を促す。
           : baseSave.savedVia === 'webhook'
@@ -1023,10 +1038,10 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
       await Promise.allSettled(tasks);
     }
 
-    if (baseSave.baseSaveFailed && !larkNotified) {
+    if (baseSave.baseSaveFailed && !larkNotified && !vaultSaved) {
       // Base にも Lark にも残らなかった。200 を返すと応募がそのまま消える。
       console.error(
-        '応募をどこにも記録できなかった（Base保存も Lark通知も失敗）:',
+        '応募をどこにも記録できなかった（Base保存・Lark通知・退避のすべてが失敗）:',
         `submission=${submissionId} ${baseSave.baseSaveFailed}`,
       );
       return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });

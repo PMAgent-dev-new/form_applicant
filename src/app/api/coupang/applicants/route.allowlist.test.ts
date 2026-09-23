@@ -24,6 +24,7 @@ const ALLOWED_HOSTS = new Set([
   'test-base.jp.larksuite.com', // Lark Base Automation webhook（本番と同じURL形式のダミー）
   'leomeet.pmagent.jp', // eeasy SMS 共通エンドポイント
   'graph.facebook.com', // Meta Conversions API
+  'tdlnowmdanapxmgebaqu.supabase.co', // 応募の退避先(submission_vault)
   'bzr.openai.com', // ChatGPT Ads Conversions API
   // script.google.com は **意図的に外している**。
   // 選択肢マスタ(GAS)の取得は LP 側の /api/coupang/step1-options だけの仕事で、
@@ -55,6 +56,8 @@ const ALLOWLISTED_ENV: Record<string, string> = {
   SMS_SEND_SECRET: 'test-secret',
   NEXT_PUBLIC_META_PIXEL_ID: '1234567890',
   META_CAPI_ACCESS_TOKEN: 'test-capi-token',
+  SUBMISSION_VAULT_URL: 'https://tdlnowmdanapxmgebaqu.supabase.co',
+  SUBMISSION_VAULT_SERVICE_KEY: 'test-vault-key',
   OPENAI_ADS_PIXEL_ID: 'test-openai-pixel',
   OPENAI_ADS_CAPI_KEY: 'test-openai-key',
   GMAIL_SENDER_EMAIL: 'support_team@pmagent.jp',

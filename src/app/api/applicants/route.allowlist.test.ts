@@ -27,6 +27,7 @@ const ALLOWED_HOSTS = new Set([
   'open.larksuite.com', // Lark webhook / Base webhook
   'leomeet.pmagent.jp', // eeasy SMS 共通エンドポイント
   'graph.facebook.com', // Meta Conversions API
+  'tdlnowmdanapxmgebaqu.supabase.co', // 応募の退避先(submission_vault)
 ]);
 
 function hostOf(input: unknown): string {
@@ -58,6 +59,8 @@ const ALLOWLISTED_ENV: Record<string, string> = {
   SMS_SEND_SECRET: 'test-secret',
   NEXT_PUBLIC_META_PIXEL_ID: '1234567890',
   META_CAPI_ACCESS_TOKEN: 'test-capi-token',
+  SUBMISSION_VAULT_URL: 'https://tdlnowmdanapxmgebaqu.supabase.co',
+  SUBMISSION_VAULT_SERVICE_KEY: 'test-vault-key',
   GMAIL_SENDER_EMAIL: 'support_team@pmagent.jp',
   EMAIL_DRY_RUN: 'true',
 };
@@ -223,6 +226,57 @@ describe('applicants POST — outbound host allowlist', () => {
     expect(hookCalls.length, 'IM API が落ちても Webhook 通知で応募を残すこと').toBeGreaterThan(0);
     const sent = hookCalls.map(([, init]) => String((init as RequestInit)?.body ?? '')).join('\n');
     expect(sent).toContain('Base未登録');
+    errorSpy.mockRestore();
+  });
+
+  // Lark に入らなかった応募は Supabase の退避先に残す。通知は流れて埋もれるため、
+  // 「取りこぼした応募」を後から機械的に数えられる受け皿が要る。
+  it('Base が全滅したら応募内容を退避先へ書き、通知に「退避済み」と出す', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (new URL(url).pathname.endsWith('/records') && init?.method === 'POST') {
+        return Response.json({ code: 4001, msg: 'mapping failed' });
+      }
+      if (url.includes('/anycross/trigger/')) return Response.json({ code: 4001, msg: 'automation stopped' });
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+    expect(res.status).toBe(200);
+
+    const vaultCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/rest/v1/submission_vault'));
+    expect(vaultCalls.length, 'Base に入らなかった応募は退避すること').toBe(1);
+    const body = JSON.parse(String((vaultCalls[0][1] as RequestInit)?.body ?? '{}'));
+    expect(body.source).toBe('form_applicant/applicants');
+    expect(body.kind).toBe('application');
+    expect(body.submission_id, '冪等キーを持たせて再送を1行に畳めること').toBeTruthy();
+    expect(body.reason, 'なぜ退避したかが分かること').toContain('4001');
+    expect(body.payload?.full_name, '応募内容そのものが残ること').toBeTruthy();
+
+    const messageCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/im/v1/messages'));
+    const sent = messageCalls.map(([, init]) => String((init as RequestInit)?.body ?? '')).join('\n');
+    expect(sent, '通知から退避済みだと分かること').toContain('退避済み');
+    errorSpy.mockRestore();
+  });
+
+  it('退避先が落ちても応募は通す（退避は応募の成否に影響させない）', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (new URL(url).pathname.endsWith('/records') && init?.method === 'POST') {
+        return Response.json({ code: 4001, msg: 'mapping failed' });
+      }
+      if (url.includes('/anycross/trigger/')) return Response.json({ code: 4001, msg: 'automation stopped' });
+      if (url.includes('/rest/v1/submission_vault')) return new Response('boom', { status: 503 });
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+    expect(res.status).toBe(200);
+    const messageCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/im/v1/messages'));
+    const sent = messageCalls.map(([, init]) => String((init as RequestInit)?.body ?? '')).join('\n');
+    expect(sent, '退避にも失敗したことが通知で分かること').toContain('退避も失敗');
     errorSpy.mockRestore();
   });
 
