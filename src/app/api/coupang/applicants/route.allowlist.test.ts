@@ -662,7 +662,7 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     errorSpy.mockRestore();
   });
 
-  it('Base Webhookが HTTP200 でも StatusCode!==0 なら500にして失敗を記録する', async () => {
+  it('Base Webhookが HTTP200 でも StatusCode!==0 なら失敗として記録し、応募は通す', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     fetchSpy.mockImplementation(async (input: unknown) => {
       const isBase =
@@ -676,15 +676,21 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     const { POST } = await import('./route');
     const res = await POST(makeRequest(coupangBody));
 
-    expect(res.status).toBe(500);
+    // 2026-09-17〜09-23 の障害: ここで 500 を返していたため応募が丸ごと失われた。
+    // Base に入らなくても通知・メール・SMS は必ず走らせる。
+    expect(res.status).toBe(200);
     const logged = errorSpy.mock.calls.map((c) => c.join(' ')).join('\n');
     expect(logged).toContain('Lark Base save failed');
     expect(logged).toContain('4001');
-    expect(fetchSpy.mock.calls.some((call) => String(call[0]).includes('/bot/v2/hook/'))).toBe(false);
+    // Base に入らなかったからこそ、人が気づけるよう通知は必ず出す。
+    expect(
+      fetchSpy.mock.calls.some((call) => String(call[0]).includes('/bot/v2/hook/')),
+      'Base 失敗時こそ通知を出すこと',
+    ).toBe(true);
     errorSpy.mockRestore();
   });
 
-  it('Base Webhookが HTTP200 でも非JSONなら500にして失敗を記録する', async () => {
+  it('Base Webhookが HTTP200 でも非JSONなら失敗として記録し、応募は通す', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     fetchSpy.mockImplementation(async (input: unknown) => {
       const isBase =
@@ -700,15 +706,21 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     const { POST } = await import('./route');
     const res = await POST(makeRequest(coupangBody));
 
-    expect(res.status).toBe(500);
+    // 2026-09-17〜09-23 の障害: ここで 500 を返していたため応募が丸ごと失われた。
+    // Base に入らなくても通知・メール・SMS は必ず走らせる。
+    expect(res.status).toBe(200);
     const logged = errorSpy.mock.calls.map((c) => c.join(' ')).join('\n');
     expect(logged).toContain('Lark Base save failed');
     expect(logged).toContain('code=n/a');
-    expect(fetchSpy.mock.calls.some((call) => String(call[0]).includes('/bot/v2/hook/'))).toBe(false);
+    // Base に入らなかったからこそ、人が気づけるよう通知は必ず出す。
+    expect(
+      fetchSpy.mock.calls.some((call) => String(call[0]).includes('/bot/v2/hook/')),
+      'Base 失敗時こそ通知を出すこと',
+    ).toBe(true);
     errorSpy.mockRestore();
   });
 
-  it('通常モードのBase通信例外は500にし、後続の通知等を開始しない', async () => {
+  it('通常モードのBase通信例外でも応募は通し、失敗を記録する', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     fetchSpy.mockImplementation(async (input: unknown) => {
       if (String(input).includes('/base/automation/webhook/event/')) {
@@ -719,8 +731,10 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     const { POST } = await import('./route');
     const res = await POST(makeRequest(coupangBody));
 
-    expect(res.status).toBe(500);
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    // 2026-09-17〜09-23 の障害: ここで 500 を返していたため応募が丸ごと失われた。
+    // Base に入らなくても通知・メール・SMS は必ず走らせる。
+    expect(res.status).toBe(200);
+    expect(fetchSpy.mock.calls.length, '後続の通知等が開始されること').toBeGreaterThan(1);
     expect(errorSpy.mock.calls.flat().join(' ')).toContain('Lark Base save failed');
     errorSpy.mockRestore();
   });
@@ -752,6 +766,33 @@ describe('coupang applicants POST — outbound host allowlist', () => {
 
     expect(res.status).toBe(500);
     expect(errorSpy.mock.calls.flat().join(' ')).toContain('http=502');
+    errorSpy.mockRestore();
+  });
+
+  // レビュー②の指摘: 上の base-only 2件は全 fetch を失敗させているため、
+  // 「Base が落ちたら通知へ進む」ことを検証できていない（通知の失敗で 500 になっている）。
+  it('Base-onlyモードでもBase保存が全滅したら通知へ進み、応募は通す', async () => {
+    vi.stubEnv('LARK_SEND_BASE_ONLY', 'true');
+    vi.resetModules();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input: unknown) => {
+      const url = String(input);
+      const isBase =
+        url.includes('/base/automation/webhook/event/')
+        || url.includes('/anycross/trigger/')
+        || url.includes('/records');
+      return isBase
+        ? Response.json({ StatusCode: 4001, StatusMessage: 'mapping failed' })
+        : Response.json({ code: 0 });
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(coupangBody));
+
+    expect(res.status).toBe(200);
+    const hookCalls = fetchSpy.mock.calls.filter((call) => String(call[0]).includes('/bot/v2/hook/'));
+    expect(hookCalls.length, 'base-only でも Base が落ちたら通知を出すこと').toBeGreaterThan(0);
+    const sent = hookCalls.map((call) => String((call[1] as RequestInit)?.body ?? '')).join('\n');
+    expect(sent, '手入力が要ることが通知から分かること').toContain('Base未登録');
     errorSpy.mockRestore();
   });
 

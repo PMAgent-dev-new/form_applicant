@@ -160,7 +160,9 @@ describe('applicants POST — outbound host allowlist', () => {
     expect(res.status).toBe(502);
   });
 
-  it('treats an HTTP 200 Bitable error body as a Base failure and skips notification', async () => {
+  // 2026-09-17〜09-23: Base 保存が失敗すると 500 を返して通知も出していなかったため、
+  // 自社LP経由の応募が5日間まるごと失われた（約90件）。Base に入らなくても通知だけは必ず出す。
+  it('Bitable が HTTP200 でエラー本文を返しても、応募は通して通知を出す', async () => {
     fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
       const url = String(input);
       if (new URL(url).pathname.endsWith('/records') && init?.method === 'POST') {
@@ -170,9 +172,58 @@ describe('applicants POST — outbound host allowlist', () => {
     });
     const { POST } = await import('./route');
     const res = await POST(makeRequest(applicantBody));
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(200);
+    // 直書きは失敗しても Base Webhook へフォールバックするので、レコードは残る。
+    // 「フォールバックした」はログではなく呼び出しの実物で確かめる。
+    const fallbackCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/anycross/trigger/'));
+    expect(fallbackCalls.length, 'Base Webhook へフォールバックすること').toBeGreaterThan(0);
     const messageCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/im/v1/messages'));
-    expect(messageCalls).toHaveLength(0);
+    expect(messageCalls.length, 'Base が落ちたときこそ通知が唯一の記録になる').toBeGreaterThan(0);
+    const sent = messageCalls.map(([, init]) => String((init as RequestInit)?.body ?? '')).join('\n');
+    expect(sent, '直書きが失敗したことが通知から分かること').toContain('Base直書き失敗');
+  });
+
+  it('直書きも Base Webhook も落ちたら、通知に「Base未登録」を立てたうえで応募は通す', async () => {
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (new URL(url).pathname.endsWith('/records') && init?.method === 'POST') {
+        return Response.json({ code: 4001, msg: 'mapping failed' });
+      }
+      if (url.includes('/anycross/trigger/')) {
+        return Response.json({ code: 4001, msg: 'automation stopped' });
+      }
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+    expect(res.status).toBe(200);
+    const messageCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/im/v1/messages'));
+    expect(messageCalls.length, 'Base に残らない応募こそ通知が唯一の記録').toBeGreaterThan(0);
+    const sent = messageCalls.map(([, init]) => String((init as RequestInit)?.body ?? '')).join('\n');
+    expect(sent, '手入力が要ることが通知の先頭で分かること').toContain('Base未登録');
+  });
+
+  // レビュー②の指摘: Base が全滅しているときに IM API まで落ちると、
+  // 以前は 502 で抜けて応募がどこにも残らなかった。そのときだけ Webhook 通知へ落とす。
+  it('Base が全滅し IM API も落ちたら、Webhook 通知へ落として応募は通す', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (new URL(url).pathname.endsWith('/records') && init?.method === 'POST') {
+        return Response.json({ code: 4001, msg: 'mapping failed' });
+      }
+      if (url.includes('/anycross/trigger/')) return Response.json({ code: 4001, msg: 'automation stopped' });
+      if (url.includes('/im/v1/messages')) return Response.json({ code: 19021, msg: 'message rejected' });
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+    expect(res.status).toBe(200);
+    const hookCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/bot/v2/hook/'));
+    expect(hookCalls.length, 'IM API が落ちても Webhook 通知で応募を残すこと').toBeGreaterThan(0);
+    const sent = hookCalls.map(([, init]) => String((init as RequestInit)?.body ?? '')).join('\n');
+    expect(sent).toContain('Base未登録');
+    errorSpy.mockRestore();
   });
 
   it('the allowlist check itself has teeth', () => {
