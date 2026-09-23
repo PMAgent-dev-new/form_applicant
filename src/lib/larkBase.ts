@@ -335,8 +335,12 @@ async function searchRecordsByTextField(
   fieldName: string,
   value: string,
   operator: "is" | "contains" = "is",
+  // 一意キーの upsert は2件あれば「複数件」を検出できるので既定は2のまま。
+  // 電話番号のように1人が複数行を持ちうる検索では、呼び出し側が広げて新しい順に並べる。
+  opts: { pageSize?: number; sortByNewest?: boolean } = {},
 ): Promise<SearchRecord[]> {
-  const url = `${cfg.domain}/open-apis/bitable/v1/apps/${cfg.appToken}/tables/${tableId}/records/search?page_size=2`;
+  const pageSize = opts.pageSize ?? 2;
+  const url = `${cfg.domain}/open-apis/bitable/v1/apps/${cfg.appToken}/tables/${tableId}/records/search?page_size=${pageSize}`;
   const result = await withTokenRefresh(cfg, profile, async (token) => {
     const res = await fetch(url, {
       method: "POST",
@@ -349,6 +353,10 @@ async function searchRecordsByTextField(
           conjunction: "and",
           conditions: [{ field_name: fieldName, operator, value: [value] }],
         },
+        // 並び順を指定しないと、Lark の既定順（概ね作成順）の先頭 pageSize 件しか返らない。
+        // 同じ電話番号に古い行が複数あると新しい行が落ち、重複判定がいちばん効いてほしい
+        // 相手（既に何行もある人）に効かなくなる。
+        ...(opts.sortByNewest ? { sort: [{ field_name: "応募日", desc: true }] } : {}),
       }),
       signal: AbortSignal.timeout(5000),
     });
@@ -404,6 +412,58 @@ export type BaseUpsertResult = {
 };
 
 /** Text列の一意キーで既存なら任意で更新し、無ければ作成する。 */
+/**
+ * 同じ応募が直近に入っていないかを、電話番号で1件だけ確かめる。
+ *
+ * ## なぜ電話番号で見るのか
+ *
+ * 冪等キー（submission_id）は Bitable への直書き経路にしか実装されていない。
+ * 直書きが失敗して Base 自動化 Webhook に落ちると、自動化は submission_id を
+ * 対応履歴メモに書かないため、次の再送で「既存レコードあり」と判定できず
+ * 同じ応募が何行も増える。
+ *
+ * 2026-09-23 に実際そうなった。#93 で Webhook フォールバックを戻した直後、
+ * 自社LP経由 45レコードに対し実人数は 8人（電話番号ベース・最多の人は15行）。
+ * 障害前の 9/16 は 25レコード / 24人 だった。
+ *
+ * 電話番号は必須項目で全件埋まっており、この経路で使える唯一の実質的な鍵。
+ * **完全な冪等キーではない**（同じ人が別職種へ応募する場合がある）ので、
+ * 直近の短い時間窓に限って「取り違え」より「重複」を止めることを優先する。
+ * 本来の解は直書きを直すことで、これはその間のつっかえ棒。
+ */
+export async function findRecentRecordByPhone(
+  tableId: string,
+  phoneNumber: string,
+  withinMs: number,
+  profile: LarkProfile = DEFAULT_PROFILE,
+): Promise<{ recordId: string; fields: Record<string, unknown> } | null> {
+  const cfg = readConfig(profile);
+  const phone = (phoneNumber || "").trim();
+  if (!cfg || !phone) return null;
+  // 1人が複数行を持ちうるので、件数を広げて新しい順に取る。
+  const found = await searchRecordsByTextField(
+    cfg, profile, tableId, "電話番号", phone, "is",
+    { pageSize: 20, sortByNewest: true },
+  );
+  const now = Date.now();
+  for (const r of found) {
+    if (!r.record_id) continue;
+    const submittedAt = Number(r.fields?.["応募日"]);
+    // ⚠️ 応募日が読めない行は**重複と判定しない**。
+    //
+    // 求職者DB🚕 は Meta・Indeed・自社HP など全チャネルの応募が入るテーブルで、
+    // 応募日が埋まっていない行（手入力・他媒体の取り込み）が混ざる。これを
+    // 「直近の重複」とみなすと、半年前の別応募のせいで今回の応募が1行も作られない。
+    // #89 の教訓どおり、重複は後から統合できるが、失われた応募は戻らない。
+    // 判定できない行は「窓の外」として扱い、作る側に倒す。
+    if (!Number.isFinite(submittedAt) || submittedAt <= 0) continue;
+    if (now - submittedAt <= withinMs) {
+      return { recordId: r.record_id, fields: r.fields ?? {} };
+    }
+  }
+  return null;
+}
+
 export async function upsertBaseRecordByTextField(
   tableId: string,
   uniqueFieldName: string,

@@ -27,6 +27,7 @@ const ALLOWED_HOSTS = new Set([
   'open.larksuite.com', // Lark webhook / Base webhook
   'leomeet.pmagent.jp', // eeasy SMS 共通エンドポイント
   'graph.facebook.com', // Meta Conversions API
+  'tdlnowmdanapxmgebaqu.supabase.co', // 応募の退避先(submission_vault)
 ]);
 
 function hostOf(input: unknown): string {
@@ -58,6 +59,8 @@ const ALLOWLISTED_ENV: Record<string, string> = {
   SMS_SEND_SECRET: 'test-secret',
   NEXT_PUBLIC_META_PIXEL_ID: '1234567890',
   META_CAPI_ACCESS_TOKEN: 'test-capi-token',
+  SUBMISSION_VAULT_URL: 'https://tdlnowmdanapxmgebaqu.supabase.co',
+  SUBMISSION_VAULT_SERVICE_KEY: 'test-vault-key',
   GMAIL_SENDER_EMAIL: 'support_team@pmagent.jp',
   EMAIL_DRY_RUN: 'true',
 };
@@ -149,15 +152,28 @@ describe('applicants POST — outbound host allowlist', () => {
     expect(hosts.has('graph.facebook.com')).toBe(true);
   });
 
-  it('treats an HTTP 200 Lark API error body as a notification failure', async () => {
+  // 2026-09-23: 通知の失敗で 502 を返していたため、応募者に「エラーが発生しました」が出て
+  // 送信を繰り返し、冪等性の無い Base Webhook 経由で同じ応募が最大15行に増えた。
+  // 応募が Base に残っているなら、通知の失敗は応募者に再送させる理由にならない。
+  it('通知が HTTP200 のエラー本文で失敗しても、応募は通して退避に残す', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
       const url = String(input);
       if (url.includes('/im/v1/messages')) return Response.json({ code: 19021, msg: 'message rejected' });
+      if (url.includes('/bot/v2/hook/')) return Response.json({ code: 19021, msg: 'message rejected' });
       return successResponse(input, init);
     });
     const { POST } = await import('./route');
     const res = await POST(makeRequest(applicantBody));
-    expect(res.status).toBe(502);
+    expect(res.status, '再送させないこと。再送は重複を増やすだけ').toBe(200);
+    const vaultCalls = fetchSpy.mock.calls.filter(
+      ([input, init]) => String(input).includes('/rest/v1/submission_vault')
+        && (init as RequestInit)?.method === 'POST',
+    );
+    expect(vaultCalls.length, '誰も気づいていないので退避に残すこと').toBe(1);
+    const body = JSON.parse(String((vaultCalls[0][1] as RequestInit)?.body ?? '{}'));
+    expect(body.notified, '通知は出せていないと記録すること').toBe(false);
+    errorSpy.mockRestore();
   });
 
   // 2026-09-17〜09-23: Base 保存が失敗すると 500 を返して通知も出していなかったため、
@@ -223,6 +239,161 @@ describe('applicants POST — outbound host allowlist', () => {
     expect(hookCalls.length, 'IM API が落ちても Webhook 通知で応募を残すこと').toBeGreaterThan(0);
     const sent = hookCalls.map(([, init]) => String((init as RequestInit)?.body ?? '')).join('\n');
     expect(sent).toContain('Base未登録');
+    errorSpy.mockRestore();
+  });
+
+  // Lark に入らなかった応募は Supabase の退避先に残す。通知は流れて埋もれるため、
+  // 「取りこぼした応募」を後から機械的に数えられる受け皿が要る。
+  it('Base が全滅したら応募内容を退避先へ書き、通知に「退避済み」と出す', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (new URL(url).pathname.endsWith('/records') && init?.method === 'POST') {
+        return Response.json({ code: 4001, msg: 'mapping failed' });
+      }
+      if (url.includes('/anycross/trigger/')) return Response.json({ code: 4001, msg: 'automation stopped' });
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+    expect(res.status).toBe(200);
+
+    const vaultCalls = fetchSpy.mock.calls.filter(
+      ([input, init]) => String(input).includes('/rest/v1/submission_vault')
+        && (init as RequestInit)?.method === 'POST',
+    );
+    expect(vaultCalls.length, 'Base に入らなかった応募は退避すること').toBe(1);
+    const body = JSON.parse(String((vaultCalls[0][1] as RequestInit)?.body ?? '{}'));
+    expect(body.source).toBe('form_applicant/applicants');
+    expect(body.kind).toBe('application');
+    expect(body.submission_id, '冪等キーを持たせて再送を1行に畳めること').toBeTruthy();
+    expect(body.reason, 'なぜ退避したかが分かること').toContain('4001');
+    expect(body.payload?.full_name, '応募内容そのものが残ること').toBeTruthy();
+
+    const messageCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/im/v1/messages'));
+    const sent = messageCalls.map(([, init]) => String((init as RequestInit)?.body ?? '')).join('\n');
+    expect(sent, '通知から退避済みだと分かること').toContain('退避済み');
+    errorSpy.mockRestore();
+  });
+
+  it('退避先が落ちても応募は通す（退避は応募の成否に影響させない）', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (new URL(url).pathname.endsWith('/records') && init?.method === 'POST') {
+        return Response.json({ code: 4001, msg: 'mapping failed' });
+      }
+      if (url.includes('/anycross/trigger/')) return Response.json({ code: 4001, msg: 'automation stopped' });
+      if (url.includes('/rest/v1/submission_vault')) return new Response('boom', { status: 503 });
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+    expect(res.status).toBe(200);
+    const messageCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/im/v1/messages'));
+    const sent = messageCalls.map(([, init]) => String((init as RequestInit)?.body ?? '')).join('\n');
+    expect(sent, '退避にも失敗したことが通知で分かること').toContain('退避も失敗');
+    errorSpy.mockRestore();
+  });
+
+  // 2026-09-23 の重複事故の回帰テスト。
+  it('直近に同じ電話番号の応募があれば Base Webhook を呼ばない', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      const path = new URL(url).pathname;
+      // 直書きは失敗させる（いまの本番と同じ状況）
+      if (path.endsWith('/records') && init?.method === 'POST') {
+        return Response.json({ code: 4001, msg: 'mapping failed' });
+      }
+      // 重複チェックの検索には「直近の同じ電話番号」を1件返す
+      if (path.endsWith('/records/search')) {
+        const body = JSON.parse(String(init?.body ?? '{}'));
+        const cond = body?.filter?.conditions?.[0];
+        if (cond?.field_name === '電話番号') {
+          return Response.json({
+            code: 0,
+            data: { items: [{ record_id: 'rec_existing', fields: { 応募日: Date.now() } }] },
+          });
+        }
+        return Response.json({ code: 0, data: { items: [] } });
+      }
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+    expect(res.status).toBe(200);
+    const webhookCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/anycross/trigger/'));
+    expect(webhookCalls.length, '重複を作らないこと').toBe(0);
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it('重複とみなした既存レコードには書き戻さない（他人のメモと冪等キーを消さないため）', async () => {
+    // putRecord は PUT で列を**置換**する。重複先は自分が作った行ではないので、
+    // ここへ通知済み印を書くと営業の記入・[submission_id:] 冪等キー・カタログ帰属行が消える。
+    // 冪等キーが消えると直書き経路が同じ応募をもう一度作る＝重複を止める処理が重複を作る。
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      const path = new URL(url).pathname;
+      if (path.endsWith('/records') && init?.method === 'POST') {
+        return Response.json({ code: 4001, msg: 'mapping failed' });
+      }
+      if (path.endsWith('/records/search')) {
+        const body = JSON.parse(String(init?.body ?? '{}'));
+        if (body?.filter?.conditions?.[0]?.field_name === '電話番号') {
+          return Response.json({
+            code: 0,
+            data: {
+              items: [{
+                record_id: 'rec_existing',
+                fields: { 応募日: Date.now(), 対応履歴メモ: '[submission_id:other]\n営業が架電済み' },
+              }],
+            },
+          });
+        }
+        return Response.json({ code: 0, data: { items: [] } });
+      }
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+    expect(res.status).toBe(200);
+
+    const writes = fetchSpy.mock.calls.filter(
+      ([input, init]) => String(input).includes('/records/rec_existing')
+        && ['PUT', 'PATCH'].includes(String((init as RequestInit)?.method ?? '')),
+    );
+    expect(writes.length, '既存レコードを書き換えないこと').toBe(0);
+
+    // 人が気づけるよう、通知は「再送・行は増やしていない」と分かる形で出す。
+    const im = fetchSpy.mock.calls.find(([input]) => String(input).includes('/im/v1/messages'));
+    expect(im, '重複でも通知は出すこと').toBeTruthy();
+    expect(String((im?.[1] as RequestInit)?.body ?? '')).toContain('再送');
+
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it('直近に同じ電話番号が無ければ、これまでどおり Base Webhook で保存する', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      const path = new URL(url).pathname;
+      if (path.endsWith('/records') && init?.method === 'POST') {
+        return Response.json({ code: 4001, msg: 'mapping failed' });
+      }
+      if (path.endsWith('/records/search')) return Response.json({ code: 0, data: { items: [] } });
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+    expect(res.status).toBe(200);
+    const webhookCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/anycross/trigger/'));
+    expect(webhookCalls.length, '新規の応募は取りこぼさないこと').toBe(1);
     errorSpy.mockRestore();
   });
 

@@ -24,6 +24,7 @@ const ALLOWED_HOSTS = new Set([
   'test-base.jp.larksuite.com', // Lark Base Automation webhook（本番と同じURL形式のダミー）
   'leomeet.pmagent.jp', // eeasy SMS 共通エンドポイント
   'graph.facebook.com', // Meta Conversions API
+  'tdlnowmdanapxmgebaqu.supabase.co', // 応募の退避先(submission_vault)
   'bzr.openai.com', // ChatGPT Ads Conversions API
   // script.google.com は **意図的に外している**。
   // 選択肢マスタ(GAS)の取得は LP 側の /api/coupang/step1-options だけの仕事で、
@@ -55,6 +56,8 @@ const ALLOWLISTED_ENV: Record<string, string> = {
   SMS_SEND_SECRET: 'test-secret',
   NEXT_PUBLIC_META_PIXEL_ID: '1234567890',
   META_CAPI_ACCESS_TOKEN: 'test-capi-token',
+  SUBMISSION_VAULT_URL: 'https://tdlnowmdanapxmgebaqu.supabase.co',
+  SUBMISSION_VAULT_SERVICE_KEY: 'test-vault-key',
   OPENAI_ADS_PIXEL_ID: 'test-openai-pixel',
   OPENAI_ADS_CAPI_KEY: 'test-openai-key',
   GMAIL_SENDER_EMAIL: 'support_team@pmagent.jp',
@@ -598,8 +601,10 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     expect(payload.landing_path).toBe('/entry/coupang');
   });
 
-  it('Lark通知が落ちたら500にし、SMSとCAPIを開始しない', async () => {
-    // Baseはsubmission_idでupsert済みなので、同じIDの再送で重複せず通知を回復できる。
+  // 2026-09-23 改訂: 通知の失敗で 500 を返すと、応募者に「エラーが発生しました」が出て
+  // 再送し、冪等性の無い Webhook 経路で重複が増える（RIDE JOB 側で実際に起きた）。
+  // 応募が Base に残っているなら通知の失敗は応募者に転嫁せず、退避に残して監視で拾う。
+  it('Lark通知が落ちても応募は通し、退避に残す', async () => {
     fetchSpy.mockImplementation(async (input: unknown) => {
       if (hostOf(input) === 'open.larksuite.com' && String(input).includes('/bot/v2/hook/')) {
         throw new TypeError('fetch failed');
@@ -612,10 +617,13 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     const { POST } = await import('./route');
     const res = await POST(makeRequest(coupangBody));
 
-    expect(res.status).toBe(500);
-    const hosts = new Set(fetchSpy.mock.calls.map((call) => hostOf(call[0])));
-    expect(hosts.has('leomeet.pmagent.jp')).toBe(false);
-    expect(hosts.has('graph.facebook.com')).toBe(false);
+    expect(res.status, '再送させない。再送は重複を増やすだけ').toBe(200);
+    const vaultPosts = fetchSpy.mock.calls.filter(
+      ([input, init]) => String(input).includes('/rest/v1/submission_vault')
+        && (init as RequestInit)?.method === 'POST',
+    );
+    expect(vaultPosts.length, '誰も気づいていないので退避に残すこと').toBe(1);
+    expect(JSON.parse(String((vaultPosts[0][1] as RequestInit)?.body ?? '{}')).notified).toBe(false);
   });
 
   it('Larkが HTTP200 でも code!==0 なら失敗として記録する', async () => {
@@ -633,9 +641,9 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     const { POST } = await import('./route');
     const res = await POST(makeRequest(coupangBody));
 
-    expect(res.status).toBe(500);
+    expect(res.status, '応募は Base に入っているので通さないと再送で重複する').toBe(200);
     const logged = errorSpy.mock.calls.map((c) => c.join(' ')).join('\n');
-    expect(logged).toContain('Failed to send notification to Lark');
+    expect(logged).toContain('Lark通知に失敗（応募は記録済み）');
     expect(logged).toContain('19001');
     errorSpy.mockRestore();
   });
@@ -655,9 +663,9 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     const { POST } = await import('./route');
     const res = await POST(makeRequest(coupangBody));
 
-    expect(res.status).toBe(500);
+    expect(res.status, '応募は Base に入っているので通さないと再送で重複する').toBe(200);
     const logged = errorSpy.mock.calls.map((c) => c.join(' ')).join('\n');
-    expect(logged).toContain('Failed to send notification to Lark');
+    expect(logged).toContain('Lark通知に失敗（応募は記録済み）');
     expect(logged).toContain('code=n/a');
     errorSpy.mockRestore();
   });
@@ -746,7 +754,17 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     fetchSpy.mockResolvedValue(
       new Response('accepted', { status: 200, headers: { 'content-type': 'text/plain' } }),
     );
-    const { POST } = await import('./route');
+        // 退避も落ちる＝応募がどこにも残らない。このときだけ 500 を返す。
+    const prev = fetchSpy.getMockImplementation?.() as
+      | ((input: unknown, init?: RequestInit) => Promise<Response>)
+      | undefined;
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      if (String(input).includes('/rest/v1/submission_vault')) {
+        return new Response('boom', { status: 503 });
+      }
+      return prev ? prev(input, init) : new Response('accepted', { status: 200 });
+    });
+const { POST } = await import('./route');
     const res = await POST(makeRequest(coupangBody));
 
     expect(res.status).toBe(500);
@@ -761,7 +779,17 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     vi.resetModules();
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     fetchSpy.mockResolvedValue(Response.json({ code: 5001, msg: 'failed' }, { status: 502 }));
-    const { POST } = await import('./route');
+        // 退避も落ちる＝応募がどこにも残らない。このときだけ 500 を返す。
+    const prev = fetchSpy.getMockImplementation?.() as
+      | ((input: unknown, init?: RequestInit) => Promise<Response>)
+      | undefined;
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      if (String(input).includes('/rest/v1/submission_vault')) {
+        return new Response('boom', { status: 503 });
+      }
+      return prev ? prev(input, init) : new Response('accepted', { status: 200 });
+    });
+const { POST } = await import('./route');
     const res = await POST(makeRequest(coupangBody));
 
     expect(res.status).toBe(500);

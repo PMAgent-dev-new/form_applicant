@@ -31,6 +31,8 @@ import { assessCatalogTouch, type CatalogAttributionStatus } from '@/lib/catalog
 import { isMetaCatalogJob } from '@/lib/catalog-eligibility';
 import { fetchJobById } from '@/lib/microcms';
 import { describeError } from '@/lib/describe-error';
+import { findRecentRecordByPhone } from '@/lib/larkBase';
+import { markSubmissionVaultNotified, saveToSubmissionVault } from '@/lib/submissionVault';
 
 // Bitable 直書きの投入先テーブル（env で上書き可）。
 //   default / bus       → 求職者DB🚕   （ridejob base：APP_*_RIDEJOB）
@@ -39,6 +41,15 @@ import { describeError } from '@/lib/describe-error';
 const RIDEJOB_TABLE_ID = process.env.LARK_BASE_TABLE_ID_RIDEJOB || 'tblO0pPqFyHqpVcj';
 const MECHANIC_TABLE_ID = process.env.LARK_BASE_TABLE_ID_MECHANIC_APPLICANTS || 'tblXcvtQJqoD2PIV';
 const LARK_FETCH_TIMEOUT_MS = 5000;
+/**
+ * Base Webhook フォールバックで「同じ電話番号なら同じ応募」とみなす時間窓。
+ * 送信ボタンの連打・再読み込みによる再送を束ねるのが目的で、
+ * **Lark IM の uuid 重複排除（1時間・larkBase.ts の sendLarkTextMessage）に合わせている。**
+ * ここを短くすると、窓の外・IMの窓の内（例: T+40分）の再送で
+ * 「Base には新しい行ができるのに通知は重複排除されて出ない」＝誰も気づかない行が生まれる。
+ * 2つの窓は揃えること。
+ */
+const DUPLICATE_WINDOW_MS = 60 * 60 * 1000;
 
 type LarkWebhookResult = {
   code?: number | string;
@@ -252,6 +263,11 @@ type BaseSaveResult = {
   /** Base への保存が直書き・Webhook ともに失敗した。応募は通すが通知に印を付ける。 */
   baseSaveFailed?: string;
   /**
+   * 既存レコードを「同じ応募」とみなして新しい行を作らなかった。
+   * このレコードは**こちらが作ったものではない**ので、書き戻しをしてはいけない。
+   */
+  dedupedExisting?: true;
+  /**
    * どの経路で Base に保存したか。通知の見出しに出して、Lark 側で件数を数えられるようにする。
    * 直書きが失敗し続けていても `webhook` なら通知は普通に届くため、印が無いと
    * 「直った」のか「静かに壊れたまま」なのかが区別できない（§4 の黙って壊れるもの）。
@@ -360,6 +376,32 @@ async function saveToBase(
   }
 
   if (baseWebhookUrl) {
+    // Base 自動化 Webhook には冪等性が無い。直書きが失敗し続けている間、
+    // 応募者が送信を繰り返すと同じ応募が何行も増える（2026-09-23 に実際に発生。
+    // 自社LP経由45レコードに対し実人数8人・最多15行）。
+    // 作る前に、同じ電話番号の応募が直近にないかを1回だけ確かめる。
+    if (target && ctx.form.phoneNumber) {
+      const dup = await findRecentRecordByPhone(
+        target.tableId, ctx.form.phoneNumber, DUPLICATE_WINDOW_MS, target.profile,
+      ).catch((e) => {
+        // 重複チェックの失敗で応募を落とさない。確認できなければ作る（消すより重複の方がまし）。
+        console.error('重複チェックに失敗、Webhookへ進む:', describeError(e));
+        return null;
+      });
+      if (dup) {
+        console.warn('同じ電話番号の応募が直近にあるため Base Webhook を呼ばない:', {
+          profile: target.profile, recordId: dup.recordId,
+        });
+        return {
+          recordId: dup.recordId,
+          dedupedExisting: true,
+          notificationAlreadySent: false,
+          profile: target.profile,
+          tableId: target.tableId,
+          memo: String(dup.fields['対応履歴メモ'] ?? '').trim() || undefined,
+        };
+      }
+    }
     const resp = await fetch(baseWebhookUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -688,6 +730,8 @@ export async function POST(request: NextRequest) {
     } as Record<string, unknown>;
 
     let baseSave: BaseSaveResult;
+    /** Base に入らなかった応募を Supabase の退避先に残せたか */
+    let vaultSaved = false;
     try {
       baseSave = await saveToBase(baseWriteCtx, baseWebhookUrl, basePayload);
     } catch (error) {
@@ -698,14 +742,26 @@ export async function POST(request: NextRequest) {
       const reason = describeError(error);
       console.error('Lark Base save failed; 通知は継続する:', `submission=${submissionId} ${reason}`);
       baseSave = { notificationAlreadySent: false, baseSaveFailed: reason };
+      // Lark に入らなかった応募を構造化して退避する。通知は流れて埋もれるため、
+      // 後から「取りこぼした応募」を機械的に数えられる受け皿を1つ持たせる。
+      // 退避の成否は応募の成否に影響させない（saveToSubmissionVault は投げない）。
+      vaultSaved = await saveToSubmissionVault({
+        source: 'form_applicant/applicants',
+        kind: 'application',
+        submissionId,
+        profile: resolveDirectBaseWrite(baseWriteCtx)?.profile,
+        reason,
+        notified: false,
+        payload: basePayload,
+      });
     }
 
     // 不変条件: 直書き・Base Webhook・Lark通知のいずれか1つに応募内容が残ったときだけ 200 を返す。
     // どこにも残せないなら 200 にしてはいけない。応募者が「送信できた」と思って離脱し、
     // こちらは応募があったことすら分からなくなる（それが 2026-09-17〜09-23 の障害）。
-    if (baseSave.baseSaveFailed && !larkChatId && !larkWebhookUrl) {
+    if (baseSave.baseSaveFailed && !larkChatId && !larkWebhookUrl && !vaultSaved) {
       console.error(
-        '応募をどこにも記録できない（Base保存が失敗し、通知先も未設定）:',
+        '応募をどこにも記録できない（Base保存が失敗し、通知先も退避先も無い）:',
         `submission=${submissionId} ${baseSave.baseSaveFailed}`,
       );
       return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
@@ -753,8 +809,10 @@ export async function POST(request: NextRequest) {
           : isCoupang ? 'クーパンの応募がありました！'
           : isTruck ? 'トラックドライバーの応募がありました！' : '新しい応募がありました！';
         // Base に保存できなかった応募は、この通知が唯一の記録になる。手入力が要ることを本文の先頭で示す。
-        const title = baseSave.baseSaveFailed
-          ? `⚠️Base未登録（手入力が必要）／${baseTitle}`
+        const title = baseSave.dedupedExisting
+          ? `🔁再送（直近1時間に同じ電話番号あり・行は増やしていません）／${baseTitle}`
+          : baseSave.baseSaveFailed
+          ? `⚠️Base未登録（${vaultSaved ? '退避済み・要取り込み' : '退避も失敗・この通知が唯一の記録'}）／${baseTitle}`
           // Webhook 経由は直書きが失敗した証拠。AnyCross が受理だけして
           // レコードを作らない「静かな失敗」もあるので、届いたレコードの確認を促す。
           : baseSave.savedVia === 'webhook'
@@ -847,9 +905,18 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
               ambiguous: apiResult.ambiguous,
               baseSaveFailed: Boolean(baseSave.baseSaveFailed),
             });
-            if (!baseSave.baseSaveFailed) {
-              return NextResponse.json({ message: 'Internal Server Error' }, { status: 502 });
+            if (apiResult.ambiguous) {
+              // Lark 側だけ成功した可能性がある通信例外。Webhook へ落とすと二重通知になる。
+              // 同じ uuid の再送（1時間重複排除）に任せる。応募は記録済みなので 200 で返す。
+              notificationSent = true;
+              larkNotified = true;
             }
+            // ⚠️ ここで 502 を返してはいけない。
+            // 応募者には「エラーが発生しました」と出て、送信を繰り返す。
+            // Base Webhook には冪等性が無いので、再送のたびにレコードが増える
+            // （2026-09-23: 自社LP経由45レコードに対し実人数8人・最多15行）。
+            // 応募が Base に残っているなら、通知の失敗は応募者の責任ではない。
+            // 通知が出せなかった事実は下の退避と invariant で拾う。
           }
         }
         if (!notificationSent && larkWebhookUrl) {
@@ -866,16 +933,32 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
               code: result.code ?? result.StatusCode,
               message: result.msg ?? result.StatusMessage,
             });
-            return NextResponse.json({ message: 'Internal Server Error' }, { status: 502 });
+            // ①と同じ理由で 502 を返さない。再送は重複を増やすだけ。
+          } else {
+            notificationSent = true;
+            larkNotified = true;
+            console.log('Lark webhook notification sent successfully:', result);
           }
-          notificationSent = true;
-          larkNotified = true;
-          console.log('Lark webhook notification sent successfully:', result);
         }
         if (!notificationSent) {
-          return NextResponse.json({ message: 'Internal Server Error' }, { status: 502 });
+          // 通知が1つも出せなかった。応募は Base に残っているので 200 で返すが、
+          // 誰も気づいていないので退避に残して監視で拾う。
+          console.error('Lark通知を1つも出せなかった（応募自体は記録済み）:', `submission=${submissionId}`);
+          vaultSaved = await saveToSubmissionVault({
+            source: 'form_applicant/applicants',
+            kind: 'application',
+            submissionId,
+            profile: resolveDirectBaseWrite(baseWriteCtx)?.profile,
+            reason: 'Lark通知に失敗（Base への保存は成功）',
+            notified: false,
+            payload: basePayload,
+          }) || vaultSaved;
         }
-        if (baseSave.recordId) {
+        // ⚠️ 重複として既存レコードを指しているときは書き戻さない。
+        // putRecord は PUT で列を**置換**するため、他人／別応募の対応履歴メモ
+        // （営業の記入・[submission_id:] 冪等キー・カタログ帰属行）が消える。
+        // 冪等キーが消えると直書き経路が同じ応募をもう一度作る＝重複を止める処理が重複を作る。
+        if (baseSave.recordId && !baseSave.dedupedExisting) {
           const notificationFields = baseSave.profile === 'ridejob'
             ? {
                 対応履歴メモ: appendLarkNotificationMarker(baseSave.memo || '', submissionId),
@@ -1021,12 +1104,18 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
 
       // 応募者メール/SMS/CAPIは非致命。BaseとLark通知は上で確定済み。
       await Promise.allSettled(tasks);
+
+      // Base に入らず退避した応募でも、通知が出せていれば人は気づける。
+      // 退避テーブルの notified を立てて、監視が「誰も気づいていない行」だけを拾えるようにする。
+      if (vaultSaved && larkNotified) {
+        await markSubmissionVaultNotified('form_applicant/applicants', submissionId);
+      }
     }
 
-    if (baseSave.baseSaveFailed && !larkNotified) {
+    if (baseSave.baseSaveFailed && !larkNotified && !vaultSaved) {
       // Base にも Lark にも残らなかった。200 を返すと応募がそのまま消える。
       console.error(
-        '応募をどこにも記録できなかった（Base保存も Lark通知も失敗）:',
+        '応募をどこにも記録できなかった（Base保存・Lark通知・退避のすべてが失敗）:',
         `submission=${submissionId} ${baseSave.baseSaveFailed}`,
       );
       return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });

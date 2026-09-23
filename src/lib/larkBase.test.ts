@@ -334,3 +334,96 @@ describe('createBaseRecord のリンク解決の失敗', () => {
     expect(JSON.parse((recordCall![1] as RequestInit).body as string).fields).toEqual({ 流入元: 'google' });
   });
 });
+
+describe('findRecentRecordByPhone（Webhook経路の重複止血）', () => {
+  const WINDOW = 60 * 60 * 1000;
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    vi.resetModules();
+    vi.useRealTimers();
+  });
+
+  // 検索が返すレコードを与えて findRecentRecordByPhone を呼ぶ。検索リクエストも記録する。
+  async function run(items: Array<{ record_id: string; fields: Record<string, unknown> }>) {
+    for (const [key, value] of Object.entries({
+      APP_ID_RIDEJOB: 'cli-test',
+      APP_SECRET_RIDEJOB: 'secret-test',
+      APP_TOKEN_RIDEJOB: 'app-test',
+    })) vi.stubEnv(key, value);
+    const searches: Array<{ url: string; body: Record<string, unknown> }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('tenant_access_token')) {
+        return Response.json({ code: 0, tenant_access_token: 'token', expire: 7200 });
+      }
+      if (url.includes('/records/search')) {
+        searches.push({ url, body: JSON.parse(init?.body as string) });
+        return Response.json({ code: 0, data: { items } });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }));
+    const { findRecentRecordByPhone } = await import('./larkBase');
+    const hit = await findRecentRecordByPhone('tbl-test', '09012345678', WINDOW, 'ridejob');
+    return { hit, searches };
+  }
+
+  it('新しい順に十分な件数を引く（同じ人が何行もある前提）', async () => {
+    // 2026-09-23 の実測で1人15行まで出た。page_size=2・無ソートだと
+    // 行が多い人＝いちばん止めたい人ほど重複判定が空振りする。
+    const { searches } = await run([]);
+    expect(new URL(searches[0].url).searchParams.get('page_size')).toBe('20');
+    expect(searches[0].body.sort).toEqual([{ field_name: '応募日', desc: true }]);
+    expect((searches[0].body.filter as { conditions: unknown[] }).conditions[0]).toEqual({
+      field_name: '電話番号',
+      operator: 'is',
+      value: ['09012345678'],
+    });
+  });
+
+  it('窓の中に1行でもあれば重複とみなす', async () => {
+    vi.useFakeTimers().setSystemTime(new Date('2026-09-23T12:00:00Z'));
+    const now = Date.now();
+    const { hit } = await run([
+      { record_id: 'rec-old', fields: { 応募日: now - 5 * WINDOW } },
+      { record_id: 'rec-recent', fields: { 応募日: now - 10 * 60 * 1000, 対応履歴メモ: '営業の記入' } },
+    ]);
+    expect(hit?.recordId).toBe('rec-recent');
+    // 書き戻しの可否を判断するため、呼び出し元にメモを返すこと（PUT は列を置換するので消してはいけない）。
+    expect(hit?.fields['対応履歴メモ']).toBe('営業の記入');
+  });
+
+  it('窓の外だけなら重複としない（別の応募として通す）', async () => {
+    vi.useFakeTimers().setSystemTime(new Date('2026-09-23T12:00:00Z'));
+    const now = Date.now();
+    const { hit } = await run([
+      { record_id: 'rec-a', fields: { 応募日: now - WINDOW - 1000 } },
+      { record_id: 'rec-b', fields: { 応募日: now - 3 * WINDOW } },
+    ]);
+    expect(hit).toBeNull();
+  });
+
+  it('応募日が読めない行は重複としない（作る側に倒す）', async () => {
+    // 判定できないことを理由に応募を握りつぶすと、止血のはずが欠落になる。
+    const { hit } = await run([
+      { record_id: 'rec-x', fields: {} },
+      { record_id: 'rec-y', fields: { 応募日: '2026-09-23' } },
+      { record_id: 'rec-z', fields: { 応募日: 0 } },
+    ]);
+    expect(hit).toBeNull();
+  });
+
+  it('電話番号が空なら検索そのものをしない', async () => {
+    for (const [key, value] of Object.entries({
+      APP_ID_RIDEJOB: 'cli-test',
+      APP_SECRET_RIDEJOB: 'secret-test',
+      APP_TOKEN_RIDEJOB: 'app-test',
+    })) vi.stubEnv(key, value);
+    const fetchSpy = vi.fn(async () => Response.json({ code: 0, data: { items: [] } }));
+    vi.stubGlobal('fetch', fetchSpy);
+    const { findRecentRecordByPhone } = await import('./larkBase');
+    expect(await findRecentRecordByPhone('tbl-test', '  ', WINDOW, 'ridejob')).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
