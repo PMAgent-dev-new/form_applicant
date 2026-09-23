@@ -15,7 +15,7 @@ import { getMediaName } from '@/lib/media-name';
 import { resolveApplicationSourceMasterName } from '@/lib/lark-masters';
 import { isMetaAdsAttribution, isOpenAiAdsAttribution } from '@/lib/attribution';
 import { describeError } from '@/lib/describe-error';
-import { saveToSubmissionVault } from '@/lib/submissionVault';
+import { markSubmissionVaultNotified, saveToSubmissionVault } from '@/lib/submissionVault';
 import {
   isLarkBaseConfigured,
   upsertBaseRecordByTextField,
@@ -642,6 +642,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    /** Lark 通知を出せたか */
+    let notified = false;
     const tasks: Promise<void>[] = [];
     const taskFailures: string[] = [];
     const markFailed = (label: string) => {
@@ -709,9 +711,21 @@ export async function POST(request: NextRequest) {
             console.error('[coupang] Lark notification state update failed after successful send:', `submission=${submissionId} ${describeError(error)}`);
           }
         }
+        notified = true;
       } catch (error) {
-        console.error('[coupang] Failed to send notification to Lark:', `submission=${submissionId} ${describeError(error)}`);
-        return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
+        // ⚠️ 500 を返さない。応募者に「エラーが発生しました」が出て再送し、
+        // 冪等性の無い Webhook 経路で重複が増える（RIDE JOB 側で実際に起きた）。
+        // 応募が Base に残っているなら、通知の失敗は応募者に転嫁しない。
+        console.error('[coupang] Lark通知に失敗（応募は記録済み）:', `submission=${submissionId} ${describeError(error)}`);
+        vaultSaved = await saveToSubmissionVault({
+          source: 'form_applicant/coupang',
+          kind: 'application',
+          submissionId,
+          profile: 'liftjob',
+          reason: `Lark通知に失敗: ${describeError(error)}`,
+          notified: false,
+          payload: basePayload,
+        }) || vaultSaved;
       }
     } else if (notificationAlreadySent) {
       console.log('[coupang] Lark notification already sent; skipping duplicate', { submissionId });
@@ -826,6 +840,20 @@ export async function POST(request: NextRequest) {
       }
 
       await Promise.allSettled(tasks);
+
+    if (vaultSaved && notified) {
+      await markSubmissionVaultNotified('form_applicant/coupang', submissionId);
+    }
+
+    // 不変条件: Base・通知・退避のどれか1つに残ったときだけ 200。
+    // どこにも残っていないなら 200 にしてはいけない（応募者は送信できたと思って離脱する）。
+    if (baseSaveFailed && !notified && !vaultSaved) {
+      console.error(
+        '[coupang] 応募をどこにも記録できなかった（Base保存・Lark通知・退避のすべてが失敗）:',
+        `submission=${submissionId} ${baseSaveFailed}`,
+      );
+      return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
+    }
 
       if (isTestMode && oppref && taskFailures.includes('openai-capi')) {
         return NextResponse.json(

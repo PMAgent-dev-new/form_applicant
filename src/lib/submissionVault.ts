@@ -29,7 +29,11 @@ export type VaultEntry = {
   profile?: string;
   /** なぜ退避したか。Lark が返したコードとメッセージを含めること */
   reason: string;
-  /** Lark 通知だけは出せたか。false なら誰も応募に気づいていない */
+  /**
+   * この行を書いた時点で Lark 通知が出せていたか。
+   * **通知を試す前に書く経路があるため、false は「まだ出していない」も含む。**
+   * 「誰も気づいていない」の判定に使うなら、通知確定後の更新とセットで見ること。
+   */
   notified: boolean;
   payload: Record<string, unknown>;
 };
@@ -56,8 +60,14 @@ export async function saveToSubmissionVault(entry: VaultEntry): Promise<boolean>
         apikey: key,
         Authorization: `Bearer ${key}`,
         'Content-Type': 'application/json',
-        // 同じ submission_id での再送は1行に畳む（source, submission_id の部分一意索引）
-        Prefer: 'resolution=merge-duplicates,return=minimal',
+        // 同じ submission_id で2行目を作らない。
+        // ⚠️ `resolution=merge-duplicates` は**効かない**。(source, submission_id) の索引は
+        // submission_id IS NOT NULL の部分索引で、PostgREST は部分索引を ON CONFLICT に
+        // 渡せないため 409(23505) が返る（2026-09-23 に本番で実測）。
+        // 409 は「既に記録済み」＝こちらの目的は達成されているので、下で成功として扱う。
+        // 先に書かれた行の reason（直書き失敗時の Lark エラーコード＝根本原因の手がかり）が
+        // 上書きされずに残る点でも、この方が望ましい。
+        Prefer: 'return=minimal',
       },
       body: JSON.stringify({
         source: entry.source,
@@ -70,9 +80,17 @@ export async function saveToSubmissionVault(entry: VaultEntry): Promise<boolean>
       }),
       signal: AbortSignal.timeout(VAULT_TIMEOUT_MS),
     });
+    if (resp.status === 409) {
+      // 同じ submission_id が既にある。退避の目的は果たしているので成功として扱う。
+      console.log('[vault] 既に退避済み:', { source: entry.source, submissionId: entry.submissionId });
+      return true;
+    }
     if (!resp.ok) {
-      const body = await resp.text().catch(() => '');
-      console.error('[vault] 退避に失敗:', `source=${entry.source} http=${resp.status} ${body.slice(0, 200)}`);
+      // ⚠️ レスポンス本文をログに出さない。Postgres の制約違反は details に
+      // `Failing row contains (...)` で行の値をそのまま含むため、#91/#92 で
+      // ログから外したはずの個人情報が戻ってくる経路になる。
+      const code = await resp.json().then((b) => String((b as { code?: string })?.code ?? '')).catch(() => '');
+      console.error('[vault] 退避に失敗:', `source=${entry.source} http=${resp.status} code=${code}`);
       return false;
     }
     console.log('[vault] 退避した:', { source: entry.source, submissionId: entry.submissionId, notified: entry.notified });
@@ -81,5 +99,29 @@ export async function saveToSubmissionVault(entry: VaultEntry): Promise<boolean>
     const detail = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
     console.error('[vault] 退避で例外:', `source=${entry.source} ${detail}`);
     return false;
+  }
+}
+
+/**
+ * 退避した応募について、あとから通知が出せたことを記録する。
+ * 失敗しても応募には影響しないので、結果を見ない。
+ */
+export async function markSubmissionVaultNotified(source: string, submissionId?: string): Promise<void> {
+  const url = process.env.SUBMISSION_VAULT_URL;
+  const key = process.env.SUBMISSION_VAULT_SERVICE_KEY;
+  if (!url || !key || !submissionId) return;
+  try {
+    const q = `source=eq.${encodeURIComponent(source)}&submission_id=eq.${encodeURIComponent(submissionId)}`;
+    await fetch(`${url.replace(/\/+$/, '')}/rest/v1/submission_vault?${q}`, {
+      method: 'PATCH',
+      headers: {
+        apikey: key, Authorization: `Bearer ${key}`,
+        'Content-Type': 'application/json', Prefer: 'return=minimal',
+      },
+      body: JSON.stringify({ notified: true }),
+      signal: AbortSignal.timeout(VAULT_TIMEOUT_MS),
+    });
+  } catch (e) {
+    console.error('[vault] 通知済みの記録に失敗:', `source=${source} ${e instanceof Error ? e.name : 'error'}`);
   }
 }

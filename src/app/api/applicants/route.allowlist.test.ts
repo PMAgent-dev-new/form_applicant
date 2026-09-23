@@ -166,7 +166,10 @@ describe('applicants POST — outbound host allowlist', () => {
     const { POST } = await import('./route');
     const res = await POST(makeRequest(applicantBody));
     expect(res.status, '再送させないこと。再送は重複を増やすだけ').toBe(200);
-    const vaultCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/rest/v1/submission_vault'));
+    const vaultCalls = fetchSpy.mock.calls.filter(
+      ([input, init]) => String(input).includes('/rest/v1/submission_vault')
+        && (init as RequestInit)?.method === 'POST',
+    );
     expect(vaultCalls.length, '誰も気づいていないので退避に残すこと').toBe(1);
     const body = JSON.parse(String((vaultCalls[0][1] as RequestInit)?.body ?? '{}'));
     expect(body.notified, '通知は出せていないと記録すること').toBe(false);
@@ -255,7 +258,10 @@ describe('applicants POST — outbound host allowlist', () => {
     const res = await POST(makeRequest(applicantBody));
     expect(res.status).toBe(200);
 
-    const vaultCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/rest/v1/submission_vault'));
+    const vaultCalls = fetchSpy.mock.calls.filter(
+      ([input, init]) => String(input).includes('/rest/v1/submission_vault')
+        && (init as RequestInit)?.method === 'POST',
+    );
     expect(vaultCalls.length, 'Base に入らなかった応募は退避すること').toBe(1);
     const body = JSON.parse(String((vaultCalls[0][1] as RequestInit)?.body ?? '{}'));
     expect(body.source).toBe('form_applicant/applicants');
@@ -320,6 +326,54 @@ describe('applicants POST — outbound host allowlist', () => {
     expect(res.status).toBe(200);
     const webhookCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/anycross/trigger/'));
     expect(webhookCalls.length, '重複を作らないこと').toBe(0);
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it('重複とみなした既存レコードには書き戻さない（他人のメモと冪等キーを消さないため）', async () => {
+    // putRecord は PUT で列を**置換**する。重複先は自分が作った行ではないので、
+    // ここへ通知済み印を書くと営業の記入・[submission_id:] 冪等キー・カタログ帰属行が消える。
+    // 冪等キーが消えると直書き経路が同じ応募をもう一度作る＝重複を止める処理が重複を作る。
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      const path = new URL(url).pathname;
+      if (path.endsWith('/records') && init?.method === 'POST') {
+        return Response.json({ code: 4001, msg: 'mapping failed' });
+      }
+      if (path.endsWith('/records/search')) {
+        const body = JSON.parse(String(init?.body ?? '{}'));
+        if (body?.filter?.conditions?.[0]?.field_name === '電話番号') {
+          return Response.json({
+            code: 0,
+            data: {
+              items: [{
+                record_id: 'rec_existing',
+                fields: { 応募日: Date.now(), 対応履歴メモ: '[submission_id:other]\n営業が架電済み' },
+              }],
+            },
+          });
+        }
+        return Response.json({ code: 0, data: { items: [] } });
+      }
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+    expect(res.status).toBe(200);
+
+    const writes = fetchSpy.mock.calls.filter(
+      ([input, init]) => String(input).includes('/records/rec_existing')
+        && ['PUT', 'PATCH'].includes(String((init as RequestInit)?.method ?? '')),
+    );
+    expect(writes.length, '既存レコードを書き換えないこと').toBe(0);
+
+    // 人が気づけるよう、通知は「再送・行は増やしていない」と分かる形で出す。
+    const im = fetchSpy.mock.calls.find(([input]) => String(input).includes('/im/v1/messages'));
+    expect(im, '重複でも通知は出すこと').toBeTruthy();
+    expect(String((im?.[1] as RequestInit)?.body ?? '')).toContain('再送');
+
     errorSpy.mockRestore();
     warnSpy.mockRestore();
   });

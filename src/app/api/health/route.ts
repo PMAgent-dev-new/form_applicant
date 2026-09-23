@@ -27,6 +27,11 @@ const REQUIRED_ENV_GROUPS: EnvGroup[] = [
   },
   { name: 'lark_ridejob_chat', anyOf: ['LARK_SUBMIT_CHAT_ID_RIDEJOB'], notifyOnly: true },
   { name: 'lark_mechanic_chat', anyOf: ['LARK_SUBMIT_CHAT_ID_MECHANIC'], notifyOnly: true },
+  // 退避先(Supabase) — Base にも通知にも残せなかった応募を拾う最後の受け皿。
+  // 未設定でも応募自体は通るが、そのとき「Base にあるのに通知だけ無い」応募が
+  // どこにも残らず静かに消える。設定漏れを ready のままにしない（§4）。
+  { name: 'submission_vault_url', anyOf: ['SUBMISSION_VAULT_URL'] },
+  { name: 'submission_vault_key', anyOf: ['SUBMISSION_VAULT_SERVICE_KEY'] },
   // 応募レコード保存(Base) — 応募データの保存先
   {
     name: 'lark_base',
