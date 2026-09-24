@@ -1,6 +1,6 @@
 import type { NextConfig } from "next";
 
-// セキュリティヘッダー（jobmadley と揃える）。フレームは同一オリジンからだけ許可する
+// セキュリティヘッダー（jobmadley に準じる。ただしフレームは jobmadley の DENY と違い、同一オリジンからの埋め込みだけ許可する）
 const securityHeaders = [
   { key: 'X-Content-Type-Options', value: 'nosniff' },
   { key: 'X-Frame-Options', value: 'SAMEORIGIN' },
