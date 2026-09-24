@@ -179,11 +179,54 @@ describe('applicants POST — outbound host allowlist', () => {
   // 2026-09-24: 通知先の設定漏れは Base 保存より手前で 500 を返しており、
   // 応募内容がどこにも残らなかった。設定漏れは無音でデプロイされるので、
   // ここが最後の受け皿になる（newmedia で 2026-09-21 に実際に起きた形）。
-  it('通知先が未設定でも、退避に残せたなら応募を通す', async () => {
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  // 通知先を消す。Base 側（直書き・Base Webhook）は生かしたまま。
+  function stubNoNotificationTarget() {
     vi.stubEnv('LARK_SUBMIT_CHAT_ID_RIDEJOB', '');
     vi.stubEnv('LARK_WEBHOOK_URL', '');
     vi.stubEnv('LARK_WEBHOOK_URL_TEST', '');
+  }
+
+  // Base への保存経路も消す（直書きの認証 + Base Webhook）。
+  function stubNoBasePersistence() {
+    vi.stubEnv('APP_ID_RIDEJOB', '');
+    vi.stubEnv('APP_SECRET_RIDEJOB', '');
+    vi.stubEnv('APP_TOKEN_RIDEJOB', '');
+    vi.stubEnv('LARK_BASE_WEBHOOK_URL', '');
+    vi.stubEnv('LARK_BASE_WEBHOOK_URL_PROD', '');
+    vi.stubEnv('LARK_BASE_WEBHOOK_URL_TEST', '');
+  }
+
+  // 2026-09-24 レビュー指摘: 通知先の設定漏れだけで Base への保存まで捨てていた。
+  // `LARK_SUBMIT_CHAT_ID_*` を1つ落とすだけで、Base が健全でも全応募が消える。
+  it('通知先が未設定でも、Base に保存できるなら Base 保存まで捨てない', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    stubNoNotificationTarget();
+
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+
+    expect(res.status, 'Base に保存できるので再送させない').toBe(200);
+    const baseWrites = fetchSpy.mock.calls.filter(
+      ([input, init]) => String(input).includes('/bitable/v1/apps/')
+        && (init as RequestInit)?.method === 'POST',
+    );
+    expect(baseWrites.length, '通知先が無くても Base へは書くこと').toBeGreaterThan(0);
+    const vaultCalls = fetchSpy.mock.calls.filter(
+      ([input, init]) => String(input).includes('/rest/v1/submission_vault')
+        && (init as RequestInit)?.method === 'POST',
+    );
+    expect(vaultCalls.length, '通知が出ていないことは退避に記録すること').toBe(1);
+    const body = JSON.parse(String((vaultCalls[0][1] as RequestInit)?.body ?? '{}'));
+    expect(body.reason, '何が未設定だったか分からないと復旧できない').toContain('not configured');
+    expect(body.submission_id, '冪等キーが無いと取り込み時に重複する').toBeTruthy();
+
+    errorSpy.mockRestore();
+  });
+
+  it('通知先も Base も未設定なら、退避に残して応募を通す', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    stubNoNotificationTarget();
+    stubNoBasePersistence();
 
     const { POST } = await import('./route');
     const res = await POST(makeRequest(applicantBody));
@@ -193,19 +236,15 @@ describe('applicants POST — outbound host allowlist', () => {
         && (init as RequestInit)?.method === 'POST',
     );
     expect(vaultCalls.length, '設定漏れで応募を捨てないこと').toBe(1);
-    const body = JSON.parse(String((vaultCalls[0][1] as RequestInit)?.body ?? '{}'));
-    expect(body.reason, '何が未設定だったか分からないと復旧できない').toContain('not configured');
-    expect(body.submission_id, '冪等キーが無いと取り込み時に重複する').toBeTruthy();
     expect(res.status, '退避に残っているので再送させない').toBe(200);
 
     errorSpy.mockRestore();
   });
 
-  it('通知先が未設定で退避にも失敗したら 500 を返す（どこにも残らないため）', async () => {
+  it('通知先も Base も未設定で退避にも失敗したら 500 を返す（どこにも残らないため）', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    vi.stubEnv('LARK_SUBMIT_CHAT_ID_RIDEJOB', '');
-    vi.stubEnv('LARK_WEBHOOK_URL', '');
-    vi.stubEnv('LARK_WEBHOOK_URL_TEST', '');
+    stubNoNotificationTarget();
+    stubNoBasePersistence();
     const base = fetchSpy.getMockImplementation() as (input: unknown, init?: RequestInit) => Promise<Response>;
     fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
       if (String(input).includes('/rest/v1/submission_vault')) return new Response('boom', { status: 503 });
@@ -215,6 +254,31 @@ describe('applicants POST — outbound host allowlist', () => {
     const { POST } = await import('./route');
     const res = await POST(makeRequest(applicantBody));
     expect(res.status, '本当にどこにも残らないときだけ 500').toBe(500);
+    const vaultCalls = fetchSpy.mock.calls.filter(
+      ([input, init]) => String(input).includes('/rest/v1/submission_vault')
+        && (init as RequestInit)?.method === 'POST',
+    );
+    expect(vaultCalls.length, '500 を返す前に退避を試みていること').toBe(1);
+
+    errorSpy.mockRestore();
+  });
+
+  // 2026-09-24 レビュー指摘: 本番はまだ退避先の env が入っていない。
+  // その状態＝旧挙動（500）であることを、思い込みでなくテストで固定しておく。
+  it('退避先が未設定なら、どこにも残らないので 500（本番の現状）', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    stubNoNotificationTarget();
+    stubNoBasePersistence();
+    vi.stubEnv('SUBMISSION_VAULT_URL', '');
+    vi.stubEnv('SUBMISSION_VAULT_SERVICE_KEY', '');
+
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+    expect(res.status, '退避先が無ければ応募者に再送してもらうしかない').toBe(500);
+    const vaultCalls = fetchSpy.mock.calls.filter(
+      ([input]) => String(input).includes('/rest/v1/submission_vault'),
+    );
+    expect(vaultCalls.length, '退避先が無いのに送信を試みないこと').toBe(0);
 
     errorSpy.mockRestore();
   });
