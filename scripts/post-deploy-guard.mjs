@@ -263,10 +263,17 @@ export async function healthCheck(project, options = {}) {
         // Vercel の env はデプロイ時のスナップショットなので、rollback は「壊れた env を
         // 持つ前のデプロイ」へ戻すだけで、env を直すための再デプロイを巻き戻してしまう。
         // 外部サービスの一時的な不調で本番が勝手に戻ることも防ぐ。知らせるに留める。
+        // missing が一緒に来たら rollback 対象のまま。**このデプロイで新しく必須になった
+        // env なら**、戻せば要求ごと消えて直る（例: 必須の env を入れ忘れたままマージした）。
+        // ただし前のデプロイも同じ env を要求していれば、戻しても直らず recovery が失敗し、
+        // 本番は1つ前のビルドに留まる（再前進の処理は無い）。2026-09-24 時点の本番がこれで、
+        // SUBMISSION_VAULT_* が未設定のまま複数デプロイ済み。**VERCEL_TOKEN を直す前に
+        // SUBMISSION_VAULT_* を入れること**（逆順だと最初のデプロイで本番が巻き戻る）。
         const larkOnly =
           Array.isArray(body.unreachable) &&
           body.unreachable.length > 0 &&
-          body.unreachable.every((u) => String(u).startsWith('lark_auth_'));
+          body.unreachable.every((u) => String(u).startsWith('lark_auth_')) &&
+          !(Array.isArray(body.missing) && body.missing.length > 0);
         if (degraded >= 2) {
           return {
             project: project.name,

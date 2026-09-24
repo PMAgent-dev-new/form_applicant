@@ -9,8 +9,10 @@ import { checkLarkAuth, type LarkProfile } from '@/lib/larkBase';
  * - トークン無し(または不一致): 生存確認のみ。200 {status:'ok'} を返し、設定内容は一切漏らさない。
  *   公開エンドポイントなので、どのenvが欠けているか等の内部情報は無認証では出さない。
  * - 正しいトークン(x-health-token が env HEALTH_CHECK_TOKEN と一致): レディネスを返す。
- *   応募が成立するために不可欠な env グループが揃っていれば 200 {status:'ready'}、
- *   欠けていれば 503 {status:'degraded', missing:[...]}。
+ *   env が揃い資格情報も実際に通れば 200 {status:'ready', deep:true}。
+ *   問題があれば 503 {status:'degraded', missing?:[...], unreachable?:[...]}。
+ *   **両方あれば両方載る**（env の不足が資格情報の破損を隠さない。2026-09-24 に修正。
+ *   それまでは missing があるとそこで返り、unreachable が付かなかった）。
  *
  * 「必須」の定義: 応募データが Lark に届くための2系統のみ。
  * メール/SMS/Meta CAPI は未設定なら送信側で自動スキップされる付加機能なので必須に含めない。
@@ -28,6 +30,12 @@ import { checkLarkAuth, type LarkProfile } from '@/lib/larkBase';
  */
 
 export const dynamic = 'force-dynamic';
+
+// 実接続チェックの対象。**ここに足したら REQUIRED_ENV_GROUPS にも APP_* の3変数を足すこと。**
+// not_configured を unreachable に載せないのは、APP_* の欠落が missing で必ず名指しされる
+// という前提があるから。片方だけ足すと、資格情報が無いのに missing にも unreachable にも
+// 出ない＝誰も鳴らない状態が黙って生まれる（route.test.ts がこの前提を検査している）。
+export const DEEP_CHECK_PROFILES: LarkProfile[] = ['ridejob', 'mechanic', 'liftjob'];
 // relay チェック(最大5秒)が終わってから deep チェック(最大5秒)が走るので、コールド
 // スタートを足すと既定の実行上限(10秒)に触れて 504 になり得る。504 は guard から見ると
 // unhealthy と同じなので、上限を明示して「本当に壊れている」とだけ区別する。
@@ -127,31 +135,45 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ status: 'ok' }, { status: 200 });
   }
 
-  const missing = findMissingEnvGroups();
-  if (missing.length > 0) {
-    return NextResponse.json({ status: 'degraded', missing }, { status: 503 });
-  }
-  const usesRelay = !isSet('OPENAI_ADS_PIXEL_ID') || !isSet('OPENAI_ADS_CAPI_KEY');
-  if (usesRelay && !(await relayIsReady())) {
-    return NextResponse.json(
-      { status: 'degraded', missing: ['openai_ads_relay_upstream'] },
-      { status: 503 },
-    );
+  // env の不足と資格情報の破損は別の障害。**片方が他方を隠してはいけない。**
+  // 2026-09-24 まで missing があるとそこで返していたため、SUBMISSION_VAULT_* が未設定の
+  // あいだは資格情報が壊れても unreachable が付かず、死活監視からは「env が足りないだけ」に
+  // 見えていた（監視の中核が無効になっていた）。両方見て、見つかったものを全部返す。
+  const missing = [...findMissingEnvGroups()];
+  if (missing.length === 0) {
+    // 上流の relay は env が揃っているときだけ叩く（足りないなら叩いても意味がない）。
+    const usesRelay = !isSet('OPENAI_ADS_PIXEL_ID') || !isSet('OPENAI_ADS_CAPI_KEY');
+    if (usesRelay && !(await relayIsReady())) missing.push('openai_ads_relay_upstream');
   }
 
   // env が揃っていても資格情報が失効していれば応募は1件も通らない。実際に叩いて確かめる。
+  // env の不足とは独立に走らせる（APP_* 自体が欠けていれば not_configured が付くだけ）。
   const deep = request.nextUrl.searchParams.get('deep') !== '0';
+  let unreachable: string[] = [];
   if (deep) {
-    const profiles: LarkProfile[] = ['ridejob', 'mechanic', 'liftjob'];
     const results = await Promise.all(
-      profiles.map(async (p) => ({ profile: p, result: await checkLarkAuth(p) })),
+      DEEP_CHECK_PROFILES.map(async (p) => ({ profile: p, result: await checkLarkAuth(p) })),
     );
-    const broken = results
-      .filter((r) => !r.result.ok)
+    // not_configured は載せない。APP_* の欠落は REQUIRED_ENV_GROUPS が同じ9変数を持つので
+    // missing で必ず名指しされている。unreachable に載せると監視側で「資格情報が通らない」
+    // （🔴 毎回）と読まれ、既知の設定漏れで鳴りっぱなしになる。
+    unreachable = results
+      .filter((r) => !r.result.ok && (r.result as { reason: string }).reason !== 'not_configured')
       .map((r) => `lark_auth_${r.profile}:${(r.result as { reason: string }).reason}`);
-    if (broken.length > 0) {
-      return NextResponse.json({ status: 'degraded', unreachable: broken }, { status: 503 });
-    }
+  }
+
+  if (missing.length > 0 || unreachable.length > 0) {
+    return NextResponse.json(
+      {
+        status: 'degraded',
+        // missing だけの応答が「実接続まで見たうえで env だけ足りない」のか「実接続を見て
+        // いない」のかを、受け手が区別できるようにする（旧ビルドの degraded には無い）。
+        deep,
+        ...(missing.length > 0 ? { missing } : {}),
+        ...(unreachable.length > 0 ? { unreachable } : {}),
+      },
+      { status: 503 },
+    );
   }
   return NextResponse.json({ status: 'ready', deep }, { status: 200 });
 }

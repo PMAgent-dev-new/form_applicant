@@ -170,3 +170,24 @@ test('Lark以外が混ざるdegradedは従来どおりunhealthy（rollback対象
     }
   }
 });
+
+test('missingとLark資格情報が両方あるdegradedはunhealthy（rollbackで直る可能性がある）', async () => {
+  const originalFetch = globalThis.fetch;
+  // デプロイで新しく必須になった env（例: SUBMISSION_VAULT_*）は、戻せば要求ごと消える。
+  globalThis.fetch = async () =>
+    Response.json(
+      {
+        status: 'degraded',
+        missing: ['submission_vault_url'],
+        unreachable: ['lark_auth_ridejob:lark_code_10003'],
+      },
+      { status: 503 },
+    );
+  try {
+    const { healthCheck } = await loadGuard('configured-token', 'missing-and-lark');
+    const result = await healthCheck(project, { retryDelayMs: 0 });
+    assert.equal(result.verdict, 'unhealthy');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
