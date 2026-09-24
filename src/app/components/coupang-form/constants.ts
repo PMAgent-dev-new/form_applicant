@@ -9,7 +9,7 @@ import type { JobPosition, DesiredLocation, Age } from './types';
 export const COUPANG_META_CONTENT_NAME = 'coupang_rocketnow';
 
 /**
- * 希望職種はフィールドセールスに固定する（2026-09-08 三木さん指示）。
+ * 希望職種はフィールドセールスに固定する。
  * 募集はフィールドセールスのみで、アカウントマネージャーは募集していないため、
  * 選択させず固定値を送る。値はGASシートのラベルと一致させること
  * （API側は日本語ラベルをそのまま受け取る）。
