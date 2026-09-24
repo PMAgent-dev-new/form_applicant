@@ -221,7 +221,9 @@ export async function healthCheck(project, options = {}) {
     try {
       const res = await fetch(`${project.url}/api/health`, {
         headers,
-        signal: AbortSignal.timeout(15_000),
+        // health の maxDuration より長く待つ。短いと、health がまだ答えを作っている間に切って
+        // 応答なしと数え、健全なデプロイまで rollback してしまう。
+        signal: AbortSignal.timeout(30_000),
       });
       const body = await res.json().catch(() => ({}));
       lastDetail = `HTTP ${res.status} ${JSON.stringify(body)}`;
@@ -269,10 +271,16 @@ export async function healthCheck(project, options = {}) {
         // 本番は1つ前のビルドに留まる（再前進の処理は無い）。2026-09-24 時点の本番がこれで、
         // SUBMISSION_VAULT_* が未設定のまま複数デプロイ済み。**VERCEL_TOKEN を直す前に
         // SUBMISSION_VAULT_* を入れること**（逆順だと最初のデプロイで本番が巻き戻る）。
+        // 表が読めない（mismatched の lark_base_）も Lark 側の設定なので同じ扱いにする。
+        // 列の不足（lark_columns_）は missing と同じく rollback 対象のまま。**このデプロイで
+        // 新しく書くようになった列なら**、戻せば要求ごと消えて直る。
+        const larkSide = [
+          ...(Array.isArray(body.unreachable) ? body.unreachable : []),
+          ...(Array.isArray(body.mismatched) ? body.mismatched : []),
+        ].map(String);
         const larkOnly =
-          Array.isArray(body.unreachable) &&
-          body.unreachable.length > 0 &&
-          body.unreachable.every((u) => String(u).startsWith('lark_auth_')) &&
+          larkSide.length > 0 &&
+          larkSide.every((u) => u.startsWith('lark_auth_') || u.startsWith('lark_base_')) &&
           !(Array.isArray(body.missing) && body.missing.length > 0);
         if (degraded >= 2) {
           return {

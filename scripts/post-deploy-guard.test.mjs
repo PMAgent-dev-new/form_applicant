@@ -154,6 +154,50 @@ test('Lark資格情報だけのdegradedはalert-only（rollbackしない）', as
   }
 });
 
+test('表が読めないだけのdegradedもalert-only（Lark側の設定で、戻しても直らない）', async () => {
+  const originalFetch = globalThis.fetch;
+  for (const body of [
+    { status: 'degraded', deep: true, mismatched: ['lark_base_mechanic:http_403'] },
+    {
+      status: 'degraded',
+      deep: true,
+      unreachable: ['lark_auth_liftjob:lark_code_10003'],
+      mismatched: ['lark_base_mechanic:http_403'],
+    },
+  ]) {
+    globalThis.fetch = async () => Response.json(body, { status: 503 });
+    try {
+      const { healthCheck } = await loadGuard('configured-token', `base-${JSON.stringify(body)}`);
+      const result = await healthCheck(project, { retryDelayMs: 0 });
+      assert.equal(result.verdict, 'alert-only');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }
+});
+
+test('列の不足が混ざるdegradedはunhealthy（このデプロイで新しく書く列なら戻せば直る）', async () => {
+  const originalFetch = globalThis.fetch;
+  for (const body of [
+    { status: 'degraded', deep: true, mismatched: ['lark_columns_ridejob:メールアドレス'] },
+    {
+      status: 'degraded',
+      deep: true,
+      unreachable: ['lark_auth_liftjob:lark_code_10003'],
+      mismatched: ['lark_base_mechanic:http_403', 'lark_columns_ridejob:メールアドレス'],
+    },
+  ]) {
+    globalThis.fetch = async () => Response.json(body, { status: 503 });
+    try {
+      const { healthCheck } = await loadGuard('configured-token', `columns-${JSON.stringify(body)}`);
+      const result = await healthCheck(project, { retryDelayMs: 0 });
+      assert.equal(result.verdict, 'unhealthy');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }
+});
+
 test('Lark以外が混ざるdegradedは従来どおりunhealthy（rollback対象）', async () => {
   const originalFetch = globalThis.fetch;
   for (const body of [

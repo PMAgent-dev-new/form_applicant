@@ -37,7 +37,7 @@ const COUPANG_EVENT_SOURCE_URL = BASE_PATH
  * 既存の `src/app/api/entry-bp/route.ts` に合わせて 5 秒。
  */
 const LARK_FETCH_TIMEOUT_MS = 5000;
-const LIFTJOB_TABLE_ID = process.env.LARK_BASE_TABLE_ID_LIFTJOB || 'tblVBAB0nVCgWVWJ';
+export const LIFTJOB_TABLE_ID = process.env.LARK_BASE_TABLE_ID_LIFTJOB || 'tblVBAB0nVCgWVWJ';
 
 type LarkWebhookResult = {
   code?: number | string;
