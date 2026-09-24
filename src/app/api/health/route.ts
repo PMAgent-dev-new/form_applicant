@@ -127,31 +127,40 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ status: 'ok' }, { status: 200 });
   }
 
-  const missing = findMissingEnvGroups();
-  if (missing.length > 0) {
-    return NextResponse.json({ status: 'degraded', missing }, { status: 503 });
-  }
-  const usesRelay = !isSet('OPENAI_ADS_PIXEL_ID') || !isSet('OPENAI_ADS_CAPI_KEY');
-  if (usesRelay && !(await relayIsReady())) {
-    return NextResponse.json(
-      { status: 'degraded', missing: ['openai_ads_relay_upstream'] },
-      { status: 503 },
-    );
+  // env の不足と資格情報の破損は別の障害。**片方が他方を隠してはいけない。**
+  // 2026-09-24 まで missing があるとそこで返していたため、SUBMISSION_VAULT_* が未設定の
+  // あいだは資格情報が壊れても unreachable が付かず、死活監視からは「env が足りないだけ」に
+  // 見えていた（監視の中核が無効になっていた）。両方見て、見つかったものを全部返す。
+  const missing = [...findMissingEnvGroups()];
+  if (missing.length === 0) {
+    // 上流の relay は env が揃っているときだけ叩く（足りないなら叩いても意味がない）。
+    const usesRelay = !isSet('OPENAI_ADS_PIXEL_ID') || !isSet('OPENAI_ADS_CAPI_KEY');
+    if (usesRelay && !(await relayIsReady())) missing.push('openai_ads_relay_upstream');
   }
 
   // env が揃っていても資格情報が失効していれば応募は1件も通らない。実際に叩いて確かめる。
+  // env の不足とは独立に走らせる（APP_* 自体が欠けていれば not_configured が付くだけ）。
   const deep = request.nextUrl.searchParams.get('deep') !== '0';
+  let unreachable: string[] = [];
   if (deep) {
     const profiles: LarkProfile[] = ['ridejob', 'mechanic', 'liftjob'];
     const results = await Promise.all(
       profiles.map(async (p) => ({ profile: p, result: await checkLarkAuth(p) })),
     );
-    const broken = results
+    unreachable = results
       .filter((r) => !r.result.ok)
       .map((r) => `lark_auth_${r.profile}:${(r.result as { reason: string }).reason}`);
-    if (broken.length > 0) {
-      return NextResponse.json({ status: 'degraded', unreachable: broken }, { status: 503 });
-    }
+  }
+
+  if (missing.length > 0 || unreachable.length > 0) {
+    return NextResponse.json(
+      {
+        status: 'degraded',
+        ...(missing.length > 0 ? { missing } : {}),
+        ...(unreachable.length > 0 ? { unreachable } : {}),
+      },
+      { status: 503 },
+    );
   }
   return NextResponse.json({ status: 'ready', deep }, { status: 200 });
 }

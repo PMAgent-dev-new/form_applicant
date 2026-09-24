@@ -142,7 +142,12 @@ describe('GET /api/health', () => {
     vi.stubEnv('APP_SECRET_RIDEJOB', '');
     const res = await GET(makeRequest({ 'x-health-token': 'secret' }));
     expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ status: 'degraded', missing: ['lark_ridejob_app_secret'] });
+    // env の不足と、そのせいで認証を試せないことの両方が返る
+    expect(await res.json()).toEqual({
+      status: 'degraded',
+      missing: ['lark_ridejob_app_secret'],
+      unreachable: ['lark_auth_ridejob:not_configured'],
+    });
   });
 
   it('reports both groups missing when no Lark env is set', async () => {
@@ -422,7 +427,7 @@ describe('GET /api/health', () => {
     expect(urls.filter((u) => u.startsWith('https://open.larksuite.com/'))).toHaveLength(2);
   });
 
-  it('relay が落ちていれば deep チェックまで進まない', async () => {
+  it('relay が落ちていても deep は走り、両方を返す', async () => {
     vi.stubEnv('HEALTH_CHECK_TOKEN', 'secret');
     for (const [k, v] of Object.entries(LARK_ENV)) vi.stubEnv(k, v);
     vi.stubEnv('OPENAI_ADS_PIXEL_ID', '');
@@ -435,9 +440,33 @@ describe('GET /api/health', () => {
 
     const res = await GET(makeRequest({ 'x-health-token': 'secret' }));
     expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ status: 'degraded', missing: ['openai_ads_relay_upstream'] });
+    expect(await res.json()).toEqual({
+      status: 'degraded',
+      missing: ['openai_ads_relay_upstream'],
+      unreachable: [
+        'lark_auth_ridejob:lark_code_10003',
+        'lark_auth_mechanic:lark_code_10003',
+        'lark_auth_liftjob:lark_code_10003',
+      ],
+    });
     const larkCalls = fetchMock.mock.calls.filter((c) => String(c[0]).includes('tenant_access_token'));
-    expect(larkCalls).toHaveLength(0);
+    expect(larkCalls).toHaveLength(3);
+  });
+
+  it('env が足りなくても、資格情報の破損は隠れない（2026-09-24 の本番の状態）', async () => {
+    vi.stubEnv('HEALTH_CHECK_TOKEN', 'secret');
+    for (const [k, v] of Object.entries(LARK_ENV)) vi.stubEnv(k, v);
+    // 本番は SUBMISSION_VAULT_* が未設定。旧実装はここで missing を返して終わり、
+    // 資格情報が壊れていても unreachable が付かなかった＝死活監視が盲目だった。
+    vi.stubEnv('SUBMISSION_VAULT_URL', '');
+    vi.stubEnv('SUBMISSION_VAULT_SERVICE_KEY', '');
+    stubFetch({ larkAuth: { ridejob: 'bad_credentials' } });
+
+    const res = await GET(makeRequest({ 'x-health-token': 'secret' }));
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.missing).toEqual(expect.arrayContaining(['submission_vault_url']));
+    expect(body.unreachable).toEqual(['lark_auth_ridejob:lark_code_10003']);
   });
 
   it.each(['deep=1', 'deep=false', 'deep=', 'deep=00'])(
