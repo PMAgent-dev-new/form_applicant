@@ -5,22 +5,28 @@ import {
   getRandomJobsByPrefectureId,
   getRandomJobsByPrefectureIdsAndCategory,
 } from '@/lib/microcms';
+import { clampCount, isMicrocmsId, parseMicrocmsIdList } from '@/lib/query-params';
+
+// 画面は count=3 で呼ぶ。上限は microCMS の limit にそのまま渡るので小さく抑える
+const MAX_COUNT = 12;
 
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
     const prefectureId = searchParams.get('prefectureId');
-    const prefectureIdsParam = searchParams.get('prefectureIds');
-    const prefectureIds = prefectureIdsParam
-      ? prefectureIdsParam.split(',').map((id) => id.trim()).filter(Boolean)
-      : [];
+    const prefectureIds = parseMicrocmsIdList(searchParams.get('prefectureIds'));
     const categoryId = searchParams.get('categoryId');
-    const categoryIdsParam = searchParams.get('categoryIds');
-    const categoryIds = categoryIdsParam
-      ? categoryIdsParam.split(',').map((id) => id.trim()).filter(Boolean)
-      : [];
-    const countParam = searchParams.get('count');
-    const count = countParam ? parseInt(countParam, 10) : 3;
+    const categoryIds = parseMicrocmsIdList(searchParams.get('categoryIds'));
+    const count = clampCount(searchParams.get('count'), 3, MAX_COUNT);
+
+    if (
+      prefectureIds === null ||
+      categoryIds === null ||
+      (prefectureId !== null && !isMicrocmsId(prefectureId)) ||
+      (categoryId !== null && !isMicrocmsId(categoryId))
+    ) {
+      return NextResponse.json({ error: 'invalid id' }, { status: 400 });
+    }
 
     if (!prefectureId && prefectureIds.length === 0 && !categoryId && categoryIds.length === 0) {
       return NextResponse.json(

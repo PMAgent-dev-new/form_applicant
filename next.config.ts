@@ -1,9 +1,21 @@
 import type { NextConfig } from "next";
 
+// セキュリティヘッダー（jobmadley に準じる。ただしフレームは jobmadley の DENY と違い、同一オリジンからの埋め込みだけ許可する）
+const securityHeaders = [
+  { key: 'X-Content-Type-Options', value: 'nosniff' },
+  { key: 'X-Frame-Options', value: 'SAMEORIGIN' },
+  { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+];
+
 const nextConfig: NextConfig = {
   // マルチゾーン配信: ridejob.jp 配下へ複製する deployment でのみ NEXT_PUBLIC_BASE_PATH=/entry を設定する。
   // 既存の ridejob.pmagent.jp（単独ドメイン）deployment では未設定＝basePathなし（挙動不変）。
   basePath: process.env.NEXT_PUBLIC_BASE_PATH || undefined,
+  poweredByHeader: false,
+  async headers() {
+    // basePath があればその配下（/entry/:path*）に付く
+    return [{ source: '/:path*', headers: securityHeaders }];
+  },
   images: {
     // Vercelで自動的にAVIF/WebP形式に変換
     formats: ['image/avif', 'image/webp'],
