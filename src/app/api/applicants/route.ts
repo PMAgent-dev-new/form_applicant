@@ -595,19 +595,37 @@ export async function POST(request: NextRequest) {
       : (isCoupang && baseWebhookUrlCoupang) ? baseWebhookUrlCoupang : baseWebhookUrlCommon;
 
     // 必須URLの検証（Baseのみテスト時はBase URL、通常時はLark URL）
+    //
+    // ⚠️ ここは Base 保存より手前。素の 500 で返すと、応募内容はどこにも残らず消える。
+    // 設定漏れのままデプロイされると「フォームは動いて見えるのに応募だけが消える」形になり、
+    // 誰も気づけない（2026-09-17〜24 の障害と同じ型。jobmadley は
+    // bailOnMissingNotificationTarget で同じ手当てを入れてある）。
+    // 退避に残せたなら応募は記録されているので、応募者には再送させない（再送は重複を増やすだけ）。
+    const bailWithVault = async (reason: string) => {
+      console.error(reason);
+      const saved = await saveToSubmissionVault({
+        source: 'form_applicant/applicants',
+        kind: 'application',
+        submissionId,
+        profile: isMechanic ? 'mechanic' : isCoupang ? 'liftjob' : 'ridejob',
+        reason,
+        notified: false,
+        payload: submissionData as unknown as Record<string, unknown>,
+      });
+      return saved
+        ? NextResponse.json({ message: 'Application submitted successfully!' })
+        : NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
+    };
     if (sendBaseOnly) {
       if (!baseWebhookUrl) {
-        console.error('Lark Base Webhook URL is not configured while LARK_SEND_BASE_ONLY=true.');
-        return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
+        return bailWithVault('Lark Base Webhook URL is not configured while LARK_SEND_BASE_ONLY=true.');
       }
     } else {
       if (!isCoupang && !larkChatId) {
-        console.error('Idempotent Lark chat ID is not configured.');
-        return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
+        return bailWithVault('Idempotent Lark chat ID is not configured.');
       }
       if (!larkChatId && !larkWebhookUrl) {
-        console.error('Lark chat ID and Webhook URL are both not configured.');
-        return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
+        return bailWithVault('Lark chat ID and Webhook URL are both not configured.');
       }
     }
 

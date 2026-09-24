@@ -176,6 +176,49 @@ describe('applicants POST — outbound host allowlist', () => {
     errorSpy.mockRestore();
   });
 
+  // 2026-09-24: 通知先の設定漏れは Base 保存より手前で 500 を返しており、
+  // 応募内容がどこにも残らなかった。設定漏れは無音でデプロイされるので、
+  // ここが最後の受け皿になる（newmedia で 2026-09-21 に実際に起きた形）。
+  it('通知先が未設定でも、退避に残せたなら応募を通す', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.stubEnv('LARK_SUBMIT_CHAT_ID_RIDEJOB', '');
+    vi.stubEnv('LARK_WEBHOOK_URL', '');
+    vi.stubEnv('LARK_WEBHOOK_URL_TEST', '');
+
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+
+    const vaultCalls = fetchSpy.mock.calls.filter(
+      ([input, init]) => String(input).includes('/rest/v1/submission_vault')
+        && (init as RequestInit)?.method === 'POST',
+    );
+    expect(vaultCalls.length, '設定漏れで応募を捨てないこと').toBe(1);
+    const body = JSON.parse(String((vaultCalls[0][1] as RequestInit)?.body ?? '{}'));
+    expect(body.reason, '何が未設定だったか分からないと復旧できない').toContain('not configured');
+    expect(body.submission_id, '冪等キーが無いと取り込み時に重複する').toBeTruthy();
+    expect(res.status, '退避に残っているので再送させない').toBe(200);
+
+    errorSpy.mockRestore();
+  });
+
+  it('通知先が未設定で退避にも失敗したら 500 を返す（どこにも残らないため）', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.stubEnv('LARK_SUBMIT_CHAT_ID_RIDEJOB', '');
+    vi.stubEnv('LARK_WEBHOOK_URL', '');
+    vi.stubEnv('LARK_WEBHOOK_URL_TEST', '');
+    const base = fetchSpy.getMockImplementation() as (input: unknown, init?: RequestInit) => Promise<Response>;
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      if (String(input).includes('/rest/v1/submission_vault')) return new Response('boom', { status: 503 });
+      return base(input, init);
+    });
+
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+    expect(res.status, '本当にどこにも残らないときだけ 500').toBe(500);
+
+    errorSpy.mockRestore();
+  });
+
   // 2026-09-17〜09-23: Base 保存が失敗すると 500 を返して通知も出していなかったため、
   // 自社LP経由の応募が5日間まるごと失われた（約90件）。Base に入らなくても通知だけは必ず出す。
   it('Bitable が HTTP200 でエラー本文を返しても、応募は通して通知を出す', async () => {
