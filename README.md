@@ -212,7 +212,22 @@ src/
 ### GET /api/health
 デプロイ後の死活監視用エンドポイント。通常は `200 { "status": "ok" }` を返します。
 
-`HEALTH_CHECK_TOKEN` と一致する `x-health-token` ヘッダーを指定した場合は、応募に必要な環境変数の準備状況を確認し、準備完了なら `200 { "status": "ready" }`、不足があれば `503 { "status": "degraded", "missing": [...] }` を返します。
+`HEALTH_CHECK_TOKEN` と一致する `x-health-token` ヘッダーを指定した場合は、応募に必要な環境変数の準備状況に加えて、**Lark の資格情報が実際に通るか**を確認します。
+
+```bash
+curl -s -H "x-health-token: $HEALTH_CHECK_TOKEN" https://ridejob.jp/entry/api/health | jq
+```
+
+| 応答 | 意味 |
+|---|---|
+| `200 {"status":"ready","deep":true}` | env が揃い、Lark の認証も通った。**これだけが合格** |
+| `200 {"status":"ready","deep":false}` | `?deep=0` で実接続チェックを省いた。env の有無しか見ていない |
+| `503 {"status":"degraded","missing":[...]}` | env が足りない |
+| `503 {"status":"degraded","unreachable":["lark_auth_<profile>:<理由>"]}` | env はあるが Lark の認証が通らない |
+
+`unreachable` の理由は `bad_domain`（`LARK_DOMAIN_*` にスキームが無い）/ `http_<status>` / `lark_code_<code>`（JSON でない応答は `lark_code_unknown`）/ `no_token` / `timeout` / `unreachable` の6種。**秘密情報は含めません**（URL・app_id・トークン・例外メッセージを載せない）。
+
+env の有無しか見ていなかったため、2026-09-17〜24 の障害では資格情報が壊れたまま7日間 `ready` を返し続けました。`post-deploy-guard` は `deep: true` の `ready` だけを合格とし、`lark_auth_*` だけが原因の `degraded` では**ロールバックしません**（env はデプロイ時のスナップショットなので、コードを戻しても資格情報は直らないため）。
 
 ## 開発コマンド
 

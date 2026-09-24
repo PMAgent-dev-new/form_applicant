@@ -111,3 +111,62 @@ test('rollback先は現在以外のREADY production deploymentに固定する', 
   );
   assert.equal(target?.url, 'known-good.vercel.app');
 });
+
+test('deep:true のreadyだけを合格にする', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ status: 'ready', deep: true });
+  try {
+    const { healthCheck } = await loadGuard('configured-token', 'deep-true');
+    const result = await healthCheck(project, { retryDelayMs: 0 });
+    assert.equal(result.verdict, 'ready');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('deepを省いたreadyは2回目でunhealthyとする（envの有無しか見ていない応答）', async () => {
+  const originalFetch = globalThis.fetch;
+  // ?deep=0 を足された場合と、deepフィールドの無い旧ビルドの両方を同じ扱いにする。
+  for (const body of [{ status: 'ready', deep: false }, { status: 'ready' }]) {
+    globalThis.fetch = async () => Response.json(body);
+    try {
+      const { healthCheck } = await loadGuard('configured-token', `shallow-${JSON.stringify(body)}`);
+      const result = await healthCheck(project, { retryDelayMs: 0 });
+      assert.equal(result.verdict, 'unhealthy');
+      assert.match(result.detail, /deep check missing or skipped/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }
+});
+
+test('Lark資格情報だけのdegradedはalert-only（rollbackしない）', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    Response.json({ status: 'degraded', unreachable: ['lark_auth_ridejob:lark_code_10003'] }, { status: 503 });
+  try {
+    const { healthCheck } = await loadGuard('configured-token', 'lark-only');
+    const result = await healthCheck(project, { retryDelayMs: 0 });
+    // envはデプロイ時のスナップショットなので、コードを戻しても資格情報は直らない。
+    assert.equal(result.verdict, 'alert-only');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Lark以外が混ざるdegradedは従来どおりunhealthy（rollback対象）', async () => {
+  const originalFetch = globalThis.fetch;
+  for (const body of [
+    { status: 'degraded', missing: ['openai_ads_relay_upstream'] },
+    { status: 'degraded', unreachable: ['lark_auth_ridejob:bad_domain', 'relay_upstream'] },
+  ]) {
+    globalThis.fetch = async () => Response.json(body, { status: 503 });
+    try {
+      const { healthCheck } = await loadGuard('configured-token', `mixed-${JSON.stringify(body)}`);
+      const result = await healthCheck(project, { retryDelayMs: 0 });
+      assert.equal(result.verdict, 'unhealthy');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }
+});

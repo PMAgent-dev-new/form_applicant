@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+import { checkLarkAuth, type LarkProfile } from '@/lib/larkBase';
+
 /**
  * デプロイ後の合成チェック用ヘルスエンドポイント。
  *
@@ -12,9 +14,24 @@ import { NextRequest, NextResponse } from 'next/server';
  *
  * 「必須」の定義: 応募データが Lark に届くための2系統のみ。
  * メール/SMS/Meta CAPI は未設定なら送信側で自動スキップされる付加機能なので必須に含めない。
+ *
+ * ## env の有無だけでは足りない（2026-09-24 追加）
+ *
+ * 2026-09-17〜24 の障害では env は全部揃っていて、**中身が壊れていた**
+ * （アプリ資格情報の失効と LARK_DOMAIN のスキーム規約違反）。
+ * env の有無しか見ていなかったこのエンドポイントは、応募が1件も通らない7日間、
+ * ready を返し続けた。「設定を配置した」は「読まれて効いている」の証明ではない（§4）。
+ *
+ * そこで認証付きの経路では、3プロファイルの tenant_access_token を**実際に取得**して
+ * 資格情報が通ることを確かめる。`?deep=0` で省略できる（省略した応答には
+ * deep:false が入るので、省略したことが応答から分かる）。
  */
 
 export const dynamic = 'force-dynamic';
+// relay チェック(最大5秒)が終わってから deep チェック(最大5秒)が走るので、コールド
+// スタートを足すと既定の実行上限(10秒)に触れて 504 になり得る。504 は guard から見ると
+// unhealthy と同じなので、上限を明示して「本当に壊れている」とだけ区別する。
+export const maxDuration = 20;
 
 type EnvGroup = { name: string; anyOf: string[]; notifyOnly?: boolean };
 
@@ -121,5 +138,20 @@ export async function GET(request: NextRequest) {
       { status: 503 },
     );
   }
-  return NextResponse.json({ status: 'ready' }, { status: 200 });
+
+  // env が揃っていても資格情報が失効していれば応募は1件も通らない。実際に叩いて確かめる。
+  const deep = request.nextUrl.searchParams.get('deep') !== '0';
+  if (deep) {
+    const profiles: LarkProfile[] = ['ridejob', 'mechanic', 'liftjob'];
+    const results = await Promise.all(
+      profiles.map(async (p) => ({ profile: p, result: await checkLarkAuth(p) })),
+    );
+    const broken = results
+      .filter((r) => !r.result.ok)
+      .map((r) => `lark_auth_${r.profile}:${(r.result as { reason: string }).reason}`);
+    if (broken.length > 0) {
+      return NextResponse.json({ status: 'degraded', unreachable: broken }, { status: 503 });
+    }
+  }
+  return NextResponse.json({ status: 'ready', deep }, { status: 200 });
 }

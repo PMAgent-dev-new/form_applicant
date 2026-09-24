@@ -85,6 +85,52 @@ export function isLarkBaseConfigured(profile: LarkProfile = DEFAULT_PROFILE): bo
   return readConfig(profile) !== null;
 }
 
+/**
+ * そのプロファイルの資格情報が**実際に通るか**を確かめる。
+ *
+ * env が「在る」ことと「効く」ことは別。2026-09-17〜24 の障害では env は全部
+ * 揃っていて、中身（アプリ資格情報・LARK_DOMAIN のスキーム）が壊れていた。
+ * /api/health は env の有無しか見ていなかったので、7日間 ready を返し続けた。
+ *
+ * 返り値は成否と粗い理由だけ。**秘密情報は絶対に含めない**（公開エンドポイントの
+ * 認証付き経路から返るため、URL・app_id・トークンの断片も載せない）。
+ * キャッシュは使わない（壊れているかを今その場で見るのが目的）。
+ */
+export async function checkLarkAuth(
+  profile: LarkProfile,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const cfg = readConfig(profile);
+  if (!cfg) return { ok: false, reason: "not_configured" };
+  // スキームの無い LARK_DOMAIN_*（例: "open.larksuite.com"）は、fetch がネットワークに
+  // 出る前に TypeError(ERR_INVALID_URL) を投げる。下の catch はそれを "unreachable" に
+  // 潰すので、**設定ミスと Lark の障害が区別できなくなる**。2026-09-17〜24 の障害では
+  // この2つが同時に起きていた。設定ミスは設定ミスとして名指しする。
+  try {
+    const u = new URL(cfg.domain);
+    if (u.protocol !== "https:" && u.protocol !== "http:") throw new Error("scheme");
+  } catch {
+    return { ok: false, reason: "bad_domain" };
+  }
+  try {
+    const res = await fetch(`${cfg.domain}/open-apis/auth/v3/tenant_access_token/internal`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+      body: JSON.stringify({ app_id: cfg.appId, app_secret: cfg.appSecret }),
+      signal: AbortSignal.timeout(5000),
+    });
+    const data = (await res.json().catch(() => ({}))) as { code?: number; tenant_access_token?: string };
+    // Lark は HTTP200 でも code!=0 で失敗する。200 を成功扱いしない。
+    if (!res.ok) return { ok: false, reason: `http_${res.status}` };
+    if (data.code !== 0) return { ok: false, reason: `lark_code_${data.code ?? "unknown"}` };
+    if (!data.tenant_access_token) return { ok: false, reason: "no_token" };
+    return { ok: true };
+  } catch (e) {
+    // 例外メッセージは載せない。fetch の例外には URL が入ることがある。
+    const name = e instanceof Error ? e.name : "Error";
+    return { ok: false, reason: name === "TimeoutError" ? "timeout" : "unreachable" };
+  }
+}
+
 async function fetchTenantAccessToken(cfg: LarkBaseConfig, profile: LarkProfile): Promise<string> {
   const now = Date.now();
   // 期限の30秒前までは使い回す。
