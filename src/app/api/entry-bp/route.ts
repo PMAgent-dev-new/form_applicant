@@ -41,8 +41,11 @@ export async function POST(req: Request) {
     }
 
     // 冪等キー。同じ人が同じ日に複数回送っても退避側の unique index で1行に畳まれる。
+    // 日付は JST で取る（UTC だと 09:00 が境界になり、朝の申込が前日扱いで別キーになる）。
+    // メールは大文字小文字を揃える。電話のハイフン有無は揃えない＝畳まれないだけで損失はない。
+    const jstDate = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const submissionId = `entry-bp:${createHash("sha256")
-      .update(`${email}|${tel}|${new Date().toISOString().slice(0, 10)}`)
+      .update(`${email.toLowerCase()}|${tel}|${jstDate}`)
       .digest("hex")
       .slice(0, 32)}`;
     const vaultPayload = { name, email, tel, area } as Record<string, unknown>;
@@ -109,6 +112,10 @@ export async function POST(req: Request) {
         "経路: /entry/gulliver/newgraduate (BP / 2027新卒)",
       ].filter((line): line is string => typeof line === "string");
 
+      // Base に入っていないときは、後から退避行・手入力した行と突き合わせる鍵が要る。
+      if (baseSaveFailed) {
+        textLines.push(`受付ID: ${submissionId}`, `Base 未登録の理由: ${baseSaveFailed}`);
+      }
       const payload = { msg_type: "text", content: { text: textLines.join("\n") } };
 
       try {

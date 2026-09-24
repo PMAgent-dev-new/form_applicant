@@ -853,6 +853,13 @@ const { POST } = await import('./route');
     const hosts = new Set(fetchSpy.mock.calls.map((call) => hostOf(call[0])));
     expect(hosts.has('evil.example.com'), '許可外の宛先へ応募者情報を送らないこと').toBe(false);
     expect(res.status, '通知先が不正なだけで応募を捨てないこと').toBe(200);
+    // ここが本題。ログではなく「Base へ実際に書いたこと」で固定する。
+    const baseWrites = fetchSpy.mock.calls.filter(
+      ([target, init]) => (String(target).includes('/base/automation/webhook/event/')
+        || String(target).includes('/bitable/v1/apps/'))
+        && (init as RequestInit)?.method === 'POST',
+    );
+    expect(baseWrites.length, '通知先が不正でも Base へは書くこと').toBeGreaterThan(0);
     expect(errorSpy).toHaveBeenCalledWith(
       'Lark Webhook URL is missing or invalid for Coupang. / Base への保存は続行する',
     );
@@ -891,6 +898,12 @@ const { POST } = await import('./route');
     const res = await POST(makeRequest(coupangBody));
 
     expect(res.status, '本当にどこにも残らないときだけ 500').toBe(500);
+    // status だけだと旧コード（退避せず 500）と区別できない。退避を試みたことを固定する。
+    const vaultPosts = fetchSpy.mock.calls.filter(
+      ([target, init]) => String(target).includes('/rest/v1/submission_vault')
+        && (init as RequestInit)?.method === 'POST',
+    );
+    expect(vaultPosts.length, '500 を返す前に退避を試みていること').toBe(1);
     errorSpy.mockRestore();
   });
 

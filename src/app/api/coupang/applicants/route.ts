@@ -451,15 +451,25 @@ export async function POST(request: NextRequest) {
 
     const directBaseConfigured = isLarkBaseConfigured('liftjob');
 
+    /** Base に入らなかった応募を Supabase の退避先に残せたか */
+    let vaultSaved = false;
+
     // LIFT JOBは通知とBase保存がどちらも必須。誤設定URLへ応募者情報を送らない。
     //
     // ⚠️ 2026-09-24: ここは Base 保存より手前。素の 500 で返すと応募内容はどこにも残らない
     // （2026-09-17〜24 の障害と同じ型）。設定漏れは無音でデプロイされるので、
     // 退避に残せたなら応募者には再送させない（再送は重複を増やすだけ）。
+    //
+    // ⚠️ 既知の規約差: この経路は退避して即 return するので **Lark 通知を試さない**。
+    // applicants / submit-application は「Base が全滅しても通知は出す」なので、そちらに
+    // 揃えるには通知処理（:700 以降）まで到達させる必要がある。退避先の env を入れたあと、
+    // 別 PR で統一すること（それまでは vault の `notified:false` 行が唯一の記録）。
     const bailWithVault = async (reason: string) => {
       console.error(reason);
+      // source は後段の退避・markSubmissionVaultNotified と同じ値にする。
+      // 揃っていないと同一 submissionId で source 違いの行ができ、通知済みマークも当たらない。
       const saved = await saveToSubmissionVault({
-        source: 'form_applicant/coupang/applicants',
+        source: 'form_applicant/coupang',
         kind: 'application',
         submissionId,
         profile: 'liftjob',
@@ -475,16 +485,15 @@ export async function POST(request: NextRequest) {
       return bailWithVault('Lark Base Webhook URL is missing or invalid for Coupang.');
     }
     // 通知先が無いことと、応募を保存できないことは別。Base が生きているなら
-    // 通知の設定漏れだけで Base への保存まで捨てない（applicants ルートと同じ規約）。
+    // 通知の設定漏れだけで Base への保存まで捨てない
+    // （applicants ルートにも同じ規約を入れる = PMAgent-dev-new/form_applicant#96。まだ未マージ）。
+    // ここへ来る時点で Base 経路は生きている（上の分岐で bail 済み）。
     // 後続の通知処理は notifyWebhookUrl の有無でガード済み。
     if (!sendBaseOnly && (!larkWebhookUrl || !isAllowedLarkWebhookUrl(larkWebhookUrl, 'notification'))) {
       const reason = 'Lark Webhook URL is missing or invalid for Coupang.';
-      if (!directBaseConfigured && !baseWebhookUrl) {
-        return bailWithVault(reason);
-      }
       console.error(`${reason} / Base への保存は続行する`);
-      await saveToSubmissionVault({
-        source: 'form_applicant/coupang/applicants',
+      vaultSaved = await saveToSubmissionVault({
+        source: 'form_applicant/coupang',
         kind: 'application',
         submissionId,
         profile: 'liftjob',
@@ -573,8 +582,6 @@ export async function POST(request: NextRequest) {
     let notificationInProgress = false;
     /** 直書き・Webhook ともに失敗したときの理由。応募は通すが通知に印を付ける。 */
     let baseSaveFailed = '';
-    /** Base に入らなかった応募を Supabase の退避先に残せたか */
-    let vaultSaved = false;
     try {
       if (directBaseConfigured) {
         let saved = await upsertBaseRecordByTextField(

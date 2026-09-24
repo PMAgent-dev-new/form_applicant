@@ -72,6 +72,44 @@ describe('entry-bp POST — 申込をどこにも残さない経路を作らな�
     errorSpy.mockRestore();
   });
 
+  // 2026-09-24 レビュー指摘: 502 を外した「Base 設定済みで createBaseRecord が throw」経路が
+  // 未検証だった。ここがこの PR の主変更。
+  it('Base 登録が落ちても、通知を出して申込は通す（502 を返さない）', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    for (const [k, v] of Object.entries({
+      APP_ID_MECHANIC: 'cli_mechanic',
+      APP_SECRET_MECHANIC: 'secret_mechanic',
+      APP_TOKEN_MECHANIC: 'app_mechanic',
+      LARK_WEBHOOK_URL_GULLIVER_BP_PROD: 'https://open.larksuite.com/open-apis/bot/v2/hook/bp',
+    })) vi.stubEnv(k, v);
+    fetchSpy.mockImplementation(async (input: unknown) => {
+      const url = String(input);
+      if (url.includes('/auth/v3/tenant_access_token')) {
+        return Response.json({ code: 0, tenant_access_token: 't', expire: 7200 });
+      }
+      // Base への書き込みだけ失敗させる
+      if (url.includes('/bitable/v1/apps/')) return Response.json({ code: 1254045, msg: 'FieldNameNotFound' });
+      if (url.includes('/rest/v1/submission_vault')) return new Response('', { status: 201 });
+      return Response.json({ code: 0 });
+    });
+
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest());
+
+    // 修正前はここが 502。通知も出ないので申込はどこにも残らなかった。
+    expect(res.status, 'Base に入らなくても通知が出ているなら申込は通す').toBe(200);
+    const vaultPosts = fetchSpy.mock.calls.filter(
+      ([target, init]) => String(target).includes('/rest/v1/submission_vault')
+        && (init as RequestInit)?.method === 'POST',
+    );
+    expect(vaultPosts.length, 'Base に入らなかった申込は退避に残すこと').toBe(1);
+    const notify = fetchSpy.mock.calls.find(([target]) => String(target).includes('/bot/v2/hook/'));
+    const notifyBody = String((notify?.[1] as RequestInit)?.body ?? '');
+    expect(notifyBody, '手入力が要ることを通知で分かるようにする').toContain('Base未登録');
+    expect(notifyBody, '退避行と突き合わせる鍵が要る').toContain('受付ID: entry-bp:');
+    errorSpy.mockRestore();
+  });
+
   it('Base が未設定でも、通知が出せたなら申込は通す', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.stubEnv('LARK_WEBHOOK_URL_GULLIVER_BP_PROD', 'https://open.larksuite.com/open-apis/bot/v2/hook/bp');
