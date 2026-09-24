@@ -595,19 +595,57 @@ export async function POST(request: NextRequest) {
       : (isCoupang && baseWebhookUrlCoupang) ? baseWebhookUrlCoupang : baseWebhookUrlCommon;
 
     // 必須URLの検証（Baseのみテスト時はBase URL、通常時はLark URL）
-    if (sendBaseOnly) {
-      if (!baseWebhookUrl) {
-        console.error('Lark Base Webhook URL is not configured while LARK_SEND_BASE_ONLY=true.');
-        return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
-      }
-    } else {
-      if (!isCoupang && !larkChatId) {
-        console.error('Idempotent Lark chat ID is not configured.');
-        return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
-      }
-      if (!larkChatId && !larkWebhookUrl) {
-        console.error('Lark chat ID and Webhook URL are both not configured.');
-        return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
+    //
+    // ⚠️ ここは Base 保存より手前。素の 500 で返すと、応募内容はどこにも残らず消える。
+    // 設定漏れのままデプロイされると「フォームは動いて見えるのに応募だけが消える」形になり、
+    // 誰も気づけない（2026-09-17〜24 の障害と同じ型）。
+    // 退避に残せたなら応募は記録されているので、応募者には再送させない（再送は重複を増やすだけ）。
+    const vaultProfile = isMechanic ? 'mechanic' : isCoupang ? 'liftjob' : 'ridejob';
+    const bailWithVault = async (reason: string) => {
+      console.error(reason);
+      const saved = await saveToSubmissionVault({
+        source: 'form_applicant/applicants',
+        kind: 'application',
+        submissionId,
+        profile: vaultProfile,
+        reason,
+        notified: false,
+        payload: submissionData as unknown as Record<string, unknown>,
+      });
+      return saved
+        ? NextResponse.json({ message: 'Application submitted successfully!' })
+        : NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
+    };
+
+    // 通知先が無いことと、応募を保存できないことは別。
+    // Base 直書き（または Base Webhook）が生きているなら、通知の設定漏れだけで
+    // Base への保存まで捨ててはいけない。捨てると Base が健全でも応募が全部消える
+    // ——`LARK_SUBMIT_CHAT_ID_*` を1つ落とすだけで再現する、2026-09-17〜24 と同じ型の穴。
+    // 通知先が無いことは退避に記録し、Base への保存は続行する
+    // （後続の通知処理は「chatId か webhookUrl があるとき」だけ走るようガード済み）。
+    const canPersistWithoutNotification =
+      Boolean(baseWebhookUrl) || (!isCoupang && isLarkBaseConfigured(vaultProfile));
+    const missingTargetReason = sendBaseOnly
+      ? (!baseWebhookUrl ? 'Lark Base Webhook URL is not configured while LARK_SEND_BASE_ONLY=true.' : null)
+      : (!isCoupang && !larkChatId)
+        ? 'Idempotent Lark chat ID is not configured.'
+        : (!larkChatId && !larkWebhookUrl)
+          ? 'Lark chat ID and Webhook URL are both not configured.'
+          : null;
+    if (missingTargetReason) {
+      if (canPersistWithoutNotification) {
+        console.error(`${missingTargetReason} / Base への保存は続行する`);
+        await saveToSubmissionVault({
+          source: 'form_applicant/applicants',
+          kind: 'application',
+          submissionId,
+          profile: vaultProfile,
+          reason: `${missingTargetReason} (Base への保存は続行)`,
+          notified: false,
+          payload: submissionData as unknown as Record<string, unknown>,
+        });
+      } else {
+        return bailWithVault(missingTargetReason);
       }
     }
 
