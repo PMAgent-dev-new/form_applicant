@@ -19,8 +19,8 @@ const samples = [
     label: 'default (RIDE JOB)',
     file: 'preview-ridejob.html',
     input: {
-      applicantName: '矢野 輝',
-      applicantNameKana: 'やの ひかる',
+      applicantName: '山田 花子',
+      applicantNameKana: 'やまだ はなこ',
       phoneNumber: '090-1234-5678',
       email: 'sample.applicant@example.com',
       formOrigin: 'default',

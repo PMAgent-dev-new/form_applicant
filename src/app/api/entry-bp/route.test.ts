@@ -12,7 +12,7 @@ const BASE_ENV: Record<string, string> = {
 
 function makeRequest() {
   const form = new FormData();
-  form.set('name', '武田 喜一');
+  form.set('name', '山田 太郎');
   form.set('email', 'bp-test@example.com');
   form.set('tel', '090-1234-5678');
   form.set('area', '東京都');
