@@ -452,13 +452,46 @@ export async function POST(request: NextRequest) {
     const directBaseConfigured = isLarkBaseConfigured('liftjob');
 
     // LIFT JOBは通知とBase保存がどちらも必須。誤設定URLへ応募者情報を送らない。
+    //
+    // ⚠️ 2026-09-24: ここは Base 保存より手前。素の 500 で返すと応募内容はどこにも残らない
+    // （2026-09-17〜24 の障害と同じ型）。設定漏れは無音でデプロイされるので、
+    // 退避に残せたなら応募者には再送させない（再送は重複を増やすだけ）。
+    const bailWithVault = async (reason: string) => {
+      console.error(reason);
+      const saved = await saveToSubmissionVault({
+        source: 'form_applicant/coupang/applicants',
+        kind: 'application',
+        submissionId,
+        profile: 'liftjob',
+        reason,
+        notified: false,
+        payload: submissionData as unknown as Record<string, unknown>,
+      });
+      return saved
+        ? NextResponse.json({ message: 'Application submitted successfully!' })
+        : NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
+    };
     if (!directBaseConfigured && (!baseWebhookUrl || !isAllowedLarkWebhookUrl(baseWebhookUrl, 'base'))) {
-      console.error('Lark Base Webhook URL is missing or invalid for Coupang.');
-      return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
+      return bailWithVault('Lark Base Webhook URL is missing or invalid for Coupang.');
     }
+    // 通知先が無いことと、応募を保存できないことは別。Base が生きているなら
+    // 通知の設定漏れだけで Base への保存まで捨てない（applicants ルートと同じ規約）。
+    // 後続の通知処理は notifyWebhookUrl の有無でガード済み。
     if (!sendBaseOnly && (!larkWebhookUrl || !isAllowedLarkWebhookUrl(larkWebhookUrl, 'notification'))) {
-      console.error('Lark Webhook URL is missing or invalid for Coupang.');
-      return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
+      const reason = 'Lark Webhook URL is missing or invalid for Coupang.';
+      if (!directBaseConfigured && !baseWebhookUrl) {
+        return bailWithVault(reason);
+      }
+      console.error(`${reason} / Base への保存は続行する`);
+      await saveToSubmissionVault({
+        source: 'form_applicant/coupang/applicants',
+        kind: 'application',
+        submissionId,
+        profile: 'liftjob',
+        reason: `${reason} (Base への保存は続行)`,
+        notified: false,
+        payload: submissionData as unknown as Record<string, unknown>,
+      });
     }
     // base-only モードでは上の検証を通らないが、Base 保存が全滅したときはこの URL へ
     // フォールバック通知を出す。allowlist を通らない URL へ応募者情報を送らないよう、

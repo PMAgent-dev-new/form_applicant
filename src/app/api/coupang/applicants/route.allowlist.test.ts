@@ -841,29 +841,56 @@ const { POST } = await import('./route');
     ).toBe(true);
   });
 
-  it('許可外の通知Webhookは応募者情報を送る前に拒否する', async () => {
+  // 2026-09-24: 許可外URLを拒否するのは変わらないが、素の 500 で返すのはやめた
+  // （Base 保存より手前なので、応募内容がどこにも残らず消えていた）。
+  it('許可外の通知Webhookへは送らず、Base への保存は続行する', async () => {
     vi.stubEnv('LARK_WEBHOOK_URL_COUPANG', 'https://evil.example.com/hook/test');
     vi.resetModules();
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { POST } = await import('./route');
     const res = await POST(makeRequest(coupangBody));
 
-    expect(res.status).toBe(500);
-    expect(fetchSpy).not.toHaveBeenCalled();
-    expect(errorSpy).toHaveBeenCalledWith('Lark Webhook URL is missing or invalid for Coupang.');
+    const hosts = new Set(fetchSpy.mock.calls.map((call) => hostOf(call[0])));
+    expect(hosts.has('evil.example.com'), '許可外の宛先へ応募者情報を送らないこと').toBe(false);
+    expect(res.status, '通知先が不正なだけで応募を捨てないこと').toBe(200);
+    expect(errorSpy).toHaveBeenCalledWith(
+      'Lark Webhook URL is missing or invalid for Coupang. / Base への保存は続行する',
+    );
     errorSpy.mockRestore();
   });
 
-  it('許可外のBase Webhookは応募者情報を送る前に拒否する', async () => {
+  it('許可外のBase Webhookへは送らず、応募を退避して通す', async () => {
     vi.stubEnv('LARK_BASE_WEBHOOK_URL_COUPANG_PROD', 'https://evil.example.com/base/test');
     vi.resetModules();
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { POST } = await import('./route');
     const res = await POST(makeRequest(coupangBody));
 
-    expect(res.status).toBe(500);
-    expect(fetchSpy).not.toHaveBeenCalled();
+    const hosts = new Set(fetchSpy.mock.calls.map((call) => hostOf(call[0])));
+    expect(hosts.has('evil.example.com'), '許可外の宛先へ応募者情報を送らないこと').toBe(false);
+    const vaultPosts = fetchSpy.mock.calls.filter(
+      ([target, init]) => String(target).includes('/rest/v1/submission_vault')
+        && (init as RequestInit)?.method === 'POST',
+    );
+    expect(vaultPosts.length, '設定漏れで応募を捨てないこと').toBe(1);
+    expect(res.status, '退避に残っているので再送させない').toBe(200);
     expect(errorSpy).toHaveBeenCalledWith('Lark Base Webhook URL is missing or invalid for Coupang.');
+    errorSpy.mockRestore();
+  });
+
+  it('許可外のBase Webhookで退避にも失敗したら 500（どこにも残らないため）', async () => {
+    vi.stubEnv('LARK_BASE_WEBHOOK_URL_COUPANG_PROD', 'https://evil.example.com/base/test');
+    vi.resetModules();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const base = fetchSpy.getMockImplementation() as (input: unknown, init?: RequestInit) => Promise<Response>;
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      if (String(input).includes('/rest/v1/submission_vault')) return new Response('boom', { status: 503 });
+      return base(input, init);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(coupangBody));
+
+    expect(res.status, '本当にどこにも残らないときだけ 500').toBe(500);
     errorSpy.mockRestore();
   });
 
