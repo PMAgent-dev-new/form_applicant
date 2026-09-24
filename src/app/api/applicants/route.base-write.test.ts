@@ -69,8 +69,17 @@ describe('resolveDirectBaseWrite', () => {
     const target = resolveDirectBaseWrite(mechanicContext());
 
     expect(target?.fields.転職時期).toBe('6か月以内');
-    expect(target?.fields.資格).toBe('自動車整備士2級');
+    // Base の「資格」は MultiSelect。文字列で渡すと code=1254063 MultiSelectFieldConvFail で
+    // 直書きがレコードごと落ち、冪等キーの無い Webhook 経路へ落ちて重複の温床になる
+    // （2026-09-24 に /entry/mechanic で実測）。配列であることをここで固定する。
+    expect(target?.fields.資格).toEqual(['自動車整備士2級']);
     expect(target?.fields.対応履歴メモ).toBeUndefined();
+  });
+
+  it('資格が未選択なら「資格」欄へ書き込まない（空の選択肢を作らない）', () => {
+    const ctx = mechanicContext();
+    ctx.mechanicQualificationsLabel = '未選択';
+    expect(resolveDirectBaseWrite(ctx)?.fields.資格).toBeUndefined();
   });
 
   it('Mechanic応募の希望年収を「履歴書（添付なし）」欄へ保存する', () => {

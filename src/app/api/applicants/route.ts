@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { FormData } from '@/app/components/application-form/types';
 import { mapJobTimingLabel } from '@/app/components/application-form/utils/mapJobTimingLabel';
-import { getMechanicQualificationFieldLabel, mapMechanicQualifications } from '@/app/components/application-form/utils/mapMechanicQualifications';
+import { getMechanicQualificationFieldLabel, mapMechanicQualifications, mapMechanicQualificationToBaseOptions } from '@/app/components/application-form/utils/mapMechanicQualifications';
 import { mapDesiredIncomeLabel } from '@/app/components/application-form/utils/mapDesiredIncomeLabel';
 import { mapTruckLicenses, mapTruckLicensesToBaseOptions } from '@/app/components/application-form/utils/mapTruckLicenses';
 import {
@@ -177,7 +177,7 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
         転職時期: ctx.isMechanicNewgrad ? undefined : ctx.jobTimingLabel || undefined,
         資格: ctx.isMechanicNewgrad || !ctx.form.mechanicQualification
           ? undefined
-          : ctx.mechanicQualificationsLabel,
+          : mapMechanicQualificationToBaseOptions(ctx.mechanicQualificationsLabel),
         '履歴書（添付なし）': desiredIncomeText,
         対応履歴メモ: memo,
         utm_source: ctx.utm.utm_source,
