@@ -18,8 +18,15 @@ export function mapMechanicQualifications(qualification: MechanicQualification |
 /**
  * Base「資格」列は**複数選択**。文字列を渡すと `code=1254063 MultiSelectFieldConvFail` で
  * Bitable 直書きがレコードごと失敗し、冪等キー(submission_id)を持たない Base Webhook 経路へ
- * 落ちる。Webhook には冪等性が無いので、再送が起きると重複レコードが増える
- * （2026-09-24 に /entry/mechanic で実測。整備士の応募は常に Webhook 経由になっていた）。
+ * 落ちる。Webhook には冪等性が無いので、1時間の電話番号重複窓をすり抜けた再送は
+ * そのまま重複レコードになる
+ * （2026-09-24 に /entry/mechanic で実測。資格を必須にしている経験者フォームの応募は、
+ * この型不一致で常に Webhook 経由になっていた。資格を送らない新卒フォームは直書きできていた）。
+ *
+ * ⚠️ 既知の限界: Base「資格」列の既存選択肢名は未実測（整備士 Base の認証が手元にない）。
+ * ここで渡すラベルが Base 側に無ければ、Lark は選択肢を新規作成する。本来はトラック側
+ * （mapTruckLicenses.ts）と同じく Base の選択肢名への対応表を持ち、対応の無い値は
+ * 送らないべき。実測できるまでは表示ラベルをそのまま送る。
  */
 export function mapMechanicQualificationToBaseOptions(label: string | undefined): string[] | undefined {
   const value = (label ?? '').trim();
