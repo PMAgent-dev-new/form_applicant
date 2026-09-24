@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-import { checkLarkAuth, type LarkProfile } from '@/lib/larkBase';
+import { checkLarkAuth, checkBaseColumns, type LarkProfile } from '@/lib/larkBase';
+import { resolveDirectBaseWrite, type BaseWriteContext } from '@/app/api/applicants/route';
+import { buildLiftJobDirectBaseFields, LIFTJOB_TABLE_ID } from '@/app/api/coupang/applicants/route';
 
 /**
  * デプロイ後の合成チェック用ヘルスエンドポイント。
@@ -10,7 +12,7 @@ import { checkLarkAuth, type LarkProfile } from '@/lib/larkBase';
  *   公開エンドポイントなので、どのenvが欠けているか等の内部情報は無認証では出さない。
  * - 正しいトークン(x-health-token が env HEALTH_CHECK_TOKEN と一致): レディネスを返す。
  *   env が揃い資格情報も実際に通れば 200 {status:'ready', deep:true}。
- *   問題があれば 503 {status:'degraded', missing?:[...], unreachable?:[...]}。
+ *   問題があれば 503 {status:'degraded', missing?:[...], unreachable?:[...], mismatched?:[...]}。
  *   **両方あれば両方載る**（env の不足が資格情報の破損を隠さない。2026-09-24 に修正。
  *   それまでは missing があるとそこで返り、unreachable が付かなかった）。
  *
@@ -36,10 +38,82 @@ export const dynamic = 'force-dynamic';
 // という前提があるから。片方だけ足すと、資格情報が無いのに missing にも unreachable にも
 // 出ない＝誰も鳴らない状態が黙って生まれる（route.test.ts がこの前提を検査している）。
 export const DEEP_CHECK_PROFILES: LarkProfile[] = ['ridejob', 'mechanic', 'liftjob'];
-// relay チェック(最大5秒)が終わってから deep チェック(最大5秒)が走るので、コールド
-// スタートを足すと既定の実行上限(10秒)に触れて 504 になり得る。504 は guard から見ると
-// unhealthy と同じなので、上限を明示して「本当に壊れている」とだけ区別する。
-export const maxDuration = 20;
+// relay チェック(最大5秒) → deep チェック(最大5秒) → 列の確認(認証が通ったプロファイルのみ。
+// larkBase.ts の COLUMN_CHECK_BUDGET_MS で区切る。トークンの取り直しが入ると少しはみ出す)の順に
+// 直列で走るので、コールドスタート分を足すと既定の実行上限(10秒)に触れて 504 になり得る。504 は
+// guard から見ると unhealthy と同じなので、上限を明示して「本当に壊れている」とだけ区別する。
+// guard（scripts/post-deploy-guard.mjs）の待ち時間はこれより長くしておくこと。
+export const maxDuration = 25;
+
+// resolveDirectBaseWrite / buildLiftJobDirectBaseFields を呼ぶための最小入力。
+// 列チェックは「どのキーで書き込むか」だけが要るので、値はすべて空文字・空オブジェクト・0で埋める
+// （変換関数が例外を投げない最小値。実際に Base へ書き込むことはない）。
+const BASE_WRITE_COLUMN_CHECK_FIXTURE: BaseWriteContext = {
+  isMechanic: false,
+  isMechanicNewgrad: false,
+  isCoupang: false,
+  isTruck: false,
+  isBus: false,
+  isTaxi: false,
+  truckLicensesLabel: '',
+  mediaName: '',
+  utm: {},
+  adId: '',
+  adCreativeId: '',
+  adImageUrl: '',
+  form: {},
+  jobTimingLabel: '',
+  jobIntentLabel: '',
+  desiredIncomeLabel: '',
+  mechanicQualificationsLabel: '',
+  qualificationFieldLabel: '',
+  pageUrl: '',
+  submittedAtMs: 0,
+  submissionId: '',
+};
+
+// 通知のあとに書き戻す列。組み立て関数を通らずに updateBaseRecord で書く（applicants/route.ts・
+// coupang/applicants/route.ts）ので、ここで足す。ridejob は代わりに対応履歴メモへ印を書く（期待列に入っている）。
+const NOTIFIED_FLAG_COLUMN = 'Lark通知送信済み';
+
+export type ExpectedColumnsGroup = { profile: LarkProfile; tableId: string; expected: string[] };
+
+// プロファイルごとに、書き込み側の組み立て関数のキーから期待列を作る。
+// 列が無いときの壊れ方は列によって違う（書き込みごと失敗する／linkedRecordName で渡すリンク列や
+// 通知後の書き戻しは、その項目だけが落ちる）。どれも応募か帰属が欠けるので、同じく不足として返す。
+// テスト（route.test.ts）が fetch のスタブ先を決めるためにも import して使う。
+export function resolveExpectedColumnsGroups(): ExpectedColumnsGroup[] {
+  const groups: ExpectedColumnsGroup[] = [];
+
+  // isCoupang:false の入力では resolveDirectBaseWrite は null を返さないが、戻り値の型が
+  // `DirectBaseWrite | null` のため防御的にガードする（null ならそのプロファイルの列は調べない）。
+  const ridejobWrite = resolveDirectBaseWrite(BASE_WRITE_COLUMN_CHECK_FIXTURE);
+  if (ridejobWrite) {
+    groups.push({ profile: 'ridejob', tableId: ridejobWrite.tableId, expected: Object.keys(ridejobWrite.fields) });
+  }
+
+  // 経験者でも新卒でもキーは同じ（転職時期・資格は値が undefined になるだけ）。値の変換を通らない新卒の入力で組み立てる。
+  const mechanicWrite = resolveDirectBaseWrite({
+    ...BASE_WRITE_COLUMN_CHECK_FIXTURE,
+    isMechanic: true,
+    isMechanicNewgrad: true,
+  });
+  if (mechanicWrite) {
+    groups.push({
+      profile: 'mechanic',
+      tableId: mechanicWrite.tableId,
+      expected: [...Object.keys(mechanicWrite.fields), NOTIFIED_FLAG_COLUMN],
+    });
+  }
+
+  groups.push({
+    profile: 'liftjob',
+    tableId: LIFTJOB_TABLE_ID,
+    expected: [...Object.keys(buildLiftJobDirectBaseFields({})), NOTIFIED_FLAG_COLUMN],
+  });
+
+  return groups;
+}
 
 type EnvGroup = { name: string; anyOf: string[]; notifyOnly?: boolean };
 
@@ -150,6 +224,7 @@ export async function GET(request: NextRequest) {
   // env の不足とは独立に走らせる（APP_* 自体が欠けていれば not_configured が付くだけ）。
   const deep = request.nextUrl.searchParams.get('deep') !== '0';
   let unreachable: string[] = [];
+  let mismatched: string[] = [];
   if (deep) {
     const results = await Promise.all(
       DEEP_CHECK_PROFILES.map(async (p) => ({ profile: p, result: await checkLarkAuth(p) })),
@@ -160,9 +235,28 @@ export async function GET(request: NextRequest) {
     unreachable = results
       .filter((r) => !r.result.ok && (r.result as { reason: string }).reason !== 'not_configured')
       .map((r) => `lark_auth_${r.profile}:${(r.result as { reason: string }).reason}`);
+
+    // 認証が通らない・未設定のプロファイルは、列を調べても意味が無いので重ねて呼ばない。
+    const okProfiles = new Set(results.filter((r) => r.result.ok).map((r) => r.profile));
+    const columnResults = await Promise.all(
+      resolveExpectedColumnsGroups()
+        .filter((g) => okProfiles.has(g.profile))
+        .map(async (g) => ({
+          profile: g.profile,
+          check: await checkBaseColumns(g.profile, g.tableId, g.expected),
+        })),
+    );
+    mismatched = columnResults.flatMap(({ profile, check }) => {
+      if (check.ok) return [];
+      if (check.reason === 'missing_columns') {
+        return (check.missingColumns ?? []).map((col) => `lark_columns_${profile}:${col}`);
+      }
+      // 表そのものが読めない（権限・app_token・表 ID）ときは列の話ではないので、jobmadley と同じ名前にする。
+      return [`lark_base_${profile}:${check.reason}`];
+    });
   }
 
-  if (missing.length > 0 || unreachable.length > 0) {
+  if (missing.length > 0 || unreachable.length > 0 || mismatched.length > 0) {
     return NextResponse.json(
       {
         status: 'degraded',
@@ -171,6 +265,7 @@ export async function GET(request: NextRequest) {
         deep,
         ...(missing.length > 0 ? { missing } : {}),
         ...(unreachable.length > 0 ? { unreachable } : {}),
+        ...(mismatched.length > 0 ? { mismatched } : {}),
       },
       { status: 503 },
     );

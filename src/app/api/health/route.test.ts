@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { DEEP_CHECK_PROFILES, GET, findMissingEnvGroups } from './route';
+import { DEEP_CHECK_PROFILES, GET, findMissingEnvGroups, resolveExpectedColumnsGroups } from './route';
 
 function makeRequest(headers: Record<string, string> = {}) {
   return new NextRequest('https://ridejob.jp/api/health', { headers });
@@ -41,10 +41,16 @@ type LarkAuthMode = 'ok' | 'bad_credentials' | 'http_500' | 'no_token' | 'timeou
 function stubFetch({
   larkAuth = 'ok',
   relay,
+  missingColumns,
+  fieldsError,
 }: {
   /** 一様に指定するか、プロファイル別に指定する（一部だけ壊れた状態を作れる） */
   larkAuth?: LarkAuthMode | Partial<Record<'ridejob' | 'mechanic' | 'liftjob', LarkAuthMode>>;
   relay?: { status: number; body: unknown };
+  /** プロファイル別に「無いことにする」列名。省略時は期待列がすべて揃った応答を返す。 */
+  missingColumns?: Partial<Record<'ridejob' | 'mechanic' | 'liftjob', string[]>>;
+  /** プロファイル別に、列一覧の読み取りそのものを失敗させる応答。 */
+  fieldsError?: Partial<Record<'ridejob' | 'mechanic' | 'liftjob', { status: number; body: unknown }>>;
 } = {}) {
   vi.stubGlobal(
     'fetch',
@@ -80,6 +86,25 @@ function stubFetch({
           });
         }
         return new Response(JSON.stringify({ code: 0, tenant_access_token: 't-xxx', expire: 7200 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.includes('/fields')) {
+        // どのプロファイル向けの呼び出しかは tableId で分かる。
+        const group = resolveExpectedColumnsGroups().find((g) => url.includes(`/tables/${g.tableId}/fields`));
+        const failure = group ? fieldsError?.[group.profile] : undefined;
+        if (failure) {
+          return new Response(JSON.stringify(failure.body), {
+            status: failure.status,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        const drop = new Set(group ? missingColumns?.[group.profile] ?? [] : []);
+        const items = (group?.expected ?? [])
+          .filter((name) => !drop.has(name))
+          .map((name) => ({ field_name: name }));
+        return new Response(JSON.stringify({ code: 0, data: { items, has_more: false } }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
@@ -500,7 +525,11 @@ describe('GET /api/health', () => {
     const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
 
     await GET(makeRequest({ 'x-health-token': 'secret' }));
-    const relayCalls = fetchMock.mock.calls.filter((c) => !String(c[0]).includes('tenant_access_token'));
+    // tenant_access_token（deep認証）と /fields（列チェック）は missing と無関係に走る。
+    // relay 呼び出しはそのどちらでもない呼び出しとして判別する。
+    const relayCalls = fetchMock.mock.calls.filter(
+      (c) => !String(c[0]).includes('tenant_access_token') && !String(c[0]).includes('/fields'),
+    );
     expect(relayCalls).toHaveLength(0);
   });
 
@@ -536,4 +565,112 @@ describe('GET /api/health', () => {
     expect(findMissingEnvGroups().length).toBeGreaterThan(0);
   });
 
+  // ここから: Lark Base の表に、書き込み側が使う列がそろっているかの確認（mismatched）
+  describe('Base の列チェック（mismatched）', () => {
+    it('通知のあとに書き戻す列も、整備士と liftjob の期待列に入れる', () => {
+      const expectedOf = (profile: string) =>
+        resolveExpectedColumnsGroups().find((g) => g.profile === profile)!.expected;
+      expect(expectedOf('mechanic')).toContain('Lark通知送信済み');
+      expect(expectedOf('liftjob')).toContain('Lark通知送信済み');
+      // ridejob は対応履歴メモに印を書く
+      expect(expectedOf('ridejob')).not.toContain('Lark通知送信済み');
+      expect(expectedOf('ridejob')).toContain('対応履歴メモ');
+    });
+
+    it('列がすべてそろっていれば ready のまま', async () => {
+      vi.stubEnv('HEALTH_CHECK_TOKEN', 'secret');
+      for (const [k, v] of Object.entries(LARK_ENV)) vi.stubEnv(k, v);
+      stubFetch();
+
+      const res = await GET(makeRequest({ 'x-health-token': 'secret' }));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: 'ready', deep: true });
+    });
+
+    it('ridejob の表に列が1つ無ければ 503・mismatched に列名が入る', async () => {
+      vi.stubEnv('HEALTH_CHECK_TOKEN', 'secret');
+      for (const [k, v] of Object.entries(LARK_ENV)) vi.stubEnv(k, v);
+      const missingColumn = resolveExpectedColumnsGroups().find((g) => g.profile === 'ridejob')!.expected[0];
+      stubFetch({ missingColumns: { ridejob: [missingColumn] } });
+
+      const res = await GET(makeRequest({ 'x-health-token': 'secret' }));
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({
+        status: 'degraded',
+        deep: true,
+        mismatched: [`lark_columns_ridejob:${missingColumn}`],
+      });
+    });
+
+    it('表が読めなければ列の不足と分けて lark_base_ で返す', async () => {
+      vi.stubEnv('HEALTH_CHECK_TOKEN', 'secret');
+      for (const [k, v] of Object.entries(LARK_ENV)) vi.stubEnv(k, v);
+      const missingColumn = resolveExpectedColumnsGroups().find((g) => g.profile === 'ridejob')!.expected[0];
+      stubFetch({
+        missingColumns: { ridejob: [missingColumn] },
+        fieldsError: {
+          mechanic: { status: 403, body: { code: 91403, msg: 'Forbidden' } },
+          liftjob: { status: 200, body: { code: 1254003, msg: 'WrongBaseToken' } },
+        },
+      });
+
+      const res = await GET(makeRequest({ 'x-health-token': 'secret' }));
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({
+        status: 'degraded',
+        deep: true,
+        mismatched: [
+          `lark_columns_ridejob:${missingColumn}`,
+          'lark_base_mechanic:http_403',
+          'lark_base_liftjob:lark_code_1254003',
+        ],
+      });
+    });
+
+    it('認証が通らないプロファイルは列を調べない', async () => {
+      vi.stubEnv('HEALTH_CHECK_TOKEN', 'secret');
+      for (const [k, v] of Object.entries(LARK_ENV)) vi.stubEnv(k, v);
+      stubFetch({ larkAuth: { mechanic: 'bad_credentials' } });
+      const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
+
+      await GET(makeRequest({ 'x-health-token': 'secret' }));
+      const mechanicTableId = resolveExpectedColumnsGroups().find((g) => g.profile === 'mechanic')!.tableId;
+      const fieldsCalls = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/fields'));
+      expect(fieldsCalls.some((c) => String(c[0]).includes(`/tables/${mechanicTableId}/fields`))).toBe(false);
+      // 認証が通った ridejob / liftjob は調べにいく
+      expect(fieldsCalls.length).toBeGreaterThan(0);
+    });
+
+    it('?deep=0 では列を調べない', async () => {
+      vi.stubEnv('HEALTH_CHECK_TOKEN', 'secret');
+      for (const [k, v] of Object.entries(LARK_ENV)) vi.stubEnv(k, v);
+      stubFetch();
+      const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
+
+      const req = new NextRequest('https://ridejob.jp/api/health?deep=0', {
+        headers: { 'x-health-token': 'secret' },
+      });
+      const res = await GET(req);
+      expect(await res.json()).toEqual({ status: 'ready', deep: false });
+      expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/fields'))).toBe(false);
+    });
+
+    it('列不足の応答にも秘密情報を含めない', async () => {
+      vi.stubEnv('HEALTH_CHECK_TOKEN', 'secret');
+      for (const [k, v] of Object.entries(LARK_ENV)) vi.stubEnv(k, v);
+      const missingColumn = resolveExpectedColumnsGroups().find((g) => g.profile === 'ridejob')!.expected[0];
+      stubFetch({ missingColumns: { ridejob: [missingColumn] } });
+
+      const res = await GET(makeRequest({ 'x-health-token': 'secret' }));
+      expect(res.status).toBe(503);
+      const text = JSON.stringify(await res.json());
+      for (const secret of [
+        'secret_ridejob', 'secret_mechanic', 'secret_liftjob',
+        'cli_ridejob', 'cli_mechanic', 'cli_liftjob',
+        'app_ridejob', 'test-vault-key', 'relay-secret', 'open.larksuite.com',
+      ]) {
+        expect(text).not.toContain(secret);
+      }
+    });
+  });
 });

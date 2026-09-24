@@ -427,3 +427,207 @@ describe('findRecentRecordByPhone（Webhook経路の重複止血）', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
+
+describe('checkBaseColumns（Base の表に書き込み側の列がそろっているかの確認）', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    vi.resetModules();
+  });
+
+  it('2ページに分かれた列一覧を全部読んで ok', async () => {
+    stubEnv();
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
+      const url = String(input);
+      if (url.includes('tenant_access_token')) {
+        return Response.json({ code: 0, tenant_access_token: 'token', expire: 7200 });
+      }
+      if (url.includes('/fields')) {
+        if (!new URL(url).searchParams.get('page_token')) {
+          return Response.json({
+            code: 0,
+            data: { items: [{ field_name: '求職者名' }], has_more: true, page_token: 'p2' },
+          });
+        }
+        expect(new URL(url).searchParams.get('page_token')).toBe('p2');
+        return Response.json({
+          code: 0,
+          data: { items: [{ field_name: '電話番号' }], has_more: false },
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }));
+    const { checkBaseColumns } = await import('./larkBase');
+    await expect(checkBaseColumns('liftjob', 'tbl-test', ['求職者名', '電話番号'])).resolves.toEqual({ ok: true });
+  });
+
+  it('キャッシュ済みのトークンが失効していれば1回だけ取り直して読み直す', async () => {
+    stubEnv();
+    let fieldsCalls = 0;
+    const fetchSpy = vi.fn(async (input: unknown) => {
+      const url = String(input);
+      if (url.includes('tenant_access_token')) {
+        return Response.json({ code: 0, tenant_access_token: 'token', expire: 7200 });
+      }
+      fieldsCalls += 1;
+      if (fieldsCalls === 1) return Response.json({ code: 99991663, msg: 'invalid access token' }, { status: 400 });
+      return Response.json({ code: 0, data: { items: [{ field_name: '求職者名' }], has_more: false } });
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    const { checkBaseColumns } = await import('./larkBase');
+    await expect(checkBaseColumns('liftjob', 'tbl-test', ['求職者名'])).resolves.toEqual({ ok: true });
+    expect(fetchSpy.mock.calls.filter((c) => String(c[0]).includes('tenant_access_token'))).toHaveLength(2);
+    expect(fieldsCalls).toBe(2);
+  });
+
+  it('has_more なのに page_token が無ければ、読めた分だけで判定しない', async () => {
+    stubEnv();
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
+      if (String(input).includes('tenant_access_token')) {
+        return Response.json({ code: 0, tenant_access_token: 'token', expire: 7200 });
+      }
+      return Response.json({ code: 0, data: { items: [{ field_name: '求職者名' }], has_more: true } });
+    }));
+    const { checkBaseColumns } = await import('./larkBase');
+    await expect(checkBaseColumns('liftjob', 'tbl-test', ['求職者名', '電話番号'])).resolves.toEqual({
+      ok: false,
+      reason: 'bad_page_token',
+    });
+  });
+
+  it('締め切りを過ぎたら列一覧を読みに行かず timeout を返す', async () => {
+    stubEnv();
+    const fetchSpy = vi.fn(async (input: unknown) => {
+      if (String(input).includes('tenant_access_token')) {
+        return Response.json({ code: 0, tenant_access_token: 'token', expire: 7200 });
+      }
+      return Response.json({ code: 0, data: { items: [], has_more: false } });
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    const { checkBaseColumns } = await import('./larkBase');
+    // 締め切りを決めた直後から時計を進める（トークンの取得に時間がかかった状況）
+    const now = vi.spyOn(Date, 'now').mockReturnValueOnce(0).mockReturnValue(60_000);
+    try {
+      await expect(checkBaseColumns('liftjob', 'tbl-test', ['求職者名'])).resolves.toEqual({
+        ok: false,
+        reason: 'timeout',
+      });
+      expect(fetchSpy.mock.calls.some((c) => String(c[0]).includes('/fields'))).toBe(false);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('has_more が止まらなければ上限のページ数で打ち切る', async () => {
+    stubEnv();
+    const fetchSpy = vi.fn(async (input: unknown) => {
+      const url = String(input);
+      if (url.includes('tenant_access_token')) {
+        return Response.json({ code: 0, tenant_access_token: 'token', expire: 7200 });
+      }
+      return Response.json({ code: 0, data: { items: [], has_more: true, page_token: 'again' } });
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    const { checkBaseColumns } = await import('./larkBase');
+    await expect(checkBaseColumns('liftjob', 'tbl-test', ['求職者名'])).resolves.toEqual({
+      ok: false,
+      reason: 'too_many_pages',
+    });
+    expect(fetchSpy.mock.calls.filter((c) => String(c[0]).includes('/fields'))).toHaveLength(10);
+  });
+
+  it('足りない列を expected の順で返す（重複は1回だけ）', async () => {
+    stubEnv();
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
+      const url = String(input);
+      if (url.includes('tenant_access_token')) {
+        return Response.json({ code: 0, tenant_access_token: 'token', expire: 7200 });
+      }
+      if (url.includes('/fields')) {
+        return Response.json({ code: 0, data: { items: [{ field_name: '求職者名' }], has_more: false } });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }));
+    const { checkBaseColumns } = await import('./larkBase');
+    await expect(
+      checkBaseColumns('liftjob', 'tbl-test', ['電話番号', '求職者名', 'メールアドレス', '電話番号']),
+    ).resolves.toEqual({
+      ok: false,
+      reason: 'missing_columns',
+      missingColumns: ['電話番号', 'メールアドレス'],
+    });
+  });
+
+  it('Lark の code!=0 は lark_code_ を理由にする', async () => {
+    stubEnv();
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
+      const url = String(input);
+      if (url.includes('tenant_access_token')) {
+        return Response.json({ code: 0, tenant_access_token: 'token', expire: 7200 });
+      }
+      return Response.json({ code: 99999, msg: 'error' });
+    }));
+    const { checkBaseColumns } = await import('./larkBase');
+    await expect(checkBaseColumns('liftjob', 'tbl-test', ['求職者名'])).resolves.toEqual({
+      ok: false,
+      reason: 'lark_code_99999',
+    });
+  });
+
+  it('HTTP 500 は http_500 を理由にする', async () => {
+    stubEnv();
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
+      const url = String(input);
+      if (url.includes('tenant_access_token')) {
+        return Response.json({ code: 0, tenant_access_token: 'token', expire: 7200 });
+      }
+      return new Response('{}', { status: 500 });
+    }));
+    const { checkBaseColumns } = await import('./larkBase');
+    await expect(checkBaseColumns('liftjob', 'tbl-test', ['求職者名'])).resolves.toEqual({
+      ok: false,
+      reason: 'http_500',
+    });
+  });
+
+  it('通信例外は unreachable、TimeoutError は timeout を理由にする', async () => {
+    stubEnv();
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
+      const url = String(input);
+      if (url.includes('tenant_access_token')) {
+        return Response.json({ code: 0, tenant_access_token: 'token', expire: 7200 });
+      }
+      throw new TypeError('fetch failed');
+    }));
+    const { checkBaseColumns } = await import('./larkBase');
+    await expect(checkBaseColumns('liftjob', 'tbl-test', ['求職者名'])).resolves.toEqual({
+      ok: false,
+      reason: 'unreachable',
+    });
+
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
+      const url = String(input);
+      if (url.includes('tenant_access_token')) {
+        return Response.json({ code: 0, tenant_access_token: 'token', expire: 7200 });
+      }
+      throw Object.assign(new Error('timed out'), { name: 'TimeoutError' });
+    }));
+    vi.resetModules();
+    const { checkBaseColumns: checkBaseColumnsAgain } = await import('./larkBase');
+    await expect(checkBaseColumnsAgain('liftjob', 'tbl-test', ['求職者名'])).resolves.toEqual({
+      ok: false,
+      reason: 'timeout',
+    });
+  });
+
+  it('未設定なら not_configured を返し、fetch を呼ばない', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const { checkBaseColumns } = await import('./larkBase');
+    await expect(checkBaseColumns('liftjob', 'tbl-test', ['求職者名'])).resolves.toEqual({
+      ok: false,
+      reason: 'not_configured',
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});

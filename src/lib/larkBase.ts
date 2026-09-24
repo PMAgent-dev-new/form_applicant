@@ -131,6 +131,91 @@ export async function checkLarkAuth(
   }
 }
 
+export type BaseColumnsCheck =
+  | { ok: true }
+  | { ok: false; reason: string; missingColumns?: string[] };
+
+/**
+ * 指定テーブルに、書き込み側が使う列（expected）がすべて揃っているかを確かめる。
+ *
+ * fetchTableFields は使わない。あちらは1ページ・10分キャッシュで応募時のリンク解決向けに
+ * 最適化されており、ここでは呼び出しのたびに「今この瞬間の全列」を見る必要があるため。
+ * getJson も使わない（HTTP非2xxとLarkのcode!=0を1種類の例外にまとめてしまい、
+ * 理由を http_/lark_code_ で書き分けられないため）。
+ *
+ * 返り値は成否と理由・不足列名だけ。**秘密情報は絶対に含めない**（checkLarkAuth と同じ理由）。
+ */
+// 列が数百を超える表は想定していない。has_more が止まらない応答で粘らないよう、読むページ数に上限を置く。
+const MAX_FIELD_PAGES = 10;
+// 列の確認全体の締め切り。health は relay と認証の確認のあとにこれを直列で呼ぶので、区切らないと
+// Lark が遅いときに実行上限（maxDuration）を超えて 504 になり、guard からは応答なしに見える。
+// トークンの取得（最大5秒）は締め切りで止められないので、取り直しが入ると数秒はみ出す。
+const COLUMN_CHECK_BUDGET_MS = 8_000;
+
+type FieldsPage = {
+  code?: number;
+  data?: { items?: { field_name?: string }[]; has_more?: boolean; page_token?: string };
+};
+
+export async function checkBaseColumns(
+  profile: LarkProfile,
+  tableId: string,
+  expected: string[],
+): Promise<BaseColumnsCheck> {
+  const cfg = readConfig(profile);
+  if (!cfg) return { ok: false, reason: "not_configured" };
+
+  // 締め切りは呼び出しの頭から数える（トークンの取得・取り直しの時間も含める）。
+  const deadline = Date.now() + COLUMN_CHECK_BUDGET_MS;
+
+  try {
+    const names = new Set<string>();
+    let pageToken = "";
+    let pages = 0;
+    do {
+      if (++pages > MAX_FIELD_PAGES) return { ok: false, reason: "too_many_pages" };
+      const query = new URLSearchParams({ page_size: "100" });
+      if (pageToken) query.set("page_token", pageToken);
+      const url = `${cfg.domain}/open-apis/bitable/v1/apps/${cfg.appToken}/tables/${tableId}/fields?${query}`;
+      // 書き込みと同じく、キャッシュ済みのトークンが失効していれば1回だけ取り直す。
+      const { res, data } = await withTokenRefresh(cfg, profile, async (token) => {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          throw Object.assign(new Error("column check deadline exceeded"), { name: "TimeoutError" });
+        }
+        const res = await fetch(url, {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: AbortSignal.timeout(Math.min(5000, remaining)),
+        });
+        const data = (await res.json().catch(() => ({}))) as FieldsPage;
+        return { code: data.code, res, data };
+      });
+      // Lark は HTTP200 でも code!=0 で失敗する。200 を成功扱いしない（checkLarkAuth と同様）。
+      if (!res.ok) return { ok: false, reason: `http_${res.status}` };
+      if (data.code !== 0) return { ok: false, reason: `lark_code_${data.code ?? "unknown"}` };
+      for (const item of data.data?.items ?? []) {
+        if (item.field_name) names.add(item.field_name);
+      }
+      // 続きがあるのに page_token が無ければ、読めた分だけで突き合わせると列の不足を取り違える。
+      if (data.data?.has_more && !data.data.page_token) return { ok: false, reason: "bad_page_token" };
+      pageToken = data.data?.has_more ? (data.data.page_token ?? "") : "";
+    } while (pageToken);
+
+    const seen = new Set<string>();
+    const missingColumns = expected.filter((name) => {
+      if (seen.has(name)) return false;
+      seen.add(name);
+      return !names.has(name);
+    });
+    if (missingColumns.length > 0) return { ok: false, reason: "missing_columns", missingColumns };
+    return { ok: true };
+  } catch (e) {
+    // 例外メッセージは載せない。fetch の例外には URL が入ることがある。
+    const name = e instanceof Error ? e.name : "Error";
+    return { ok: false, reason: name === "TimeoutError" ? "timeout" : "unreachable" };
+  }
+}
+
 async function fetchTenantAccessToken(cfg: LarkBaseConfig, profile: LarkProfile): Promise<string> {
   const now = Date.now();
   // 期限の30秒前までは使い回す。
