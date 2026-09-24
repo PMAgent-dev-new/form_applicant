@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { GET } from './route';
+import { DEEP_CHECK_PROFILES, GET, findMissingEnvGroups } from './route';
 
 function makeRequest(headers: Record<string, string> = {}) {
   return new NextRequest('https://ridejob.jp/api/health', { headers });
@@ -519,6 +519,21 @@ describe('GET /api/health', () => {
     // 既定: 資格情報まで見たうえで、env だけが足りない
     const r1 = await GET(makeRequest({ 'x-health-token': 'secret' }));
     expect(await r1.json()).toEqual({ status: 'degraded', deep: true, missing: ['submission_vault_url'] });
+  });
+
+
+  it.each(
+    DEEP_CHECK_PROFILES.flatMap((p) =>
+      ['ID', 'SECRET', 'TOKEN'].map((k) => `APP_${k}_${p.toUpperCase()}`),
+    ),
+  )('%s が欠けたら missing に出る（not_configured を捨ててよい前提）', (name) => {
+    // route.ts は not_configured を unreachable に載せない。それが安全なのは APP_* の欠落が
+    // missing で必ず名指しされるから。プロファイルを足して必須 env に入れ忘れると、
+    // 資格情報が無いのに誰も鳴らない状態が黙って生まれる。それをここで止める。
+    for (const [k, v] of Object.entries(LARK_ENV)) vi.stubEnv(k, v);
+    expect(findMissingEnvGroups()).toEqual([]);
+    vi.stubEnv(name, '');
+    expect(findMissingEnvGroups().length).toBeGreaterThan(0);
   });
 
 });

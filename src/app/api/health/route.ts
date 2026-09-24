@@ -30,6 +30,12 @@ import { checkLarkAuth, type LarkProfile } from '@/lib/larkBase';
  */
 
 export const dynamic = 'force-dynamic';
+
+// 実接続チェックの対象。**ここに足したら REQUIRED_ENV_GROUPS にも APP_* の3変数を足すこと。**
+// not_configured を unreachable に載せないのは、APP_* の欠落が missing で必ず名指しされる
+// という前提があるから。片方だけ足すと、資格情報が無いのに missing にも unreachable にも
+// 出ない＝誰も鳴らない状態が黙って生まれる（route.test.ts がこの前提を検査している）。
+export const DEEP_CHECK_PROFILES: LarkProfile[] = ['ridejob', 'mechanic', 'liftjob'];
 // relay チェック(最大5秒)が終わってから deep チェック(最大5秒)が走るので、コールド
 // スタートを足すと既定の実行上限(10秒)に触れて 504 になり得る。504 は guard から見ると
 // unhealthy と同じなので、上限を明示して「本当に壊れている」とだけ区別する。
@@ -145,9 +151,8 @@ export async function GET(request: NextRequest) {
   const deep = request.nextUrl.searchParams.get('deep') !== '0';
   let unreachable: string[] = [];
   if (deep) {
-    const profiles: LarkProfile[] = ['ridejob', 'mechanic', 'liftjob'];
     const results = await Promise.all(
-      profiles.map(async (p) => ({ profile: p, result: await checkLarkAuth(p) })),
+      DEEP_CHECK_PROFILES.map(async (p) => ({ profile: p, result: await checkLarkAuth(p) })),
     );
     // not_configured は載せない。APP_* の欠落は REQUIRED_ENV_GROUPS が同じ9変数を持つので
     // missing で必ず名指しされている。unreachable に載せると監視側で「資格情報が通らない」
