@@ -132,7 +132,7 @@ describe('GET /api/health', () => {
     vi.stubEnv('LARK_BASE_WEBHOOK_URL_TEST', '');
     const res = await GET(makeRequest({ 'x-health-token': 'secret' }));
     expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ status: 'degraded', missing: ['lark_base'] });
+    expect(await res.json()).toEqual({ status: 'degraded', deep: true, missing: ['lark_base'] });
   });
 
   it('RIDE JOBの直接Base資格情報が欠けたら求人帰属を守るためdegradedにする', async () => {
@@ -142,11 +142,12 @@ describe('GET /api/health', () => {
     vi.stubEnv('APP_SECRET_RIDEJOB', '');
     const res = await GET(makeRequest({ 'x-health-token': 'secret' }));
     expect(res.status).toBe(503);
-    // env の不足と、そのせいで認証を試せないことの両方が返る
+    // APP_* の欠落は missing で名指し済み。unreachable（資格情報が通らない）には載せない。
+    // 載せると監視側で 🔴（毎回）に倒れ、既知の設定漏れで鳴りっぱなしになる。
     expect(await res.json()).toEqual({
       status: 'degraded',
+      deep: true,
       missing: ['lark_ridejob_app_secret'],
-      unreachable: ['lark_auth_ridejob:not_configured'],
     });
   });
 
@@ -236,6 +237,7 @@ describe('GET /api/health', () => {
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({
       status: 'degraded',
+      deep: true,
       missing: ['openai_ads_relay_upstream'],
     });
   });
@@ -249,7 +251,7 @@ describe('GET /api/health', () => {
 
     const res = await GET(makeRequest({ 'x-health-token': 'secret' }));
     expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ status: 'degraded', missing: ['lark_liftjob_notify'] });
+    expect(await res.json()).toEqual({ status: 'degraded', deep: true, missing: ['lark_liftjob_notify'] });
   });
 
   it('直接Base資格情報が揃えば旧Base Webhookがなくてもreadyにする', async () => {
@@ -373,6 +375,7 @@ describe('GET /api/health', () => {
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({
       status: 'degraded',
+      deep: true,
       unreachable: ['lark_auth_mechanic:lark_code_10003'],
     });
   });
@@ -404,6 +407,7 @@ describe('GET /api/health', () => {
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({
       status: 'degraded',
+      deep: true,
       unreachable: ['lark_auth_ridejob:bad_domain'],
     });
     // ridejob は fetch にすら行かない（mechanic と liftjob の 2 回だけ）
@@ -442,6 +446,7 @@ describe('GET /api/health', () => {
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({
       status: 'degraded',
+      deep: true,
       missing: ['openai_ads_relay_upstream'],
       unreachable: [
         'lark_auth_ridejob:lark_code_10003',
@@ -482,4 +487,38 @@ describe('GET /api/health', () => {
       expect((await GET(req)).status).toBe(503);
     },
   );
+
+  it('env が足りないときは relay を叩かない（叩いても意味がない）', async () => {
+    vi.stubEnv('HEALTH_CHECK_TOKEN', 'secret');
+    for (const [k, v] of Object.entries(LARK_ENV)) vi.stubEnv(k, v);
+    vi.stubEnv('SUBMISSION_VAULT_URL', '');
+    vi.stubEnv('OPENAI_ADS_PIXEL_ID', '');
+    vi.stubEnv('OPENAI_ADS_CAPI_KEY', '');
+    vi.stubEnv('OPENAI_ADS_RELAY_URL', 'https://ridejob.jp/entry/api/openai/conversions');
+    vi.stubEnv('OPENAI_ADS_RELAY_TOKEN', 'relay-secret');
+    stubFetch();
+    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
+
+    await GET(makeRequest({ 'x-health-token': 'secret' }));
+    const relayCalls = fetchMock.mock.calls.filter((c) => !String(c[0]).includes('tenant_access_token'));
+    expect(relayCalls).toHaveLength(0);
+  });
+
+  it('degraded にも deep が入り、実接続まで見たかが受け手に分かる', async () => {
+    vi.stubEnv('HEALTH_CHECK_TOKEN', 'secret');
+    for (const [k, v] of Object.entries(LARK_ENV)) vi.stubEnv(k, v);
+    vi.stubEnv('SUBMISSION_VAULT_URL', '');
+    stubFetch();
+
+    // deep=0: env だけを見た。資格情報が無事かは分からない
+    const r0 = await GET(
+      new NextRequest('https://ridejob.jp/api/health?deep=0', { headers: { 'x-health-token': 'secret' } }),
+    );
+    expect(await r0.json()).toEqual({ status: 'degraded', deep: false, missing: ['submission_vault_url'] });
+
+    // 既定: 資格情報まで見たうえで、env だけが足りない
+    const r1 = await GET(makeRequest({ 'x-health-token': 'secret' }));
+    expect(await r1.json()).toEqual({ status: 'degraded', deep: true, missing: ['submission_vault_url'] });
+  });
+
 });
