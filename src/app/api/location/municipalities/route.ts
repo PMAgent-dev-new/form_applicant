@@ -1,12 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { fetchMunicipalities, fetchMunicipalityById } from '@/lib/microcms';
+import { isMicrocmsId } from '@/lib/query-params';
 
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const prefectureId = searchParams.get('prefectureId') || undefined;
     const municipalityId = searchParams.get('municipalityId');
+
+    if ((prefectureId !== undefined && !isMicrocmsId(prefectureId)) || (municipalityId !== null && !isMicrocmsId(municipalityId))) {
+      return NextResponse.json({ error: 'invalid id' }, { status: 400 });
+    }
 
     if (municipalityId) {
       const municipality = await fetchMunicipalityById(municipalityId);

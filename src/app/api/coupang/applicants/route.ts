@@ -22,6 +22,7 @@ import {
   updateBaseRecord,
   type LarkFieldValue,
 } from '@/lib/larkBase';
+import { neutralizeLarkTags } from '@/lib/lark-text';
 
 /**
  * referer が取れないときに CAPI へ渡す既定の event_source_url。
@@ -727,7 +728,7 @@ export async function POST(request: NextRequest) {
         const resp = await fetch(notifyWebhookUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ msg_type: 'text', content: { text: notificationText } }),
+          body: JSON.stringify({ msg_type: 'text', content: { text: neutralizeLarkTags(notificationText) } }),
           signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
         });
         const result = (await resp.json().catch(() => ({}))) as LarkWebhookResult;

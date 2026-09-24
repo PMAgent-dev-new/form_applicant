@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import { createBaseRecord, isLarkBaseConfigured } from "@/lib/larkBase";
 import { saveToSubmissionVault } from "@/lib/submissionVault";
+import { neutralizeLarkTags } from '@/lib/lark-text';
 
 // 2027新卒 鈑金塗装職LP（/gulliver/newgraduate → 本番は /entry/gulliver/newgraduate）の
 // 会社説明会お申し込み受付。
@@ -116,7 +117,7 @@ export async function POST(req: Request) {
       if (baseSaveFailed) {
         textLines.push(`受付ID: ${submissionId}`, `Base 未登録の理由: ${baseSaveFailed}`);
       }
-      const payload = { msg_type: "text", content: { text: textLines.join("\n") } };
+      const payload = { msg_type: "text", content: { text: neutralizeLarkTags(textLines.join("\n")) } };
 
       try {
         const larkRes = await fetch(webhookUrl, {

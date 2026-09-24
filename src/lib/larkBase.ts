@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 
 import { describeError } from "./describe-error";
+import { neutralizeLarkTags } from './lark-text';
 
 // 認証プロファイル。投入先 Base（Bitable アプリ）ごとに異なるアプリ資格情報を使う。
 //   mechanic … 求職者DB👷‍♂️ / IDOM_新卒2027 等（既存 APP_*_MECHANIC）
@@ -743,7 +744,8 @@ export async function sendLarkTextMessage(
       body: JSON.stringify({
         receive_id: chatId,
         msg_type: 'text',
-        content: JSON.stringify({ text }),
+        // 入力値に含まれる <at> 等をタグとして解釈させない（lark-text.ts）
+        content: JSON.stringify({ text: neutralizeLarkTags(text) }),
         uuid: larkMessageUuid(uuid),
       }),
       signal: AbortSignal.timeout(5000),

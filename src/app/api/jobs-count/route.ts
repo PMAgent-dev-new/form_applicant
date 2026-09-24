@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { getJobsByPrefectureId, fetchPrefectureById, fetchMunicipalityById, getPrefectureByRegion } from '@/lib/microcms';
 import { normalizePostcode } from '@/lib/postcode';
+import { isMicrocmsId, parseMicrocmsIdList } from '@/lib/query-params';
 import { fetchAddressByZipcode } from '@/lib/zipcloud';
 
 export async function GET(request: NextRequest) {
@@ -10,10 +11,16 @@ export async function GET(request: NextRequest) {
     const postalCode = searchParams.get('postalCode');
     const prefectureId = searchParams.get('prefectureId');
     const municipalityId = searchParams.get('municipalityId');
-    const jobCategoryIdsParam = searchParams.get('jobCategoryIds');
-    const jobCategoryIds = jobCategoryIdsParam
-      ? jobCategoryIdsParam.split(',').map((id) => id.trim()).filter(Boolean)
-      : undefined;
+    const parsedCategoryIds = parseMicrocmsIdList(searchParams.get('jobCategoryIds'));
+
+    if (
+      parsedCategoryIds === null ||
+      (prefectureId !== null && !isMicrocmsId(prefectureId)) ||
+      (municipalityId !== null && !isMicrocmsId(municipalityId))
+    ) {
+      return NextResponse.json({ error: 'invalid id' }, { status: 400 });
+    }
+    const jobCategoryIds = parsedCategoryIds.length > 0 ? parsedCategoryIds : undefined;
 
     if (prefectureId) {
       const prefecture = await fetchPrefectureById(prefectureId);

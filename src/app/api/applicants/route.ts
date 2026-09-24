@@ -33,6 +33,7 @@ import { fetchJobById } from '@/lib/microcms';
 import { describeError } from '@/lib/describe-error';
 import { findRecentRecordByPhone } from '@/lib/larkBase';
 import { markSubmissionVaultNotified, saveToSubmissionVault } from '@/lib/submissionVault';
+import { neutralizeLarkTags } from '@/lib/lark-text';
 
 // Bitable 直書きの投入先テーブル（env で上書き可）。
 //   default / bus       → 求職者DB🚕   （ridejob base：APP_*_RIDEJOB）
@@ -916,7 +917,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
 
         const larkPayload = {
           msg_type: 'text',
-          content: { text: messageContent },
+          content: { text: neutralizeLarkTags(messageContent) },
         } as const;
 
         let notificationSent = false;
