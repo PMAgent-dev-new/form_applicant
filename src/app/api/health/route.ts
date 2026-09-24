@@ -28,6 +28,10 @@ import { checkLarkAuth, type LarkProfile } from '@/lib/larkBase';
  */
 
 export const dynamic = 'force-dynamic';
+// relay チェック(最大5秒)が終わってから deep チェック(最大5秒)が走るので、コールド
+// スタートを足すと既定の実行上限(10秒)に触れて 504 になり得る。504 は guard から見ると
+// unhealthy と同じなので、上限を明示して「本当に壊れている」とだけ区別する。
+export const maxDuration = 20;
 
 type EnvGroup = { name: string; anyOf: string[]; notifyOnly?: boolean };
 

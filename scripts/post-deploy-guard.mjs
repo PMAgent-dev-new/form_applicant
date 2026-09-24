@@ -208,11 +208,12 @@ export function selectRollbackTarget(deployments, currentUrl) {
 /**
  * @param {{name:string,url:string}} project
  * @param {{retryDelayMs?:number}} [options]
- * @returns {Promise<{project:string, verdict:'ready'|'live'|'unhealthy', detail:string}>}
+ * @returns {Promise<{project:string, verdict:'ready'|'live'|'alert-only'|'unhealthy', detail:string}>}
  */
 export async function healthCheck(project, options = {}) {
   const headers = HEALTH_CHECK_TOKEN ? { 'x-health-token': HEALTH_CHECK_TOKEN } : {};
   let degraded = 0;
+  let shallowReady = 0;
   let rejectedReadiness = 0;
   let lastDetail = 'no response';
 
@@ -226,7 +227,20 @@ export async function healthCheck(project, options = {}) {
       lastDetail = `HTTP ${res.status} ${JSON.stringify(body)}`;
 
       if (res.status === 200 && body.status === 'ready') {
-        return { project: project.name, verdict: 'ready', detail: lastDetail };
+        if (body.deep === true) {
+          return { project: project.name, verdict: 'ready', detail: lastDetail };
+        }
+        // deep を省いた ready は「env が在る」ところまでしか見ていない。2026-09-17〜24 の
+        // 障害は、まさにその状態で 7 日間 ready を返し続けた。alias 切替の最中に旧ビルドが
+        // 応答することがあるので 1 回だけ許容し、続くなら合格にしない。
+        shallowReady += 1;
+        if (shallowReady >= 2) {
+          return {
+            project: project.name,
+            verdict: 'unhealthy',
+            detail: `${lastDetail} (deep check missing or skipped)`,
+          };
+        }
       }
       if (res.status === 200 && body.status === 'ok') {
         if (!HEALTH_CHECK_TOKEN) {
@@ -245,8 +259,20 @@ export async function healthCheck(project, options = {}) {
       }
       if (res.status === 503 && body.status === 'degraded') {
         degraded += 1;
+        // Lark の資格情報だけが原因の degraded は、**コードを戻しても直らない**。
+        // Vercel の env はデプロイ時のスナップショットなので、rollback は「壊れた env を
+        // 持つ前のデプロイ」へ戻すだけで、env を直すための再デプロイを巻き戻してしまう。
+        // 外部サービスの一時的な不調で本番が勝手に戻ることも防ぐ。知らせるに留める。
+        const larkOnly =
+          Array.isArray(body.unreachable) &&
+          body.unreachable.length > 0 &&
+          body.unreachable.every((u) => String(u).startsWith('lark_auth_'));
         if (degraded >= 2) {
-          return { project: project.name, verdict: 'unhealthy', detail: lastDetail };
+          return {
+            project: project.name,
+            verdict: larkOnly ? 'alert-only' : 'unhealthy',
+            detail: lastDetail,
+          };
         }
       }
     } catch (e) {
@@ -428,11 +454,29 @@ async function main() {
   for (const r of results) {
     if (r.verdict === 'ready') log(`✓ ${r.project}: ready — ${r.detail}`);
     else if (r.verdict === 'live') warn(`${r.project}: liveness only (readiness not verified) — ${r.detail}`);
+    else if (r.verdict === 'alert-only') fail(`${r.project}: DEGRADED (Lark auth) — ${r.detail}`);
     else fail(`${r.project}: UNHEALTHY — ${r.detail}`);
+  }
+
+  // rollback しない degraded。先に知らせてから unhealthy の処理へ進む。
+  const alertOnly = results.filter((r) => r.verdict === 'alert-only');
+  for (const r of alertOnly) {
+    const line = `post-deploy guard: ${r.project} degraded (Lark auth) after deploy ${GITHUB_SHA.slice(0, 7)} — ${r.detail}`;
+    fail(`${line} → NOT rolling back (code rollback cannot fix credentials)`);
+    await notify(
+      `🔴 ${line}\n` +
+        'rollback はしません。env はデプロイ時のスナップショットなので、前のデプロイへ戻しても ' +
+        '同じ壊れた資格情報を持つだけです。LARK_DOMAIN_* / APP_ID_* / APP_SECRET_* を直して ' +
+        '再デプロイしてください（Vercel は再デプロイするまで env が効きません）。',
+    );
   }
 
   const unhealthy = results.filter((r) => r.verdict === 'unhealthy');
   if (unhealthy.length === 0) {
+    if (alertOnly.length > 0) {
+      process.exitCode = 1; // rollback はしないが、赤くして人が見る状態にする
+      return;
+    }
     log('all production projects healthy');
     return;
   }

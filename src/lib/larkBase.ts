@@ -101,6 +101,16 @@ export async function checkLarkAuth(
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   const cfg = readConfig(profile);
   if (!cfg) return { ok: false, reason: "not_configured" };
+  // スキームの無い LARK_DOMAIN_*（例: "open.larksuite.com"）は、fetch がネットワークに
+  // 出る前に TypeError(ERR_INVALID_URL) を投げる。下の catch はそれを "unreachable" に
+  // 潰すので、**設定ミスと Lark の障害が区別できなくなる**。2026-09-17〜24 の障害では
+  // この2つが同時に起きていた。設定ミスは設定ミスとして名指しする。
+  try {
+    const u = new URL(cfg.domain);
+    if (u.protocol !== "https:" && u.protocol !== "http:") throw new Error("scheme");
+  } catch {
+    return { ok: false, reason: "bad_domain" };
+  }
   try {
     const res = await fetch(`${cfg.domain}/open-apis/auth/v3/tenant_access_token/internal`, {
       method: "POST",
