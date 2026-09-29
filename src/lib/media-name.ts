@@ -83,6 +83,16 @@ export function describeMedia(utmParams: { utm_source?: string; utm_medium?: str
   return `${name}（${medium}）`;
 }
 
+/**
+ * Meta の動的URLパラメータが置換されないまま届いた utm_source。
+ * 入稿URLは `utm_source={{site_source_name}}` で配置（fb / ig 等）を受け取るが、Meta が置換するのは
+ * 広告クリックのときだけで、リンクが広告クリック以外の経路で開かれるとマクロのまま届く
+ * （2026-07〜09 の応募では、この形はすべて fbclid なし）。
+ * Meta広告の入稿URL由来なのは確かだが、配置は分からない。
+ * 以前は default 節で `{{site_source_name}}(cpc)` と出ており、通知で「流入元が出ていない」と読まれた。
+ */
+const UNRESOLVED_META_SOURCE = '{{site_source_name}}';
+
 /** matched=false は「表に無い流入元」。default 節の `source(medium)` 形式で返している。 */
 function resolve(utmParams: { utm_source?: string; utm_medium?: string }): { name: string; matched: boolean } {
   const { utm_medium } = utmParams;
@@ -112,6 +122,10 @@ function resolve(utmParams: { utm_source?: string; utm_medium?: string }): { nam
         return { name: 'Meta広告', matched: true };
       }
       return { name: 'Meta', matched: true };
+
+    case UNRESOLVED_META_SOURCE:
+      // マクロは広告の入稿URLにしか無いので medium によらず広告扱い。生の medium は describeMedia が併記する。
+      return { name: 'Meta広告・配置不明', matched: true };
 
     case 'openai':
       // 広告（ChatGPT Ads）と、回答内引用からの自然流入を分ける。

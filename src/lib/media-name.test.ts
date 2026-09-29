@@ -72,6 +72,22 @@ describe('getMediaName', () => {
     expect(getMediaName({ utm_source: 'indeed', utm_medium: 'cpc' })).toBe('indeed(cpc)');
     expect(getMediaName({ utm_source: 'example.com' })).toBe('example.com');
   });
+
+  describe('Meta の動的パラメータが置換されずに届いた応募', () => {
+    it('{{site_source_name}} は Meta広告・配置不明', () => {
+      expect(getMediaName({ utm_source: '{{site_source_name}}', utm_medium: 'cpc' })).toBe('Meta広告・配置不明');
+      expect(getMediaName({ utm_source: '{{site_source_name}}' })).toBe('Meta広告・配置不明');
+    });
+
+    it('置換済みの配置（fb / ig）の表示は変えない', () => {
+      expect(getMediaName({ utm_source: 'fb', utm_medium: 'cpc' })).toBe('fb(cpc)');
+      expect(getMediaName({ utm_source: 'ig', utm_medium: 'cpc' })).toBe('ig(cpc)');
+    });
+
+    it('ほかのマクロは Meta と決めつけず source(medium) のまま出す', () => {
+      expect(getMediaName({ utm_source: '{{campaign.id}}', utm_medium: 'cpc' })).toBe('{{campaign.id}}(cpc)');
+    });
+  });
 });
 
 describe('displaySource', () => {
@@ -95,6 +111,10 @@ describe('describeMedia（チャット通知用）', () => {
 
   it('未知の流入元は source(medium) 形式のまま二重に付けない', () => {
     expect(describeMedia({ utm_source: 'indeed', utm_medium: 'cpc' })).toBe('indeed(cpc)');
+  });
+
+  it('置換されなかった {{site_source_name}} は Meta広告・配置不明に medium を併記する', () => {
+    expect(describeMedia({ utm_source: '{{site_source_name}}', utm_medium: 'cpc' })).toBe('Meta広告・配置不明（cpc）');
   });
 
   it('medium が無ければ媒体名だけ', () => {
