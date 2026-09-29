@@ -11,7 +11,7 @@ import { sendOpenAiConversion } from '@/lib/openai/capi';
 import { sendApplicationConfirmationEmail } from '@/lib/email/send-application-confirmation';
 import { sendApplicationSms } from '@/lib/sms/send-application-sms';
 import { BASE_PATH } from '@/lib/basePath';
-import { getMediaName } from '@/lib/media-name';
+import { getMediaName, UNRESOLVED_META_SOURCE } from '@/lib/media-name';
 import { resolveApplicationSourceMasterName } from '@/lib/lark-masters';
 import { isMetaAdsAttribution, isOpenAiAdsAttribution } from '@/lib/attribution';
 import { describeError } from '@/lib/describe-error';
@@ -257,7 +257,10 @@ export function getLiftJobMediaName(utm: UTMParams = {}): string {
   const source = text(utm.utm_source).toLowerCase();
   const medium = text(utm.utm_medium).toLowerCase();
   if (!source) return '経路不明';
-  if (META_SOURCE_NAMES[source] && META_AD_MEDIUMS.has(medium)) return 'Meta広告';
+  // 置換されなかった {{site_source_name}} も Meta広告の入稿URL由来なので、大分類は同じ「Meta広告」に入れる。
+  // 配置が分からないことは utm_source 列（生値）と通知（describeLiftJobRoute）で読める。
+  const isMetaSource = Boolean(META_SOURCE_NAMES[source]) || source === UNRESOLVED_META_SOURCE;
+  if (isMetaSource && META_AD_MEDIUMS.has(medium)) return 'Meta広告';
   return getMediaName(utm);
 }
 

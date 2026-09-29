@@ -79,6 +79,10 @@ describe('getMediaName', () => {
       expect(getMediaName({ utm_source: '{{site_source_name}}' })).toBe('Meta広告・配置不明');
     });
 
+    it('大文字で届いても同じ扱い（lark-masters と揃える）', () => {
+      expect(getMediaName({ utm_source: '{{SITE_SOURCE_NAME}}', utm_medium: 'cpc' })).toBe('Meta広告・配置不明');
+    });
+
     it('置換済みの配置（fb / ig）の表示は変えない', () => {
       expect(getMediaName({ utm_source: 'fb', utm_medium: 'cpc' })).toBe('fb(cpc)');
       expect(getMediaName({ utm_source: 'ig', utm_medium: 'cpc' })).toBe('ig(cpc)');

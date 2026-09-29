@@ -85,13 +85,14 @@ export function describeMedia(utmParams: { utm_source?: string; utm_medium?: str
 
 /**
  * Meta の動的URLパラメータが置換されないまま届いた utm_source。
- * 入稿URLは `utm_source={{site_source_name}}` で配置（fb / ig 等）を受け取るが、Meta が置換するのは
- * 広告クリックのときだけで、リンクが広告クリック以外の経路で開かれるとマクロのまま届く
- * （2026-07〜09 の応募では、この形はすべて fbclid なし）。
+ * 入稿URLは `utm_source={{site_source_name}}` で配置（fb / ig 等）を受け取る。
+ * 2026-07〜09 の応募では、マクロがすべて未置換のまま届いたものが3件あり、3件とも fbclid が無かった
+ * （置換済みの886件はすべて fbclid あり）。広告クリック以外の経路で開かれたものと推測している。
  * Meta広告の入稿URL由来なのは確かだが、配置は分からない。
- * 以前は default 節で `{{site_source_name}}(cpc)` と出ており、通知で「流入元が出ていない」と読まれた。
+ * 以前は default 節で `{{site_source_name}}(cpc)` と出ており、流入元として読めなかった。
+ * lark-masters.ts と LIFT JOB の route も同じ定数で判定する。
  */
-const UNRESOLVED_META_SOURCE = '{{site_source_name}}';
+export const UNRESOLVED_META_SOURCE = '{{site_source_name}}';
 
 /** matched=false は「表に無い流入元」。default 節の `source(medium)` 形式で返している。 */
 function resolve(utmParams: { utm_source?: string; utm_medium?: string }): { name: string; matched: boolean } {

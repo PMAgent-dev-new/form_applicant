@@ -16,6 +16,8 @@
  *    改名するときは Base 側と同時に直すこと。
  */
 
+import { UNRESOLVED_META_SOURCE } from './media-name';
+
 /** 判定に使う utm。route.ts の UTMParams と同形だが、必要な3つだけに絞っている。 */
 export type MasterNameUtm = {
   utm_source?: string;
@@ -45,8 +47,8 @@ const AD_SOURCE_PREFIXES: Record<string, string> = {
   google: 'google',
   // Meta の動的パラメータが置換されずに届いたもの（media-name.ts の UNRESOLVED_META_SOURCE 参照）。
   // Meta広告の入稿URL由来だが配置が分からないので、配置別ではない meta に寄せる
-  // （マスタ `meta(ad)` の説明は「utm_source=meta(配置不明) × medium=ad|cpc」）。
-  '{{site_source_name}}': 'meta',
+  // （🚕Base のマスタ `meta(ad)` の説明は「utm_source=meta(配置不明) × medium=ad|cpc」）。
+  [UNRESOLVED_META_SOURCE]: 'meta',
   // ChatGPT広告（OpenAI Ads）。入稿URLは utm_source=openai / utm_medium=cpc で統一している。
   // 回答内で引用されたリンクからの自然流入は utm を持たず referrer で判定するため（media-name.ts）、
   // ここには来ない。よって organic 側には足さない。

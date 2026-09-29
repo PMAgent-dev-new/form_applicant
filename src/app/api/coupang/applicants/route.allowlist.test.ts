@@ -535,6 +535,33 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     expect(payload.application_source).toBe('');
   });
 
+  it('Metaのマクロが置換されずに届いた応募は大分類をMeta広告にし、配置不明は通知で示す', async () => {
+    const { buildLiftJobBasePayload, describeLiftJobRoute, getLiftJobMediaName } = await import('./route');
+    const utm = { utm_source: '{{site_source_name}}', utm_medium: 'cpc' };
+    expect(getLiftJobMediaName(utm)).toBe('Meta広告');
+    expect(describeLiftJobRoute(utm)).toBe('Meta広告・配置不明（cpc）');
+    const payload = buildLiftJobBasePayload({
+      utm,
+      adId: '',
+      adCreativeId: '',
+      adImageUrl: '',
+      formData: coupangBody as CoupangFormData,
+      jobPositionLabel: coupangBody.jobPosition,
+      desiredLocationLabel: coupangBody.desiredLocation,
+      pageUrl: coupangBody.pageUrl,
+      landingPath: coupangBody.landingPath,
+      initialReferrer: '',
+      attributionSource: 'direct',
+      userAgent: 'vitest',
+      clientIp: '',
+      submittedAt: '2026-09-15T00:00:00.000Z',
+      submissionId: 'evt-unresolved-meta-macro',
+    });
+    expect(payload.media_name).toBe('Meta広告');
+    expect(payload.application_source).toBe('meta(ad)');
+    expect(payload.utm_source).toBe('{{site_source_name}}');
+  });
+
   it('organicや区分不明のMeta系流入を広告と誤表示しない', async () => {
     const { describeLiftJobRoute, getLiftJobMediaName } = await import('./route');
     expect(describeLiftJobRoute({ utm_source: 'ig', utm_medium: 'organic' })).toBe(

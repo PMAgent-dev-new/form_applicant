@@ -34,6 +34,7 @@ describe('resolveApplicationSourceMasterName', () => {
   it('置換されなかった {{site_source_name}} は配置不明の meta(ad)', () => {
     expect(resolveApplicationSourceMasterName({ utm_source: '{{site_source_name}}', utm_medium: 'cpc' })).toBe('meta(ad)');
     expect(resolveApplicationSourceMasterName({ utm_source: '{{site_source_name}}', utm_medium: 'ad' })).toBe('meta(ad)');
+    expect(resolveApplicationSourceMasterName({ utm_source: '{{SITE_SOURCE_NAME}}', utm_medium: 'CPC' })).toBe('meta(ad)');
   });
 
   it('置換されなかったマクロでも広告medium以外や別のマクロは空欄のまま', () => {
