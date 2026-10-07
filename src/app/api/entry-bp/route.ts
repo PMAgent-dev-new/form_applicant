@@ -139,6 +139,20 @@ export async function POST(req: Request) {
       }
     }
 
+    // Base に入っても、通知が出ていなければ誰も気づかない。退避に残して毎時の監視で拾う
+    // （Base に入らなかったときは上で退避済み）。
+    if (!notified && !baseSaveFailed) {
+      vaultSaved = await saveToSubmissionVault({
+        source: "form_applicant/entry-bp",
+        kind: "application",
+        submissionId,
+        profile: "mechanic",
+        reason: webhookUrl ? "Lark通知に失敗（Base への保存は成功）" : "Lark通知先が未設定（Base への保存は成功）",
+        notified: false,
+        payload: vaultPayload,
+      });
+    }
+
     // ⚠️ Base にも通知にも退避にも残らないのに 200 を返すと、申込は無音で消える。
     // ここだけは申込者に再送してもらうしかない。
     if (baseSaveFailed && !notified && !vaultSaved) {
