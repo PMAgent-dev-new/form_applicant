@@ -34,6 +34,7 @@ import { describeError } from '@/lib/describe-error';
 import { findRecentRecordByPhone } from '@/lib/larkBase';
 import { markSubmissionVaultNotified, saveToSubmissionVault } from '@/lib/submissionVault';
 import { neutralizeLarkTags } from '@/lib/lark-text';
+import { isLarkWebhookAccepted, type LarkWebhookResult } from '@/lib/larkWebhookResult';
 
 // Bitable 直書きの投入先テーブル（env で上書き可）。
 //   default / bus       → 求職者DB🚕   （ridejob base：APP_*_RIDEJOB）
@@ -51,29 +52,6 @@ const LARK_FETCH_TIMEOUT_MS = 5000;
  * 2つの窓は揃えること。
  */
 const DUPLICATE_WINDOW_MS = 60 * 60 * 1000;
-
-type LarkWebhookResult = {
-  code?: number | string;
-  msg?: string;
-  StatusCode?: number | string;
-  StatusMessage?: string;
-};
-
-const isZeroCode = (value: number | string | undefined): boolean =>
-  typeof value === 'number'
-    ? value === 0
-    : typeof value === 'string' && value.trim() !== '' && Number(value) === 0;
-
-const isNonZeroCode = (value: number | string | undefined): boolean =>
-  typeof value === 'number'
-    ? value !== 0
-    : typeof value === 'string' && value.trim() !== '' && Number(value) !== 0;
-
-/** Lark Bot / AnyCross はHTTP 200でも本文で失敗を返すため、明示的な成功コードまで確認する。 */
-const isLarkAccepted = (result: LarkWebhookResult): boolean =>
-  (isZeroCode(result.code) || isZeroCode(result.StatusCode))
-  && !isNonZeroCode(result.code)
-  && !isNonZeroCode(result.StatusCode);
 
 // Bitable 直書きに必要な、リクエスト内で算出済みの値をまとめたもの。
 export type BaseWriteContext = {
@@ -378,8 +356,7 @@ async function saveToBase(
 
   if (baseWebhookUrl) {
     // Base 自動化 Webhook には冪等性が無い。直書きが失敗し続けている間、
-    // 応募者が送信を繰り返すと同じ応募が何行も増える（2026-09-23 に実際に発生。
-    // 自社LP経由45レコードに対し実人数8人・最多15行）。
+    // 応募者が送信を繰り返すと同じ応募が何行も増える。
     // 作る前に、同じ電話番号の応募が直近にないかを1回だけ確かめる。
     if (target && ctx.form.phoneNumber) {
       const dup = await findRecentRecordByPhone(
@@ -410,7 +387,7 @@ async function saveToBase(
       signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
     });
     const result = (await resp.json().catch(() => ({}))) as LarkWebhookResult;
-    if (!resp.ok || !isLarkAccepted(result)) {
+    if (!resp.ok || !isLarkWebhookAccepted(result)) {
       throw new Error(
         `Lark Base Webhook failed: http=${resp.status} code=${result.code ?? result.StatusCode ?? 'n/a'} msg=${result.msg ?? result.StatusMessage ?? 'n/a'}`,
       );
@@ -952,31 +929,36 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
             }
             // ⚠️ ここで 502 を返してはいけない。
             // 応募者には「エラーが発生しました」と出て、送信を繰り返す。
-            // Base Webhook には冪等性が無いので、再送のたびにレコードが増える
-            // （2026-09-23: 自社LP経由45レコードに対し実人数8人・最多15行）。
+            // Base Webhook には冪等性が無いので、再送のたびにレコードが増える。
             // 応募が Base に残っているなら、通知の失敗は応募者の責任ではない。
             // 通知が出せなかった事実は下の退避と invariant で拾う。
           }
         }
         if (!notificationSent && larkWebhookUrl) {
-          const resp = await fetch(larkWebhookUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(larkPayload),
-            signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
-          });
-          const result = (await resp.json().catch(() => ({}))) as LarkWebhookResult;
-          if (!resp.ok || !isLarkAccepted(result)) {
-            console.error('Failed to send notification to Lark', {
-              status: resp.status,
-              code: result.code ?? result.StatusCode,
-              message: result.msg ?? result.StatusMessage,
+          try {
+            const resp = await fetch(larkWebhookUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(larkPayload),
+              signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
             });
-            // ①と同じ理由で 502 を返さない。再送は重複を増やすだけ。
-          } else {
-            notificationSent = true;
-            larkNotified = true;
-            console.log('Lark webhook notification sent successfully:', result);
+            const result = (await resp.json().catch(() => ({}))) as LarkWebhookResult;
+            if (!resp.ok || !isLarkWebhookAccepted(result)) {
+              console.error('Failed to send notification to Lark', {
+                status: resp.status,
+                code: result.code ?? result.StatusCode,
+                message: result.msg ?? result.StatusMessage,
+              });
+              // ①と同じ理由で 502 を返さない。再送は重複を増やすだけ。
+            } else {
+              notificationSent = true;
+              larkNotified = true;
+              console.log('Lark webhook notification sent successfully:', result);
+            }
+          } catch (error) {
+            // 例外のまま外へ出すと 500 になり、下の退避にも残らない（応募者は再送して重複を作る）。
+            // 送れなかったものとして扱い、下の退避へ進める。
+            console.error('Lark webhook notification threw:', describeError(error));
           }
         }
         if (!notificationSent) {

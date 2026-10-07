@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { createBaseRecord, isLarkBaseConfigured } from "@/lib/larkBase";
 import { saveToSubmissionVault } from "@/lib/submissionVault";
 import { neutralizeLarkTags } from '@/lib/lark-text';
+import { isLarkWebhookAccepted, type LarkWebhookResult } from '@/lib/larkWebhookResult';
 
 // 2027新卒 鈑金塗装職LP（/gulliver/newgraduate → 本番は /entry/gulliver/newgraduate）の
 // 会社説明会お申し込み受付。
@@ -126,8 +127,9 @@ export async function POST(req: Request) {
           body: JSON.stringify(payload),
           signal: AbortSignal.timeout(5000),
         });
-        const larkData = await larkRes.json().catch(() => ({} as { code?: number }));
-        if (!larkRes.ok || (larkData && typeof larkData.code !== "undefined" && larkData.code !== 0)) {
+        const larkData = (await larkRes.json().catch(() => ({}))) as LarkWebhookResult;
+        // code の無い応答（空本文・非JSON）を成功とみなさない。
+        if (!larkRes.ok || !isLarkWebhookAccepted(larkData)) {
           console.error("[entry-bp] Lark チャット通知失敗:", larkData);
         } else {
           notified = true;

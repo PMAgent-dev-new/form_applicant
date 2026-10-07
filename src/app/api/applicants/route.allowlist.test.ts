@@ -349,6 +349,101 @@ describe('applicants POST — outbound host allowlist', () => {
     errorSpy.mockRestore();
   });
 
+  it('トークンが取れず IM API で送れないときは、Webhook 通知へ落とす', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('tenant_access_token')) return Response.json({ code: 10014, msg: 'app secret invalid' });
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+    expect(res.status).toBe(200);
+    const imCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/im/v1/messages'));
+    expect(imCalls.length, 'トークンが無いので IM API には送っていない').toBe(0);
+    const hookCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/bot/v2/hook/'));
+    expect(hookCalls.length, '送っていないものを通知済みにせず、Webhook で通知すること').toBeGreaterThan(0);
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it('トークンが取れず Webhook も無いときは、通知済みにせず退避に残す', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.stubEnv('LARK_WEBHOOK_URL', '');
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('tenant_access_token')) return Response.json({ code: 10014, msg: 'app secret invalid' });
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+    expect(res.status).toBe(200);
+    const vaultBodies = fetchSpy.mock.calls
+      .filter(([input, init]) => String(input).includes('/rest/v1/submission_vault')
+        && (init as RequestInit)?.method === 'POST')
+      .map(([, init]) => JSON.parse(String((init as RequestInit)?.body ?? '{}')));
+    expect(vaultBodies.some((body) => body.notified === false), '通知が出ていないことを退避に残すこと').toBe(true);
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it('IM API に接続できなかったときは送っていないので、Webhook 通知へ落とす', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/im/v1/messages')) {
+        throw Object.assign(new TypeError('fetch failed'), {
+          cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }),
+        });
+      }
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+    expect(res.status).toBe(200);
+    const hookCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/bot/v2/hook/'));
+    expect(hookCalls.length, '送っていないものを通知済みにせず、Webhook で通知すること').toBeGreaterThan(0);
+    errorSpy.mockRestore();
+  });
+
+  it('IM API の送信がタイムアウトしたら（届いた可能性がある）、Webhook へは落とさない', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/im/v1/messages')) throw new DOMException('timed out', 'TimeoutError');
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+    expect(res.status).toBe(200);
+    const hookCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/bot/v2/hook/'));
+    expect(hookCalls.length, '二重通知を避けるため Webhook へは落とさない').toBe(0);
+    errorSpy.mockRestore();
+  });
+
+  it('IM API が落ち Webhook 送信が例外で終わっても、500 にせず退避に残す', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/im/v1/messages')) return Response.json({ code: 19021, msg: 'message rejected' });
+      if (url.includes('/bot/v2/hook/')) throw new TypeError('fetch failed');
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+    expect(res.status, '応募は Base に残っているので再送させない').toBe(200);
+    const vaultCalls = fetchSpy.mock.calls.filter(
+      ([input, init]) => String(input).includes('/rest/v1/submission_vault')
+        && (init as RequestInit)?.method === 'POST',
+    );
+    expect(vaultCalls.length, '通知が出ていないことを退避に残すこと').toBe(1);
+    const body = JSON.parse(String((vaultCalls[0][1] as RequestInit)?.body ?? '{}'));
+    expect(body.notified).toBe(false);
+    errorSpy.mockRestore();
+  });
+
   // Lark に入らなかった応募は Supabase の退避先に残す。通知は流れて埋もれるため、
   // 「取りこぼした応募」を後から機械的に数えられる受け皿が要る。
   it('Base が全滅したら応募内容を退避先へ書き、通知に「退避済み」と出す', async () => {

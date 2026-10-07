@@ -12,7 +12,6 @@ import { trackEvent } from '../utils/trackEvent';
 import { genEventId, trackMeta } from '@/lib/meta/pixel';
 import { isValidEmail, isValidPhoneNumber, validateBirthDateCard, validateCard2, validateDesiredIncome, validateFinalStep, validateJobTiming, validateMechanicQualification, validateNameFields, validateTruckLicenses } from '../utils/validators';
 import { fetchJobCount, type JobCountParams } from '../utils/fetchJobCount';
-import { notifyInvalidPhoneNumber } from '../utils/notifyInvalidPhoneNumber';
 import { EMPTY_UTM_PARAMS, readAttribution, resolveUtmParams, type UtmParams } from '@/lib/attribution';
 
 type UseApplicationFormStateParams = {
@@ -192,14 +191,13 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
       if (!isValidPhoneNumber(trimmed)) {
         setPhoneError('有効な携帯番号を入力してください。');
         setIsSubmitDisabled(true);
-        notifyInvalidPhoneNumber({ fullName: formData.fullName, phoneNumber: trimmed });
       } else {
         setPhoneError(null);
         const submitReady = isSubmitReady(trimmed, formData.email);
         setIsSubmitDisabled(!submitReady);
       }
     },
-    [formData.email, formData.fullName, isSubmitReady]
+    [formData.email, isSubmitReady]
   );
 
   const validateEmailInput = useCallback(
