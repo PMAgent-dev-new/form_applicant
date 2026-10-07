@@ -127,4 +127,36 @@ describe('entry-bp POST — 申込をどこにも残さない経路を作らな�
       .toContain('Base未登録');
     warnSpy.mockRestore();
   });
+
+  it('Webhook が code の無い応答を返したら、通知できたとみなさない', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.stubEnv('LARK_WEBHOOK_URL_GULLIVER_BP_PROD', 'https://open.larksuite.com/open-apis/bot/v2/hook/bp');
+    fetchSpy.mockImplementation(async (input: unknown) => {
+      if (String(input).includes('/rest/v1/submission_vault')) return new Response('boom', { status: 503 });
+      return new Response('', { status: 200 });
+    });
+
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest());
+
+    expect(res.status, 'Base にも退避にも無く、通知も確かめられないので再送してもらう').toBe(502);
+    warnSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
+  it('Webhook の旧形式の成功応答（StatusCode: 0）は成功とみなす', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.stubEnv('LARK_WEBHOOK_URL_GULLIVER_BP_PROD', 'https://open.larksuite.com/open-apis/bot/v2/hook/bp');
+    fetchSpy.mockImplementation(async (input: unknown) => {
+      if (String(input).includes('/rest/v1/submission_vault')) return new Response('boom', { status: 503 });
+      return Response.json({ StatusCode: 0, StatusMessage: 'success' });
+    });
+
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest());
+
+    expect(res.status, '通知が出ているので申込は通す').toBe(200);
+    warnSpy.mockRestore();
+  });
 });

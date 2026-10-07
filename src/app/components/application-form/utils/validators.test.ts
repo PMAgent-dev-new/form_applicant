@@ -44,23 +44,24 @@ describe('isValidPhoneNumber', () => {
     },
   );
 
-  it.each(['09000000678', '08011111926', '09099999926'])(
-    'rejects five or more repeated digits: %s',
+  // 実在する番号にも連番や同じ数字の並びは含まれるので、それだけでは弾かない。
+  it.each(['09012347788', '09000000678', '08011111926', '07098765432', '08023456789'])(
+    'accepts numbers that contain runs or repeated digits: %s',
     (phoneNumber) => {
-      expect(isValidPhoneNumber(phoneNumber)).toBe(false);
-    },
-  );
-
-  it.each(['07098765432', '09056789012', '08023456789'])(
-    'rejects sequential runs: %s',
-    (phoneNumber) => {
-      expect(isValidPhoneNumber(phoneNumber)).toBe(false);
+      expect(isValidPhoneNumber(phoneNumber)).toBe(true);
     },
   );
 
   it.each(['09012345678', '08012345678'])('rejects known invalid number %s', (phoneNumber) => {
     expect(isValidPhoneNumber(phoneNumber)).toBe(false);
   });
+
+  it.each(['09000000000', '08011111111', '07099999999'])(
+    'rejects numbers whose last 8 digits are all the same: %s',
+    (phoneNumber) => {
+      expect(isValidPhoneNumber(phoneNumber)).toBe(false);
+    },
+  );
 });
 
 describe('isValidEmail', () => {
