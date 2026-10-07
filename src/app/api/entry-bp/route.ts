@@ -139,7 +139,7 @@ export async function POST(req: Request) {
       }
     }
 
-    // Base に入っても、通知が出ていなければ誰も気づかない。退避に残して毎時の監視で拾う
+    // Base に入っても、通知が出ていなければ誰も気づかない。退避に残して定期の監視で拾う
     // （Base に入らなかったときは上で退避済み）。
     if (!notified && !baseSaveFailed) {
       vaultSaved = await saveToSubmissionVault({
