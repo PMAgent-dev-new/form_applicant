@@ -34,6 +34,8 @@ const AD_MEDIUMS = new Set(['ad', 'cpc', 'ads', 'paid', 'search']);
  * （fb と ig で面談率が2倍以上違うため統合してはいけない）。
  */
 const AD_SOURCE_PREFIXES: Record<string, string> = {
+  // Explicit unresolved Meta placement macro; never infer fb/ig or a CAPI event.
+  '{{site_source_name}}': 'meta',
   meta: 'meta',
   fb: 'fb',
   facebook: 'fb',
@@ -64,6 +66,7 @@ const ORGANIC_PREFIXES = new Set(['fb', 'ig', 'th', 'tiktok', 'google']);
 
 /** utm_source → マスタ名が固定で決まるもの（広告/オーガニックの区別が無い媒体）。 */
 const FIXED_SOURCE_NAMES: Record<string, string> = {
+  standby: 'スタンバイ',
   stanby: 'スタンバイ',
   'jp.stanby.com': 'スタンバイ',
 };

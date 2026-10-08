@@ -1,5 +1,7 @@
 import { NextRequest } from 'next/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+const afterTasks = vi.hoisted(() => ({ queue: [] as (() => unknown)[] }));
+vi.mock('next/server', async (importActual) => ({ ...await importActual<typeof import('next/server')>(), after: (fn: () => unknown) => afterTasks.queue.push(fn) }));
 
 /**
  * 送信先ホストの許可リストガード。
@@ -116,6 +118,7 @@ describe('applicants POST — outbound host allowlist', () => {
   };
 
   beforeEach(() => {
+    afterTasks.queue = [];
     for (const [key, value] of Object.entries(ALLOWLISTED_ENV)) {
       vi.stubEnv(key, value);
     }
@@ -141,6 +144,76 @@ describe('applicants POST — outbound host allowlist', () => {
     const offlist = hosts.filter((host) => !ALLOWED_HOSTS.has(host));
     expect(offlist, `unexpected outbound host(s): ${offlist.join(', ')}`).toEqual([]);
   });
+
+  it('nonfatal SMS and Meta failures appear in one JSON summary while keeping a saved application successful', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input, init) => {
+      const host = hostOf(input);
+      if (host === 'leomeet.pmagent.jp' || host === 'graph.facebook.com') return Response.json({}, { status: 500 });
+      return successResponse(input, init);
+    });
+    try {
+      const { POST, maxDuration } = await import('./route');
+      const response = await POST(makeRequest(applicantBody));
+      expect(response.status).toBe(200);
+      expect(maxDuration).toBe(60);
+      const lines = log.mock.calls.filter(([line]) => String(line).startsWith('[applicants] submission settled:'));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toHaveLength(1);
+      const line = String(lines[0][0]);
+      const summary = JSON.parse(line.slice(line.indexOf('{')));
+      expect(summary.failed).toEqual(expect.arrayContaining(['application-sms', 'meta-capi']));
+      expect(line).not.toContain(applicantBody.fullName);
+      expect(line).not.toContain(applicantBody.phoneNumber);
+      expect(summary.phaseMs['base-save']).toEqual(expect.any(Number));
+    } finally {
+      log.mockRestore();
+      error.mockRestore();
+    }
+  });
+  it('Baseのみの受付でもCR情報を保存し、画像の二重保存を予約しない', async () => {
+    vi.stubEnv('LARK_SEND_BASE_ONLY', 'true');
+    vi.stubEnv('META_ACCESS_TOKEN', 'test-meta-read');
+    fetchSpy.mockImplementation(async (input, init) => String(input).includes('graph.facebook.com')
+      ? Response.json({ id: '123456789', account_id: '1435983094817075', creative: { id: '987654321', image_url: 'https://a.fbcdn.net/test.jpg', body: 'CR本文' } })
+      : successResponse(input, init));
+    const { POST } = await import('./route');
+    const response = await POST(makeRequest({ ...applicantBody, metaEventId: undefined, submissionId: 'snapshot-first', utmParams: { utm_source: 'meta', utm_id: '123456789' } }));
+    expect(response.status).toBe(200);
+    expect(afterTasks.queue).toHaveLength(0);
+    expect(fetchSpy.mock.calls.some(call => String(call[0]).includes('/medias/upload_all'))).toBe(false);
+  });
+  it('contextがある旧URLでも同じ外部経路のterm広告IDを保存する', async () => {
+    vi.stubEnv('LARK_SEND_BASE_ONLY', 'true');
+    vi.stubEnv('META_ACCESS_TOKEN', 'test-meta-read');
+    fetchSpy.mockImplementation(async (input, init) => String(input).includes('graph.facebook.com')
+      ? Response.json({ id: '52648617245839', account_id: '1435983094817075', creative: { id: '987654321', body: 'legacy CR' } })
+      : successResponse(input, init));
+    const { POST } = await import('./route');
+    const response = await POST(makeRequest({ ...applicantBody, metaEventId: undefined, submissionId: 'legacy-context-term',
+      applicationContext: { acquisition: { source: 'fb', medium: 'cpc', campaign: '123456789', id: '123456789', at: new Date().toISOString() } },
+      utmParams: { utm_source: 'fb', utm_medium: 'cpc', utm_campaign: '123456789', utm_id: '123456789', utm_term: '52648617245839' },
+    }));
+    expect(response.status).toBe(200);
+    const graph = fetchSpy.mock.calls.filter(call => String(call[0]).includes('graph.facebook.com'));
+    expect(graph).toHaveLength(1);
+    expect(String(graph[0][0])).toContain('/52648617245839?');
+    const saves = fetchSpy.mock.calls.filter(call => new URL(String(call[0])).pathname.endsWith('/records') && call[1]?.method === 'POST');
+    expect(saves.some(call => String(call[1]?.body).includes('legacy CR'))).toBe(true);
+  });
+  it('同じ応募IDの再送で先着レコードのCR素材を上書きしない', async () => {
+    vi.stubEnv('LARK_SEND_BASE_ONLY', 'true');
+    vi.stubEnv('META_ACCESS_TOKEN', 'test-meta-read');
+    fetchSpy.mockImplementation(async (input, init) => {
+      if (String(input).includes('graph.facebook.com')) return Response.json({ id: '123456789', account_id: '1435983094817075', creative: { id: '987654321', image_url: 'https://a.fbcdn.net/test.jpg' } });
+      if (String(input).includes('/records/search')) return Response.json({ code: 0, data: { items: [{ record_id: 'rec-first', fields: { 応募日: Date.now() } }] } });
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    await POST(makeRequest({ ...applicantBody, metaEventId: undefined, submissionId: 'snapshot-duplicate', utmParams: { utm_source: 'meta', utm_id: '123456789' } }));
+    expect(afterTasks.queue).toHaveLength(0);
+  }, 10000);
 
   it('actually exercises the Lark, SMS and CAPI paths (guard is not vacuous)', async () => {
     const { POST } = await import('./route');
@@ -346,6 +419,101 @@ describe('applicants POST — outbound host allowlist', () => {
     expect(hookCalls.length, 'IM API が落ちても Webhook 通知で応募を残すこと').toBeGreaterThan(0);
     const sent = hookCalls.map(([, init]) => String((init as RequestInit)?.body ?? '')).join('\n');
     expect(sent).toContain('Base未登録');
+    errorSpy.mockRestore();
+  });
+
+  it('トークンが取れず IM API で送れないときは、Webhook 通知へ落とす', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('tenant_access_token')) return Response.json({ code: 10014, msg: 'app secret invalid' });
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+    expect(res.status).toBe(200);
+    const imCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/im/v1/messages'));
+    expect(imCalls.length, 'トークンが無いので IM API には送っていない').toBe(0);
+    const hookCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/bot/v2/hook/'));
+    expect(hookCalls.length, '送っていないものを通知済みにせず、Webhook で通知すること').toBeGreaterThan(0);
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it('トークンが取れず Webhook も無いときは、通知済みにせず退避に残す', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.stubEnv('LARK_WEBHOOK_URL', '');
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('tenant_access_token')) return Response.json({ code: 10014, msg: 'app secret invalid' });
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+    expect(res.status).toBe(200);
+    const vaultBodies = fetchSpy.mock.calls
+      .filter(([input, init]) => String(input).includes('/rest/v1/submission_vault')
+        && (init as RequestInit)?.method === 'POST')
+      .map(([, init]) => JSON.parse(String((init as RequestInit)?.body ?? '{}')));
+    expect(vaultBodies.some((body) => body.notified === false), '通知が出ていないことを退避に残すこと').toBe(true);
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it('IM API に接続できなかったときは送っていないので、Webhook 通知へ落とす', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/im/v1/messages')) {
+        throw Object.assign(new TypeError('fetch failed'), {
+          cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }),
+        });
+      }
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+    expect(res.status).toBe(200);
+    const hookCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/bot/v2/hook/'));
+    expect(hookCalls.length, '送っていないものを通知済みにせず、Webhook で通知すること').toBeGreaterThan(0);
+    errorSpy.mockRestore();
+  });
+
+  it('IM API の送信がタイムアウトしたら（届いた可能性がある）、Webhook へは落とさない', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/im/v1/messages')) throw new DOMException('timed out', 'TimeoutError');
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+    expect(res.status).toBe(200);
+    const hookCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/bot/v2/hook/'));
+    expect(hookCalls.length, '二重通知を避けるため Webhook へは落とさない').toBe(0);
+    errorSpy.mockRestore();
+  });
+
+  it('IM API が落ち Webhook 送信が例外で終わっても、500 にせず退避に残す', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/im/v1/messages')) return Response.json({ code: 19021, msg: 'message rejected' });
+      if (url.includes('/bot/v2/hook/')) throw new TypeError('fetch failed');
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(applicantBody));
+    expect(res.status, '応募は Base に残っているので再送させない').toBe(200);
+    const vaultCalls = fetchSpy.mock.calls.filter(
+      ([input, init]) => String(input).includes('/rest/v1/submission_vault')
+        && (init as RequestInit)?.method === 'POST',
+    );
+    expect(vaultCalls.length, '通知が出ていないことを退避に残すこと').toBe(1);
+    const body = JSON.parse(String((vaultCalls[0][1] as RequestInit)?.body ?? '{}'));
+    expect(body.notified).toBe(false);
     errorSpy.mockRestore();
   });
 

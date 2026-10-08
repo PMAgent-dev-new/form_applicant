@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { createBaseRecord, isLarkBaseConfigured } from "@/lib/larkBase";
 import { saveToSubmissionVault } from "@/lib/submissionVault";
 import { neutralizeLarkTags } from '@/lib/lark-text';
+import { isLarkWebhookAccepted, type LarkWebhookResult } from '@/lib/larkWebhookResult';
 
 // 2027新卒 鈑金塗装職LP（/gulliver/newgraduate → 本番は /entry/gulliver/newgraduate）の
 // 会社説明会お申し込み受付。
@@ -126,8 +127,9 @@ export async function POST(req: Request) {
           body: JSON.stringify(payload),
           signal: AbortSignal.timeout(5000),
         });
-        const larkData = await larkRes.json().catch(() => ({} as { code?: number }));
-        if (!larkRes.ok || (larkData && typeof larkData.code !== "undefined" && larkData.code !== 0)) {
+        const larkData = (await larkRes.json().catch(() => ({}))) as LarkWebhookResult;
+        // code の無い応答（空本文・非JSON）を成功とみなさない。
+        if (!larkRes.ok || !isLarkWebhookAccepted(larkData)) {
           console.error("[entry-bp] Lark チャット通知失敗:", larkData);
         } else {
           notified = true;
@@ -135,6 +137,20 @@ export async function POST(req: Request) {
       } catch (e) {
         console.error("[entry-bp] Lark チャット通知エラー:", e);
       }
+    }
+
+    // Base に入っても、通知が出ていなければ誰も気づかない。退避に残して定期の監視で拾う
+    // （Base に入らなかったときは上で退避済み）。
+    if (!notified && !baseSaveFailed) {
+      vaultSaved = await saveToSubmissionVault({
+        source: "form_applicant/entry-bp",
+        kind: "application",
+        submissionId,
+        profile: "mechanic",
+        reason: webhookUrl ? "Lark通知に失敗（Base への保存は成功）" : "Lark通知先が未設定（Base への保存は成功）",
+        notified: false,
+        payload: vaultPayload,
+      });
     }
 
     // ⚠️ Base にも通知にも退避にも残らないのに 200 を返すと、申込は無音で消える。

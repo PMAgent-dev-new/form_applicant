@@ -14,7 +14,8 @@ import {
   resolveApplicationSourceMasterName,
   resolveJobCategoryMasterName,
 } from '@/lib/lark-masters';
-import { resolveAdImageUrl, isLikelyAdId } from '@/lib/meta/resolveAdImage';
+import { enrichApplication, applicationDetailsWithRemarks, applicationNotificationText } from '@/lib/application-enrichment';
+import { resolveApplicationCatalogCreative } from '@/lib/larkBase';
 import { sendMetaCapiLead } from '@/lib/meta/capi';
 import { sendOpenAiConversion } from '@/lib/openai/capi';
 import {
@@ -34,6 +35,12 @@ import { describeError } from '@/lib/describe-error';
 import { findRecentRecordByPhone } from '@/lib/larkBase';
 import { markSubmissionVaultNotified, saveToSubmissionVault } from '@/lib/submissionVault';
 import { neutralizeLarkTags } from '@/lib/lark-text';
+import { isLarkWebhookAccepted, type LarkWebhookResult } from '@/lib/larkWebhookResult';
+import { createSubmissionObservability } from '@/lib/submission-observability';
+
+// 外部送信ライブラリの個別タイムアウトに加え、保存→通知→後続処理の実行枠を明示する。
+// 全段が上限まで遅延した場合の完了保証ではない。実測時間はサマリで監視する。
+export const maxDuration = 60;
 
 // Bitable 直書きの投入先テーブル（env で上書き可）。
 //   default / bus       → 求職者DB🚕   （ridejob base：APP_*_RIDEJOB）
@@ -52,29 +59,6 @@ const LARK_FETCH_TIMEOUT_MS = 5000;
  */
 const DUPLICATE_WINDOW_MS = 60 * 60 * 1000;
 
-type LarkWebhookResult = {
-  code?: number | string;
-  msg?: string;
-  StatusCode?: number | string;
-  StatusMessage?: string;
-};
-
-const isZeroCode = (value: number | string | undefined): boolean =>
-  typeof value === 'number'
-    ? value === 0
-    : typeof value === 'string' && value.trim() !== '' && Number(value) === 0;
-
-const isNonZeroCode = (value: number | string | undefined): boolean =>
-  typeof value === 'number'
-    ? value !== 0
-    : typeof value === 'string' && value.trim() !== '' && Number(value) !== 0;
-
-/** Lark Bot / AnyCross はHTTP 200でも本文で失敗を返すため、明示的な成功コードまで確認する。 */
-const isLarkAccepted = (result: LarkWebhookResult): boolean =>
-  (isZeroCode(result.code) || isZeroCode(result.StatusCode))
-  && !isNonZeroCode(result.code)
-  && !isNonZeroCode(result.StatusCode);
-
 // Bitable 直書きに必要な、リクエスト内で算出済みの値をまとめたもの。
 export type BaseWriteContext = {
   isMechanic: boolean;
@@ -91,6 +75,8 @@ export type BaseWriteContext = {
   adId: string;
   adCreativeId: string;
   adImageUrl: string;
+  applicationDetails?: string[];
+  creativeText?: string;
   form: ApplicantFormData;
   jobTimingLabel: string;
   jobIntentLabel: string;
@@ -151,7 +137,8 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
       ctx.isMechanicNewgrad && ctx.mechanicQualificationsLabel
         ? `${ctx.qualificationFieldLabel}: ${ctx.mechanicQualificationsLabel}`
         : '',
-    ].filter(Boolean).join(' / ') || undefined;
+      ...(ctx.applicationDetails || []),
+    ].filter(Boolean).join('\n') || undefined;
 
     // 希望年収（経験者フォームのみの設問）は「履歴書（添付なし）」欄（テキスト）へ保存する。
     // mapDesiredIncomeLabel は未回答時に「未選択」を返すため、その場合は書き込まない。
@@ -191,6 +178,7 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
         ad_id: ctx.adId,
         ad_creative_id: ctx.adCreativeId,
         ad_image_url: ctx.adImageUrl,
+        クリエイティブ: ctx.creativeText,
         LP_URL: ctx.pageUrl,
         '流入媒体（自動判定）': ctx.mediaName,
         submission_id: ctx.submissionId,
@@ -211,6 +199,7 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
   const memo = [
     ctx.jobTimingLabel ? `転職時期: ${ctx.jobTimingLabel}` : '',
     ...buildCatalogMemoLines(ctx),
+    ...(ctx.applicationDetails || []),
   ].filter(Boolean).join('\n') || undefined;
 
   // 応募職種マスタ側のレコード名。タクシーLPは1本で「タクシー」と「ハイヤー転向」の両方を受けるため、
@@ -250,6 +239,7 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
       ad_id: ctx.adId,
       ad_creative_id: ctx.adCreativeId,
       ad_image_url: ctx.adImageUrl,
+      クリエイティブ: ctx.creativeText,
       LP_URL: ctx.pageUrl,
       '流入媒体（自動判定）': ctx.mediaName,
       '応募経由(マスタ連動)': applicationSourceLink,
@@ -260,6 +250,7 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
 // Base への保存。可能なら Bitable API で直書きし、未設定 or 失敗 or 対象外(coupang) なら
 // 既存の Base 自動化 Webhook にフォールバックする（応募データを取りこぼさないため）。
 type BaseSaveResult = {
+  created?: boolean;
   recordId?: string;
   /** Base への保存が直書き・Webhook ともに失敗した。応募は通すが通知に印を付ける。 */
   baseSaveFailed?: string;
@@ -344,6 +335,7 @@ async function saveToBase(
         });
         return {
           recordId: saved.recordId,
+          created: saved.created,
           savedVia: 'direct',
           notificationAlreadySent,
           notificationInProgress,
@@ -378,8 +370,7 @@ async function saveToBase(
 
   if (baseWebhookUrl) {
     // Base 自動化 Webhook には冪等性が無い。直書きが失敗し続けている間、
-    // 応募者が送信を繰り返すと同じ応募が何行も増える（2026-09-23 に実際に発生。
-    // 自社LP経由45レコードに対し実人数8人・最多15行）。
+    // 応募者が送信を繰り返すと同じ応募が何行も増える。
     // 作る前に、同じ電話番号の応募が直近にないかを1回だけ確かめる。
     if (target && ctx.form.phoneNumber) {
       const dup = await findRecentRecordByPhone(
@@ -410,7 +401,7 @@ async function saveToBase(
       signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
     });
     const result = (await resp.json().catch(() => ({}))) as LarkWebhookResult;
-    if (!resp.ok || !isLarkAccepted(result)) {
+    if (!resp.ok || !isLarkWebhookAccepted(result)) {
       throw new Error(
         `Lark Base Webhook failed: http=${resp.status} code=${result.code ?? result.StatusCode ?? 'n/a'} msg=${result.msg ?? result.StatusMessage ?? 'n/a'}`,
       );
@@ -458,6 +449,7 @@ type ApplicantFormData = {
 };
 
 type ApplicantSubmission = ApplicantFormData & {
+  applicationContext?: unknown;
   utmParams?: UTMParams;
   experiment?: ExperimentInfo;
   formOrigin?: 'coupang' | 'default' | 'bus' | 'mechanic' | 'mechanic_newgrad' | 'truck';
@@ -496,13 +488,8 @@ function calculateAge(birthDate?: string): string | null {
   return `${age}歳`;
 }
 
-// Meta(Facebook/Instagram)広告の流入判定。広告側UTMは utm_source=fb 等で来るため複数表記を許容する。
-const META_UTM_SOURCES = new Set(['meta', 'fb', 'facebook', 'ig', 'instagram']);
-function isMetaUtmSource(utmSource?: string): boolean {
-  return META_UTM_SOURCES.has((utmSource || '').toLowerCase());
-}
-
 export async function POST(request: NextRequest) {
+  const observation = createSubmissionObservability('applicants');
   try {
     const submissionData = (await request.json()) as ApplicantSubmission;
     const { utmParams, formOrigin, ...formData } = submissionData;
@@ -668,26 +655,15 @@ export async function POST(request: NextRequest) {
     console.log('Generated media name:', mediaName, 'isCoupang:', isCoupang);
 
     // Meta広告の広告ID(ad.id)から広告画像URLを解決する。
-    // 入稿URLの utm_id={{ad.id}} を優先。後方互換で utm_content / utm_creative が数値なら ad.id とみなす。
-    // ※ utm_content は {{ad.name}}（広告名）、utm_term は {{adset.id}} のため ad.id には使わない。
-    const isMetaInflowForImage = isCoupang || isMetaUtmSource(utmParams?.utm_source);
-    const adId = isLikelyAdId(utmParams?.utm_id)
-      ? (utmParams?.utm_id as string)
-      : isLikelyAdId(utmParams?.utm_content)
-        ? (utmParams?.utm_content as string)
-        : isLikelyAdId(utmParams?.utm_creative)
-          ? (utmParams?.utm_creative as string)
-          : '';
-    let adImageUrl = '';
-    let adCreativeId = '';
-    if (isMetaInflowForImage && adId) {
-      const resolved = await resolveAdImageUrl(adId);
-      if (resolved) {
-        adImageUrl = resolved.imageUrl || '';
-        adCreativeId = resolved.creativeId || '';
-      }
-      console.log('Resolved Meta ad image:', { adId, adImageUrl: adImageUrl ? '(取得済)' : '(なし)', adCreativeId });
-    }
+    // utm_idを優先し、旧URLのcontent/creative/termも予備候補とする。
+    // campaign.idと同値の候補は除外し、自社アカウントのcreativeが取得できた候補だけを確定する。
+    const enrichment = await enrichApplication(submissionData.applicationContext, {
+      source: utmParams?.utm_source || (isCoupang ? 'meta' : undefined), medium: utmParams?.utm_medium, campaign: utmParams?.utm_campaign,
+      content: utmParams?.utm_content, id: utmParams?.utm_id, creative: utmParams?.utm_creative, term: utmParams?.utm_term,
+      at: submissionData.attributionLastTouchAt, landing: referer,
+    }, Date.now(), resolveApplicationCatalogCreative);
+    const { adId, creativeId: adCreativeId, imageUrl: adImageUrl } = enrichment;
+    const applicationDetails = applicationDetailsWithRemarks(enrichment, submissionData);
 
     // Base 保存用コンテキスト（直書き／Webhook 両方で共有）
     const baseWriteCtx: BaseWriteContext = {
@@ -703,6 +679,8 @@ export async function POST(request: NextRequest) {
       adId,
       adCreativeId,
       adImageUrl,
+      applicationDetails,
+      creativeText: enrichment.creativeText,
       form: formData,
       jobTimingLabel: baseJobTimingLabel,
       jobIntentLabel: baseJobIntentLabel,
@@ -768,11 +746,13 @@ export async function POST(request: NextRequest) {
       catalog_attribution_status: catalog.status || '',
     } as Record<string, unknown>;
 
+    basePayload.application_context = applicationDetails.join('\n');
+    basePayload.creative_text = enrichment.creativeText;
     let baseSave: BaseSaveResult;
     /** Base に入らなかった応募を Supabase の退避先に残せたか */
     let vaultSaved = false;
     try {
-      baseSave = await saveToBase(baseWriteCtx, baseWebhookUrl, basePayload);
+      baseSave = await observation.timed('base-save', () => saveToBase(baseWriteCtx, baseWebhookUrl, basePayload));
     } catch (error) {
       // ⚠️ ここで 500 を返してはいけない。この行より後ろに Lark通知・確認メール・SMS・
       // Meta CAPI・OpenAI CAPI が全部ある。500 で抜けると応募者の氏名・電話・メールが
@@ -781,6 +761,7 @@ export async function POST(request: NextRequest) {
       const reason = describeError(error);
       console.error('Lark Base save failed; 通知は継続する:', `submission=${submissionId} ${reason}`);
       baseSave = { notificationAlreadySent: false, baseSaveFailed: reason };
+      observation.markFailed('base-save');
       // Lark に入らなかった応募を構造化して退避する。通知は流れて埋もれるため、
       // 後から「取りこぼした応募」を機械的に数えられる受け皿を1つ持たせる。
       // 退避の成否は応募の成否に影響させない（saveToSubmissionVault は投げない）。
@@ -905,6 +886,7 @@ export async function POST(request: NextRequest) {
 ${title}
 -------------------------
 流入元: ${utmDisplay}
+${applicationNotificationText(applicationDetails)}
 ${catalogDisplay ? `${catalogDisplay}\n` : ''}生年月日: ${formData.birthDate || '未入力'}
 年齢: ${ageDisplay}
 氏名: ${formData.fullName || '未入力'} (${formData.fullNameKana || '未入力'})
@@ -922,18 +904,19 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
 
         let notificationSent = false;
         if (larkChatId) {
-          const apiResult = await sendLarkTextMessage(
+          const apiResult = await observation.timed('lark-im', () => sendLarkTextMessage(
             larkChatId,
             messageContent,
             submissionId,
             // 両chatともRIDE JOB通知アプリを参加済みとして実測した共通送信経路。
             'ridejob',
-          );
+          ));
           if (apiResult.ok) {
             notificationSent = true;
             larkNotified = true;
             console.log('Lark API notification sent successfully:', { messageId: apiResult.messageId });
           } else {
+            observation.markFailed('lark-api-notification');
             // 通常は Webhook へ落とすと同じ応募が別経路で二重通知されるため、同じuuidでの再送に任せる。
             // ただし Base 保存が全滅しているときは、この通知が唯一の記録になる。
             // 502 で抜けると応募がどこにも残らないので、そのときだけ Webhook へフォールバックする。
@@ -952,34 +935,42 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
             }
             // ⚠️ ここで 502 を返してはいけない。
             // 応募者には「エラーが発生しました」と出て、送信を繰り返す。
-            // Base Webhook には冪等性が無いので、再送のたびにレコードが増える
-            // （2026-09-23: 自社LP経由45レコードに対し実人数8人・最多15行）。
+            // Base Webhook には冪等性が無いので、再送のたびにレコードが増える。
             // 応募が Base に残っているなら、通知の失敗は応募者の責任ではない。
             // 通知が出せなかった事実は下の退避と invariant で拾う。
           }
         }
         if (!notificationSent && larkWebhookUrl) {
-          const resp = await fetch(larkWebhookUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(larkPayload),
-            signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
-          });
-          const result = (await resp.json().catch(() => ({}))) as LarkWebhookResult;
-          if (!resp.ok || !isLarkAccepted(result)) {
-            console.error('Failed to send notification to Lark', {
-              status: resp.status,
-              code: result.code ?? result.StatusCode,
-              message: result.msg ?? result.StatusMessage,
+          try {
+            const resp = await fetch(larkWebhookUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(larkPayload),
+              signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
             });
-            // ①と同じ理由で 502 を返さない。再送は重複を増やすだけ。
-          } else {
-            notificationSent = true;
-            larkNotified = true;
-            console.log('Lark webhook notification sent successfully:', result);
+            const result = (await resp.json().catch(() => ({}))) as LarkWebhookResult;
+            if (!resp.ok || !isLarkWebhookAccepted(result)) {
+              observation.markFailed('lark-webhook-notification');
+              console.error('Failed to send notification to Lark', {
+                status: resp.status,
+                code: result.code ?? result.StatusCode,
+                message: result.msg ?? result.StatusMessage,
+              });
+              // ①と同じ理由で 502 を返さない。再送は重複を増やすだけ。
+            } else {
+              notificationSent = true;
+              larkNotified = true;
+              console.log('Lark webhook notification sent successfully:', result);
+            }
+          } catch (error) {
+            observation.markFailed('lark-webhook-notification');
+            // 例外のまま外へ出すと 500 になり、下の退避にも残らない（応募者は再送して重複を作る）。
+            // 送れなかったものとして扱い、下の退避へ進める。
+            console.error('Lark webhook notification threw:', describeError(error));
           }
         }
         if (!notificationSent) {
+          observation.markFailed('lark-notification');
           // 通知が1つも出せなかった。応募は Base に残っているので 200 で返すが、
           // 誰も気づいていないので退避に残して監視で拾う。
           console.error('Lark通知を1つも出せなかった（応募自体は記録済み）:', `submission=${submissionId}`);
@@ -1021,7 +1012,8 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
             }
           }
           if (!notificationStatePersisted) {
-            console.error('Lark通知送信済みの書き戻しが3回失敗:', lastPersistError);
+            observation.markFailed('lark-notification-state');
+            console.error('Lark通知送信済みの書き戻しが3回失敗:', describeError(lastPersistError));
             return NextResponse.json({ message: 'Internal Server Error' }, { status: 503 });
           }
         }
@@ -1044,7 +1036,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
         const recipientEmail = formData.email;
         const origin = emailOriginCandidate;
         tasks.push(
-          (async () => {
+          observation.trackTask('confirmation-email', async () => {
             const result = await sendApplicationConfirmationEmail({
               to: recipientEmail,
               applicantName: formData.fullName || '',
@@ -1060,6 +1052,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
                 formOrigin: origin,
               });
             } else if (result.reason === 'error') {
+              observation.markFailed('confirmation-email');
               console.error('Confirmation email failed:', {
                 submissionId,
                 error: result.error,
@@ -1072,7 +1065,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
                 formOrigin: origin,
               });
             }
-          })()
+          })
         );
       }
 
@@ -1086,7 +1079,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
         const channel = smsChannel;
         const media = (utmParams?.utm_source || 'form').toLowerCase().slice(0, 32);
         tasks.push(
-          (async () => {
+          observation.trackTask('application-sms', async () => {
             const r = await sendApplicationSms({
               channel,
               phone: formData.phoneNumber,
@@ -1096,9 +1089,10 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
             if (r.sent) {
               console.log('Application SMS sent:', { order: r.deliveryOrderId, ref: r.ref, channel, media });
             } else {
+              if (r.reason === 'error' || /^http_[45]/.test(r.reason || '') || r.error) observation.markFailed('application-sms');
               console.log('Application SMS skipped/failed:', { reason: r.reason, error: r.error, channel, media });
             }
-          })()
+          })
         );
       }
 
@@ -1109,9 +1103,11 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
         const capiHost = request.headers.get('x-forwarded-host') || request.headers.get('host') || '';
         const capiProto = request.headers.get('x-forwarded-proto') || 'https';
         const capiFallbackSourceUrl = capiHost ? `${capiProto}://${capiHost}` : undefined;
+        const capiEventId = submissionData.metaEventId;
         tasks.push(
-          sendMetaCapiLead({
-            eventId: submissionData.metaEventId,
+          observation.trackTask('meta-capi', async () => {
+            const result = await sendMetaCapiLead({
+            eventId: capiEventId,
             eventSourceUrl: referer,
             email: formData.email,
             phone: formData.phoneNumber,
@@ -1120,14 +1116,17 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
             clientIpAddress: capiClientIp || undefined,
             clientUserAgent: capiUserAgent || undefined,
             contentIds: submissionData.appliedJobId ? [submissionData.appliedJobId] : undefined,
-          }).then(() => {})
+            });
+            if (!result.ok && !result.skipped) observation.markFailed('meta-capi');
+          })
         );
 
         // OpenAI（ChatGPT広告）Conversions API — 非致命。
         // oppref が無い応募（＝広告クリック由来でない）は lib 側で送信をスキップする。
         tasks.push(
-          sendOpenAiConversion({
-            eventId: submissionData.metaEventId,
+          observation.trackTask('openai-capi', async () => {
+            const result = await sendOpenAiConversion({
+            eventId: capiEventId,
             oppref: typeof submissionData.oppref === 'string' ? submissionData.oppref : undefined,
             // action_source=web では source_url が必須。Referer を送らない環境
             // （プライバシー拡張・no-referrer のアプリ内ブラウザ等）でも欠落させないよう、
@@ -1137,7 +1136,9 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
             phone: formData.phoneNumber,
             clientIpAddress: capiClientIp || undefined,
             clientUserAgent: capiUserAgent || undefined,
-          }).then(() => {})
+            });
+            if (!result.ok && !result.skipped) observation.markFailed('openai-capi');
+          })
         );
       }
 
@@ -1165,8 +1166,11 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
     return NextResponse.json({ message: 'Application submitted successfully!' }, { status: 200 });
 
   } catch (error) {
+    observation.markFailed('request');
     console.error('Error processing application in API route:', describeError(error));
     // 予期せぬエラー
     return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
+  } finally {
+    observation.settled();
   }
 } 

@@ -2,10 +2,11 @@ import type { BirthDate, FormData, FormErrors, TruckLicense } from '../types';
 
 const isValidPhoneNumber = (phoneNumber: string): boolean => {
   if (!/^(070|080|090)\d{8}$/.test(phoneNumber)) return false;
-  if (/(.)\1{4,}/.test(phoneNumber)) return false;
-  if (/01234|12345|23456|34567|45678|56789|98765|87654|76543|65432|54321/.test(phoneNumber)) return false;
+  // 入力例（09012345678）をそのまま送ったものは弾く。
   if (/^09012345678$|^08012345678$/.test(phoneNumber)) return false;
-  if (/^(\d)\1+$/.test(phoneNumber)) return false;
+  // 下8桁がすべて同じ数字（09000000000 など）は、欄を埋めただけの入力として弾く。
+  // それ以外の連番や同じ数字の並びは実在する番号にも含まれる（例: 090-1234-xxxx）ので、判定には使わない。
+  if (/^(070|080|090)(\d)\2{7}$/.test(phoneNumber)) return false;
   return true;
 };
 

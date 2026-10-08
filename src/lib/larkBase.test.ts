@@ -286,6 +286,91 @@ describe('Lark IM idempotent send', () => {
     await expect(sendLarkTextMessage('oc_test', 'test', 'submission-1', 'liftjob'))
       .resolves.toMatchObject({ ok: false, status: 0, ambiguous: true });
   });
+
+  it('トークンが取れないときは送っていないので、曖昧扱いにしない（Webhook の予備へ落とせる）', async () => {
+    stubEnv();
+    const fetchSpy = vi.fn(async (input: unknown) => {
+      if (String(input).includes('tenant_access_token')) {
+        return Response.json({ code: 10014, msg: 'app secret invalid' });
+      }
+      return Response.json({ code: 0, data: { message_id: 'om_test' } });
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const { sendLarkTextMessage } = await import('./larkBase');
+    const result = await sendLarkTextMessage('oc_test', 'test', 'submission-1', 'liftjob');
+    expect(result).toMatchObject({ ok: false, status: 0 });
+    expect(result.ambiguous, '送っていないものを「届いたかもしれない」にしない').toBeFalsy();
+    expect(fetchSpy.mock.calls.some(([input]) => String(input).includes('/im/v1/messages'))).toBe(false);
+  });
+
+  it('トークン取得が通信例外でも、曖昧扱いにしない', async () => {
+    stubEnv();
+    const fetchSpy = vi.fn(async (input: unknown) => {
+      if (String(input).includes('tenant_access_token')) throw new TypeError('fetch failed');
+      return Response.json({ code: 0, data: { message_id: 'om_test' } });
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const { sendLarkTextMessage } = await import('./larkBase');
+    const result = await sendLarkTextMessage('oc_test', 'test', 'submission-1', 'liftjob');
+    expect(result).toMatchObject({ ok: false, status: 0 });
+    expect(result.ambiguous).toBeFalsy();
+    expect(fetchSpy.mock.calls.some(([input]) => String(input).includes('/im/v1/messages'))).toBe(false);
+  });
+
+  it('接続そのものができなかったときは送っていないので、曖昧扱いにしない', async () => {
+    stubEnv();
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
+      if (String(input).includes('tenant_access_token')) {
+        return Response.json({ code: 0, tenant_access_token: 'token', expire: 7200 });
+      }
+      throw Object.assign(new TypeError('fetch failed'), {
+        cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }),
+      });
+    }));
+
+    const { sendLarkTextMessage } = await import('./larkBase');
+    const result = await sendLarkTextMessage('oc_test', 'test', 'submission-1', 'liftjob');
+    expect(result.ok).toBe(false);
+    expect(result.ambiguous, '接続できていないので「届いたかもしれない」にしない').toBeFalsy();
+  });
+
+  it('接続したあとで切れた例外は、届いた可能性があるので曖昧扱いのままにする', async () => {
+    stubEnv();
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
+      if (String(input).includes('tenant_access_token')) {
+        return Response.json({ code: 0, tenant_access_token: 'token', expire: 7200 });
+      }
+      throw Object.assign(new TypeError('fetch failed'), {
+        cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }),
+      });
+    }));
+
+    const { sendLarkTextMessage } = await import('./larkBase');
+    await expect(sendLarkTextMessage('oc_test', 'test', 'submission-1', 'liftjob'))
+      .resolves.toMatchObject({ ok: false, status: 0, ambiguous: true });
+  });
+
+  it('認証エラーのあとトークンの取り直しに失敗しても、曖昧扱いにしない', async () => {
+    stubEnv();
+    let tokenCalls = 0;
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
+      if (String(input).includes('tenant_access_token')) {
+        tokenCalls += 1;
+        return tokenCalls === 1
+          ? Response.json({ code: 0, tenant_access_token: 'expired', expire: 7200 })
+          : Response.json({ code: 10014, msg: 'app secret invalid' });
+      }
+      return Response.json({ code: 99991663, msg: 'tenant access token invalid' });
+    }));
+
+    const { sendLarkTextMessage } = await import('./larkBase');
+    const result = await sendLarkTextMessage('oc_test', 'test', 'submission-1', 'liftjob');
+    expect(tokenCalls).toBe(2);
+    expect(result).toMatchObject({ ok: false, status: 0 });
+    expect(result.ambiguous).toBeFalsy();
+  });
 });
 
 function jsonResponse(body: unknown, status = 200) {

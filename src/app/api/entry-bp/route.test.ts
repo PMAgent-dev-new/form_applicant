@@ -41,6 +41,61 @@ describe('entry-bp POST — 申込をどこにも残さない経路を作らな�
     vi.restoreAllMocks();
   });
 
+  it('Base に入って通知だけ落ちたら、退避に残して通す（誰も気づかないため）', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    for (const [k, v] of Object.entries({
+      APP_ID_MECHANIC: 'cli_mechanic',
+      APP_SECRET_MECHANIC: 'secret_mechanic',
+      APP_TOKEN_MECHANIC: 'app_mechanic',
+      LARK_WEBHOOK_URL_GULLIVER_BP_PROD: 'https://open.larksuite.com/open-apis/bot/v2/hook/bp',
+    })) vi.stubEnv(k, v);
+    fetchSpy.mockImplementation(async (input: unknown) => {
+      const url = String(input);
+      if (url.includes('/auth/v3/tenant_access_token')) {
+        return Response.json({ code: 0, tenant_access_token: 't', expire: 7200 });
+      }
+      if (url.includes('/bitable/v1/apps/')) return Response.json({ code: 0, data: { record: { record_id: 'rec1' } } });
+      if (url.includes('/bot/v2/hook/')) return Response.json({ code: 19021, msg: 'sign match fail' });
+      if (url.includes('/rest/v1/submission_vault')) return new Response('', { status: 201 });
+      return Response.json({ code: 0 });
+    });
+
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest());
+    expect(res.status).toBe(200);
+    const vaultPosts = fetchSpy.mock.calls.filter(
+      ([target, init]) => String(target).includes('/rest/v1/submission_vault')
+        && (init as RequestInit)?.method === 'POST',
+    );
+    expect(vaultPosts.length, '通知が出ていない申込は退避に残すこと').toBe(1);
+    const body = JSON.parse(String((vaultPosts[0][1] as RequestInit).body));
+    expect(body.notified).toBe(false);
+    expect(body.reason).toContain('Base への保存は成功');
+    errorSpy.mockRestore();
+  });
+
+  it('Base に入り通知も出せたら、退避には書かない', async () => {
+    for (const [k, v] of Object.entries({
+      APP_ID_MECHANIC: 'cli_mechanic',
+      APP_SECRET_MECHANIC: 'secret_mechanic',
+      APP_TOKEN_MECHANIC: 'app_mechanic',
+      LARK_WEBHOOK_URL_GULLIVER_BP_PROD: 'https://open.larksuite.com/open-apis/bot/v2/hook/bp',
+    })) vi.stubEnv(k, v);
+    fetchSpy.mockImplementation(async (input: unknown) => {
+      const url = String(input);
+      if (url.includes('/auth/v3/tenant_access_token')) {
+        return Response.json({ code: 0, tenant_access_token: 't', expire: 7200 });
+      }
+      if (url.includes('/bitable/v1/apps/')) return Response.json({ code: 0, data: { record: { record_id: 'rec1' } } });
+      return Response.json({ code: 0 });
+    });
+
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest());
+    expect(res.status).toBe(200);
+    expect(fetchSpy.mock.calls.filter(([target]) => String(target).includes('/rest/v1/submission_vault')).length).toBe(0);
+  });
+
   it('Base も通知先も未設定なら、申込を退避に残して通す', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { POST } = await import('./route');
@@ -125,6 +180,38 @@ describe('entry-bp POST — 申込をどこにも残さない経路を作らな�
     const notify = fetchSpy.mock.calls.find(([target]) => String(target).includes('/bot/v2/hook/'));
     expect(String((notify?.[1] as RequestInit)?.body ?? ''), 'Base に入っていないことを通知で分かるようにする')
       .toContain('Base未登録');
+    warnSpy.mockRestore();
+  });
+
+  it('Webhook が code の無い応答を返したら、通知できたとみなさない', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.stubEnv('LARK_WEBHOOK_URL_GULLIVER_BP_PROD', 'https://open.larksuite.com/open-apis/bot/v2/hook/bp');
+    fetchSpy.mockImplementation(async (input: unknown) => {
+      if (String(input).includes('/rest/v1/submission_vault')) return new Response('boom', { status: 503 });
+      return new Response('', { status: 200 });
+    });
+
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest());
+
+    expect(res.status, 'Base にも退避にも無く、通知も確かめられないので再送してもらう').toBe(502);
+    warnSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
+  it('Webhook の旧形式の成功応答（StatusCode: 0）は成功とみなす', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.stubEnv('LARK_WEBHOOK_URL_GULLIVER_BP_PROD', 'https://open.larksuite.com/open-apis/bot/v2/hook/bp');
+    fetchSpy.mockImplementation(async (input: unknown) => {
+      if (String(input).includes('/rest/v1/submission_vault')) return new Response('boom', { status: 503 });
+      return Response.json({ StatusCode: 0, StatusMessage: 'success' });
+    });
+
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest());
+
+    expect(res.status, '通知が出ているので申込は通す').toBe(200);
     warnSpy.mockRestore();
   });
 });

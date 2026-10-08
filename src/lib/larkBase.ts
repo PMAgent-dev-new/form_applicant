@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 
 import { describeError } from "./describe-error";
 import { neutralizeLarkTags } from './lark-text';
+import { lookupCatalogCreative, type CatalogLookup } from './creative-catalog';
 
 // 認証プロファイル。投入先 Base（Bitable アプリ）ごとに異なるアプリ資格情報を使う。
 //   mechanic … 求職者DB👷‍♂️ / IDOM_新卒2027 等（既存 APP_*_MECHANIC）
@@ -25,6 +26,16 @@ interface LarkBaseConfig {
 
 // Bitable のフィールド値。Text/Select=string、MultiSelect=string[]、Number/DateTime=number、Checkbox=boolean。
 export type LarkFieldValue = string | number | boolean | string[];
+
+export async function resolveApplicationCatalogCreative(adId: string): Promise<CatalogLookup> {
+  try {
+    const cfg = readConfig('ridejob');
+    if (!cfg) return { matches: [], status: 'not_configured' };
+    return await lookupCatalogCreative({ adId, domain: cfg.domain, token: await fetchTenantAccessToken(cfg, 'ridejob') });
+  } catch {
+    return { matches: [], status: 'unavailable' };
+  }
+}
 
 export type LarkLinkedRecordName = {
   linkedRecordName: string;
@@ -722,6 +733,23 @@ export type LarkMessageSendResult = {
 const larkMessageUuid = (value: string): string =>
   createHash('sha256').update(value.trim(), 'utf8').digest('hex').slice(0, 50);
 
+// 接続を張る前に失敗したことが確かなエラー（fetch failed の cause.code）。
+// リクエストを送れていないので、Lark 側で受け付けられた可能性は無い。
+const CONNECT_FAILURE_CODES = new Set([
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'ECONNREFUSED',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'UND_ERR_CONNECT_TIMEOUT',
+]);
+
+function failedBeforeConnecting(error: unknown): boolean {
+  const cause = error instanceof Error ? (error as Error & { cause?: unknown }).cause : undefined;
+  const code = cause && typeof cause === 'object' ? (cause as { code?: unknown }).code : undefined;
+  return typeof code === 'string' && CONNECT_FAILURE_CODES.has(code);
+}
+
 /**
  * Lark IM APIでテキスト通知を送る。uuidは同一応募の同時・再送通知を1時間重複排除する。
  */
@@ -758,34 +786,63 @@ export async function sendLarkTextMessage(
     return { res, data };
   };
 
+  // トークンが取れないうちはメッセージを送っていない。ここを「届いたかもしれない」扱いにすると、
+  // Webhook の予備に落ちず、通知が出ていないのに通知済みとして記録される。
+  const notSent = (stage: string, error: unknown): LarkMessageSendResult => ({
+    ok: false,
+    status: 0,
+    message: `${stage}: ${error instanceof Error ? error.message : String(error)}`,
+  });
+  // 接続できたあとの例外（タイムアウト等）だけが、Lark 側だけ成功した可能性のある状態。
+  // 名前解決や接続そのものの失敗はリクエストを送れていないので、送っていない扱いにする。
+  const afterCallFailed = (error: unknown): LarkMessageSendResult =>
+    failedBeforeConnecting(error)
+      ? notSent('im/v1/messages', error)
+      : {
+          ok: false,
+          status: 0,
+          message: error instanceof Error ? error.message : String(error),
+          ambiguous: true,
+        };
+
+  let token: string;
   try {
-    let token = await fetchTenantAccessToken(cfg, profile);
-    let result = await call(token);
-    if (result.data.code === 99991661 || result.data.code === 99991663 || result.data.code === 99991664) {
-      tokenCacheByProfile.delete(profile);
-      token = await fetchTenantAccessToken(cfg, profile);
-      result = await call(token);
-    }
-    if (!result.res.ok || result.data.code !== 0) {
-      return {
-        ok: false,
-        status: result.res.status,
-        code: result.data.code,
-        message: result.data.msg,
-      };
-    }
-    return {
-      ok: true,
-      status: result.res.status,
-      code: 0,
-      messageId: result.data.data?.message_id,
-    };
+    token = await fetchTenantAccessToken(cfg, profile);
   } catch (error) {
+    return notSent('tenant_access_token', error);
+  }
+  let result: Awaited<ReturnType<typeof call>>;
+  try {
+    result = await call(token);
+  } catch (error) {
+    return afterCallFailed(error);
+  }
+  if (result.data.code === 99991661 || result.data.code === 99991663 || result.data.code === 99991664) {
+    // 1回目は認証エラーで受け付けられていない。取り直しに失敗したなら、まだ送っていない。
+    tokenCacheByProfile.delete(profile);
+    try {
+      token = await fetchTenantAccessToken(cfg, profile);
+    } catch (error) {
+      return notSent('tenant_access_token', error);
+    }
+    try {
+      result = await call(token);
+    } catch (error) {
+      return afterCallFailed(error);
+    }
+  }
+  if (!result.res.ok || result.data.code !== 0) {
     return {
       ok: false,
-      status: 0,
-      message: error instanceof Error ? error.message : String(error),
-      ambiguous: true,
+      status: result.res.status,
+      code: result.data.code,
+      message: result.data.msg,
     };
   }
+  return {
+    ok: true,
+    status: result.res.status,
+    code: 0,
+    messageId: result.data.data?.message_id,
+  };
 }
