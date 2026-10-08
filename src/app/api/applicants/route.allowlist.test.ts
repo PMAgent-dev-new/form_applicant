@@ -1,5 +1,7 @@
 import { NextRequest } from 'next/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+const afterTasks = vi.hoisted(() => ({ queue: [] as (() => unknown)[] }));
+vi.mock('next/server', async (importActual) => ({ ...await importActual<typeof import('next/server')>(), after: (fn: () => unknown) => afterTasks.queue.push(fn) }));
 
 /**
  * 送信先ホストの許可リストガード。
@@ -116,6 +118,7 @@ describe('applicants POST — outbound host allowlist', () => {
   };
 
   beforeEach(() => {
+    afterTasks.queue = [];
     for (const [key, value] of Object.entries(ALLOWLISTED_ENV)) {
       vi.stubEnv(key, value);
     }
@@ -141,6 +144,29 @@ describe('applicants POST — outbound host allowlist', () => {
     const offlist = hosts.filter((host) => !ALLOWED_HOSTS.has(host));
     expect(offlist, `unexpected outbound host(s): ${offlist.join(', ')}`).toEqual([]);
   });
+  it('Baseのみの受付でも新規応募のCR素材保存を予約する', async () => {
+    vi.stubEnv('LARK_SEND_BASE_ONLY', 'true');
+    vi.stubEnv('META_ACCESS_TOKEN', 'test-meta-read');
+    fetchSpy.mockImplementation(async (input, init) => String(input).includes('graph.facebook.com')
+      ? Response.json({ id: '123456789', account_id: '1435983094817075', creative: { id: '987654321', image_url: 'https://a.fbcdn.net/test.jpg', body: 'CR本文' } })
+      : successResponse(input, init));
+    const { POST } = await import('./route');
+    const response = await POST(makeRequest({ ...applicantBody, metaEventId: undefined, submissionId: 'snapshot-first', utmParams: { utm_source: 'meta', utm_id: '123456789' } }));
+    expect(response.status).toBe(200);
+    expect(afterTasks.queue).toHaveLength(1);
+  });
+  it('同じ応募IDの再送で先着レコードのCR素材を上書きしない', async () => {
+    vi.stubEnv('LARK_SEND_BASE_ONLY', 'true');
+    vi.stubEnv('META_ACCESS_TOKEN', 'test-meta-read');
+    fetchSpy.mockImplementation(async (input, init) => {
+      if (String(input).includes('graph.facebook.com')) return Response.json({ id: '123456789', account_id: '1435983094817075', creative: { id: '987654321', image_url: 'https://a.fbcdn.net/test.jpg' } });
+      if (String(input).includes('/records/search')) return Response.json({ code: 0, data: { items: [{ record_id: 'rec-first', fields: { 応募日: Date.now() } }] } });
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    await POST(makeRequest({ ...applicantBody, metaEventId: undefined, submissionId: 'snapshot-duplicate', utmParams: { utm_source: 'meta', utm_id: '123456789' } }));
+    expect(afterTasks.queue).toHaveLength(0);
+  }, 10000);
 
   it('actually exercises the Lark, SMS and CAPI paths (guard is not vacuous)', async () => {
     const { POST } = await import('./route');

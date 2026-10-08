@@ -39,6 +39,12 @@ function mechanicContext(): BaseWriteContext {
 }
 
 describe('resolveDirectBaseWrite', () => {
+  it('経路・CR本文・備考を応募レコードへ保存し、素材保存状態を明示する', () => {
+    const target = resolveDirectBaseWrite({ ...mechanicContext(), applicationDetails: ['集客元: fb / cpc', '応募時備考: 日産→タクシー'], creativeText: '本文: 年休150日', materialStatus: '素材保存待ち' });
+    expect(target?.fields.対応履歴メモ).toContain('応募時備考: 日産→タクシー');
+    expect(target?.fields.クリエイティブ).toBe('本文: 年休150日');
+    expect(target?.fields.CR素材状態).toBe('素材保存待ち');
+  });
   it('担当者が追記したメモを保持して通知済み印を追加する', () => {
     expect(appendLarkNotificationMarker('[submission_id:submission-1]\n電話済み', 'submission-1'))
       .toBe('[submission_id:submission-1]\n電話済み\n[lark_notified:submission-1]');

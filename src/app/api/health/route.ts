@@ -206,7 +206,7 @@ export async function GET(request: NextRequest) {
 
   if (!authorized) {
     // 無認証: 生存確認のみ。設定詳細は返さない。
-    return NextResponse.json({ status: 'ok' }, { status: 200 });
+    return NextResponse.json({ status: 'ok' }, { status: 200, headers: { 'X-Application-Context-Version': '1' } });
   }
 
   // env の不足と資格情報の破損は別の障害。**片方が他方を隠してはいけない。**
@@ -270,5 +270,5 @@ export async function GET(request: NextRequest) {
       { status: 503 },
     );
   }
-  return NextResponse.json({ status: 'ready', deep }, { status: 200 });
+  return NextResponse.json({ status: 'ready', deep }, { status: 200, headers: { 'X-Application-Context-Version': '1' } });
 }
