@@ -6,7 +6,7 @@ export type CampaignTouch = {
 export type ApplicationContext = {
   acquisition?: CampaignTouch;
   entry?: { source: string; medium?: string; url?: string; at: string };
-  article?: { id: string; title?: string; url?: string };
+  article?: { id: string; title?: string; url?: string; at?: string };
   truncated?: boolean;
 };
 
@@ -50,7 +50,7 @@ export function normalizeApplicationContext(value: unknown, now = Date.now()): A
       landing: siteUrl(a.landing), referrer: referrerOrigin(a.referrer),
     } } : {}),
     ...(entrySource && entryAt ? { entry: { source: entrySource, medium: text(e.medium, 80) || undefined, url: siteUrl(e.url), at: entryAt } } : {}),
-    ...(articleId && /^[\w-]+$/.test(articleId) && entryAt ? { article: { id: articleId, title: text(p.title, 180) || undefined, url: siteUrl(p.url) } } : {}),
+    ...(articleId && /^[\w-]+$/.test(articleId) && entryAt ? { article: { id: articleId, title: text(p.title, 180) || undefined, url: siteUrl(p.url), at: validAt(p.at, now) || undefined } } : {}),
     ...(raw.truncated === true ? { truncated: true } : {}),
   };
 }
@@ -100,7 +100,7 @@ export function captureApplicationContext(input: {
     const id = text(p.get('rj_article_id') || (source === 'ridejob_media' ? p.get('utm_content') : ''), 128);
     const priorArticle = current.article?.id === id ? current.article : undefined;
     if (id) next.article = { id, title: text(p.get('rj_article_title'), 180) || priorArticle?.title,
-      url: siteUrl(p.get('rj_article_url')) || priorArticle?.url || `https://ridejob.jp/media/blog/${encodeURIComponent(id)}` };
+      url: siteUrl(p.get('rj_article_url')) || priorArticle?.url || `https://ridejob.jp/media/blog/${encodeURIComponent(id)}`, at: priorArticle?.at };
     else delete next.article;
   }
   try {
@@ -108,7 +108,7 @@ export function captureApplicationContext(input: {
     const match = u.pathname.match(/^\/media\/blog\/([\w-]+)\/?$/);
     if (match && !['preview', 'category', 'page'].includes(match[1])) {
       next.entry = { source: 'ridejob_media', medium: 'article_view', url: siteUrl(input.url), at };
-      next.article = { id: match[1], title: text(input.title, 180), url: siteUrl(input.url) };
+      next.article = { id: match[1], title: text(input.title, 180), url: siteUrl(input.url), at };
     }
   } catch { /* Bad URL must not affect form submission. */ }
   next = normalizeApplicationContext(next, now);
@@ -135,14 +135,34 @@ export function captureApplicationContext(input: {
 
 export function applicationContextLines(value: unknown, now = Date.now()): string[] {
   const c = normalizeApplicationContext(value, now);
+  const mediaTouch = c.entry?.source.toLowerCase() === 'ridejob_media';
+  const media = mediaTouch && c.entry?.medium !== 'article_view';
+  const sourceNames: Record<string, string> = { fb: 'Facebook', facebook: 'Facebook', ig: 'Instagram', instagram: 'Instagram',
+    meta: 'Meta', google: 'Google', yahoo: 'Yahoo!', bing: 'Bing', chatgpt: 'ChatGPT', '{{site_source_name}}': 'Meta（掲載面未確定）' };
+  const mediumNames: Record<string, string> = { cpc: '広告', ppc: '広告', paid: '広告', paid_social: '広告',
+    organic: '自然流入', referral: '外部リンク', unknown: '広告・自然流入の区別は未確認' };
+  const a = c.acquisition;
+  const rawSource = a ? [a.source, a.medium].filter(Boolean).join(' / ') : '';
+  const medium = a?.medium?.toLowerCase() === 'organic' && ['google', 'yahoo', 'bing'].includes(a.source.toLowerCase())
+    ? '自然検索' : a?.medium ? mediumNames[a.medium.toLowerCase()] || a.medium : undefined;
+  const source = a ? [sourceNames[a.source.toLowerCase()] || a.source, medium].filter(Boolean).join(' / ') : '';
+  const displayedSource = a ? `${source}（計測値: ${rawSource}）` : '未特定（広告・自然検索の区別は未確認）';
+  // Historical acquisition is not evidence of this article visit's source, even for the same URL.
+  const articleSourceConfirmed = Boolean(a && c.article?.at && c.article.url && a.landing === c.article.url
+    && a.at === c.article.at && c.entry && Date.parse(c.article.at) <= Date.parse(c.entry.at));
   return [
-    `集客元: ${c.acquisition ? [c.acquisition.source === '{{site_source_name}}' ? 'Meta（掲載面未確定）' : c.acquisition.source, c.acquisition.medium].filter(Boolean).join(' / ') : '未特定（広告・自然検索の区別は未確認）'}`,
+    `応募経路: ${media ? 'メディア経由' : mediaTouch ? '未特定（メディア記事の閲覧のみ確認）'
+      : c.entry && isInternalSource(c.entry.source) ? 'RIDE JOBサイト経由' : '未特定（メディア経由か未確認）'}`,
+    media || c.article ? `記事流入元: ${articleSourceConfirmed ? displayedSource : '未特定（今回の記事到着時の流入元を確認できる計測情報なし）'}` : '',
+    `集客元（直近確認）: ${displayedSource}`,
+    a ? `集客元の確認範囲: 過去30日以内の直近の確認済み接触${(media || c.article) && !articleSourceConfirmed ? '。今回の記事への流入元と一致するとは限りません' : ''}` : '',
     c.acquisition ? `集客接触日時: ${c.acquisition.at}` : '',
     c.acquisition?.landing ? `初期着地: ${c.acquisition.landing}` : '',
     c.entry ? `応募導線: ${[c.entry.source, c.entry.medium].filter(Boolean).join(' / ')}` : '',
     c.entry ? `導線接触日時: ${c.entry.at}` : '',
     c.article ? `元記事: ${c.article.title || c.article.id}` : '',
     c.article?.url ? `記事URL: ${c.article.url}` : '',
+    c.article?.at ? `記事接触日時: ${c.article.at}` : '',
     c.truncated ? '計測補足: 長い項目を一部省略' : '',
   ].filter(Boolean);
 }

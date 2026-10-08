@@ -25,7 +25,7 @@ describe('application enrichment failure isolation and exact ad matching', () =>
   it('never treats an internal CTA as proof of HP or as a Meta ad', async () => {
     const f = vi.fn(); vi.stubGlobal('fetch', f);
     const e = await enrichApplication({}, { source: 'ridejob_media', medium: 'article_cta', content: 'article1' }, now);
-    expect(e.lines.join('\n')).toContain('集客元: 未特定'); expect(e.lines.join('\n')).toContain('article_cta'); expect(f).not.toHaveBeenCalled();
+    expect(e.lines.join('\n')).toContain('記事流入元: 未特定'); expect(e.lines.join('\n')).toContain('集客元（直近確認）: 未特定'); expect(e.lines.join('\n')).toContain('応募経路: メディア経由'); expect(e.lines.join('\n')).toContain('article_cta'); expect(f).not.toHaveBeenCalled();
   });
   it('labels dynamic candidates, rather than claiming a rendered combination', async () => {
     vi.stubEnv('META_ACCESS_TOKEN', 'test-token'); vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ ...ad, creative: { ...ad.creative, asset_feed_spec: { bodies: [{ text: '候補B' }] } } })));
