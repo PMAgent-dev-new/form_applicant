@@ -5,6 +5,52 @@ const touch = { acquisition: { source: 'fb', medium: 'cpc', id: '52648617245839'
 const ad = { id: '52648617245839', account_id: '1435983094817075', name: 'CR-test', creative: { id: '111111111', body: '本文\n2行目', title: '見出し', image_url: 'https://a.fbcdn.net/a.jpg', effective_object_story_id: '12345_67890' } };
 afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 describe('application enrichment failure isolation and exact ad matching', () => {
+  it('rejects empty creative objects and continues to a verified fallback', async () => {
+    vi.stubEnv('META_ACCESS_TOKEN', 'test-token');
+    const f = vi.fn().mockResolvedValueOnce(Response.json({ id: '123456789', account_id: ad.account_id, creative: {} })).mockResolvedValueOnce(Response.json(ad));
+    vi.stubGlobal('fetch', f);
+    const result = await enrichApplication({ acquisition: { ...touch.acquisition, id: '123456789', term: ad.id } }, {}, now);
+    expect(result.creativeId).toBe(ad.creative.id);
+    expect(f).toHaveBeenCalledTimes(2);
+  });
+  it('fills a missing legacy term only for the same external touch', async () => {
+    vi.stubEnv('META_ACCESS_TOKEN', 'test-token');
+    const f = vi.fn().mockResolvedValue(Response.json(ad)); vi.stubGlobal('fetch', f);
+    const raw = { acquisition: { ...touch.acquisition, id: '123456789', campaign: '123456789' } };
+    const legacy = { source: 'fb', medium: 'cpc', campaign: '123456789', term: ad.id };
+    expect((await enrichApplication(raw, legacy, now)).creativeId).toBe(ad.creative.id);
+    expect(f).toHaveBeenCalledTimes(1);
+    f.mockClear();
+    await enrichApplication(raw, { ...legacy, campaign: '999999999' }, now);
+    await enrichApplication(raw, { ...legacy, source: 'ridejob_media' }, now);
+    expect(f).not.toHaveBeenCalled();
+  });
+  it('skips a campaign id and resolves legacy term against an exact account-scoped creative', async () => {
+    vi.stubEnv('META_ACCESS_TOKEN', 'test-token');
+    const f = vi.fn().mockResolvedValue(Response.json(ad)); vi.stubGlobal('fetch', f);
+    const resolve = vi.fn().mockResolvedValue({ status: 'missing', matches: [] });
+    const e = await enrichApplication({ acquisition: { ...touch.acquisition, id: '123456789', campaign: '123456789', content: 'CR-test', term: ad.id } }, {}, now, resolve);
+    expect(e.adId).toBe(ad.id); expect(e.creativeId).toBe(ad.creative.id);
+    expect(f).toHaveBeenCalledTimes(1); expect(String(f.mock.calls[0][0])).toContain('/' + ad.id + '?');
+    expect(resolve).toHaveBeenCalledWith(ad.id);
+  });
+  it('tries term after a numeric legacy value is not an ad, but does not retry auth or rate-limit errors', async () => {
+    vi.stubEnv('META_ACCESS_TOKEN', 'test-token');
+    const f = vi.fn().mockResolvedValueOnce(Response.json({ error: { code: 100 } }, { status: 400 })).mockResolvedValueOnce(Response.json(ad));
+    vi.stubGlobal('fetch', f);
+    const raw = { acquisition: { ...touch.acquisition, id: '123456789', term: ad.id } };
+    expect((await enrichApplication(raw, {}, now)).creativeId).toBe(ad.creative.id);
+    expect(f).toHaveBeenCalledTimes(2);
+    f.mockReset().mockResolvedValue(Response.json({ error: { code: 190 } }, { status: 400 }));
+    expect((await enrichApplication(raw, {}, now)).creativeId).toBe('');
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+  it('does not claim an adset candidate is a resolved creative', async () => {
+    vi.stubEnv('META_ACCESS_TOKEN', 'test-token');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ id: '123456789', account_id: ad.account_id })));
+    const e = await enrichApplication({ acquisition: { ...touch.acquisition, id: undefined, term: '123456789' } }, {}, now);
+    expect(e.creativeId).toBe(''); expect(e.creativeText).toContain('URL申告値');
+  });
   it('keeps Japanese text including its truncation notice within the byte budget', () => {
     const text = applicationNotificationText(['日本語😀'.repeat(10000)], 10000);
     expect(new TextEncoder().encode(text).length).toBeLessThanOrEqual(10000);

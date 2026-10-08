@@ -17,11 +17,23 @@ export type ApplicationEnrichment = {
   lines: string[]; creativeText: string; referenceStatus: string;
   adId: string; creativeId: string; imageUrl: string; dynamic: boolean;
 };
-type Legacy = { source?: string; medium?: string; campaign?: string; content?: string; id?: string; creative?: string; at?: string; landing?: string };
+type Legacy = { source?: string; medium?: string; campaign?: string; content?: string; id?: string; creative?: string; term?: string; at?: string; landing?: string };
 export async function enrichApplication(raw: unknown, legacy: Legacy = {}, now = Date.now(), resolveCatalog?: CatalogResolver): Promise<ApplicationEnrichment> {
   let context = normalizeApplicationContext(raw, now);
   if (!context.acquisition && legacy.source && !isInternalSource(legacy.source)) {
     context = normalizeApplicationContext({ ...context, acquisition: { ...legacy, at: legacy.at || new Date(now).toISOString() } }, now);
+  }
+  // A compact context may omit term. Only complement the same external touch;
+  // never mix an internal CTA or a different campaign into the stored source.
+  const prior = context.acquisition;
+  const fromUrl = normalizeApplicationContext({ acquisition: { ...legacy, at: legacy.at || new Date(now).toISOString() } }, now).acquisition;
+  if (prior && fromUrl && !prior.term && fromUrl.term
+    && prior.source.toLowerCase() === fromUrl.source.toLowerCase()
+    && prior.medium?.toLowerCase() === fromUrl.medium?.toLowerCase()
+    && !(prior.campaign && fromUrl.campaign && prior.campaign !== fromUrl.campaign)
+    && !(prior.id && fromUrl.id && prior.id !== fromUrl.id)
+    && ((prior.id && prior.id === fromUrl.id) || (prior.campaign && prior.campaign === fromUrl.campaign))) {
+    context = { ...context, acquisition: { ...prior, term: fromUrl.term } };
   }
   if (!context.entry && isInternalSource(legacy.source)) {
     context = normalizeApplicationContext({ ...context, entry: { source: legacy.source, medium: legacy.medium, at: new Date(now).toISOString(), url: legacy.landing },
@@ -29,16 +41,25 @@ export async function enrichApplication(raw: unknown, legacy: Legacy = {}, now =
   }
   const a = context.acquisition;
   const meta = /^(meta|facebook|instagram|fb|ig|\{\{site_source_name\}\})$/i.test(a?.source || '');
-  const candidate = meta ? [a?.id, a?.content, a?.creative].find(v => /^\d{5,32}$/.test(v || '')) || '' : '';
+  // Legacy taxi URLs put ad.id in term while Meta may add campaign.id as id.
+  // Never stop at a campaign id, and never call an adset an ad without a creative.
+  const candidates = meta ? [...new Set([a?.id, a?.content, a?.creative, a?.term]
+    .filter((v): v is string => /^\d{5,32}$/.test(v || '') && v !== a?.campaign))] : [];
+  let candidate = candidates[0] || '';
   const result: ApplicationEnrichment = { lines: applicationContextLines(context, now), creativeText: '', referenceStatus: candidate ? '広告情報取得失敗（後日確認が必要）' : '広告IDなし・CR未特定', adId: candidate, creativeId: '', imageUrl: '', dynamic: false };
-  const catalogPromise = candidate ? resolveCatalogWithinBudget(resolveCatalog, candidate) : undefined;
   const token = process.env.META_ACCESS_TOKEN;
   if (candidate && token) {
+    const deadline = Date.now() + 2500;
+    for (const adCandidate of candidates) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
     try {
       const params = new URLSearchParams({ fields: 'id,account_id,name,creative{id,name,body,title,image_url,effective_object_story_id,instagram_permalink_url,object_story_spec,asset_feed_spec,product_set_id}', access_token: token });
-      const response = await fetch(`https://graph.facebook.com/${process.env.META_GRAPH_VERSION || 'v25.0'}/${candidate}?${params}`, { signal: AbortSignal.timeout(2500) });
-      const data = await response.json() as { id?: string; account_id?: string; name?: string; creative?: Creative; error?: unknown };
-      if (response.ok && !data.error && data.id === candidate && data.account_id === ACCOUNT_ID && data.creative) {
+      const response = await fetch(`https://graph.facebook.com/${process.env.META_GRAPH_VERSION || 'v25.0'}/${adCandidate}?${params}`, { signal: AbortSignal.timeout(remaining) });
+      const data = await response.json() as { id?: string; account_id?: string; name?: string; creative?: Creative; error?: { code?: number } };
+      if (response.ok && !data.error && data.id === adCandidate && data.account_id === ACCOUNT_ID && data.creative && /^\d{5,32}$/.test(data.creative.id || '')) {
+        candidate = adCandidate;
+        result.adId = adCandidate;
         const c = data.creative, link = c.object_story_spec?.link_data, video = c.object_story_spec?.video_data;
         result.creativeId = str(c.id, 32);
         result.dynamic = !!c.product_set_id || !!c.asset_feed_spec || !!link?.child_attachments?.length;
@@ -59,13 +80,19 @@ export async function enrichApplication(raw: unknown, legacy: Legacy = {}, now =
           `取得日時: ${new Date(now).toISOString()}`,
         ].filter(Boolean).join('\n');
         if (result.creativeText.length > 12000) result.creativeText = `${result.creativeText.slice(0, 12000)}\n（長い候補テキストの一部を省略。広告管理画面で全文確認）`;
+        break;
       } else {
         console.warn('[application-context] Meta lookup rejected', { status: response.status, accountMatched: data.account_id === ACCOUNT_ID });
+        // Only an unsupported object/field (100) can justify trying a different
+        // legacy candidate. Auth, rate-limit and server failures are not retried.
+        if ((!response.ok && data.error?.code !== 100) ||
+          (data.account_id && data.account_id !== ACCOUNT_ID)) break;
       }
-    } catch { console.warn('[application-context] Meta lookup unavailable; application continues'); }
+    } catch { console.warn('[application-context] Meta lookup unavailable; application continues'); break; }
+    }
   }
   if (!result.creativeText) result.creativeText = `${result.referenceStatus}${candidate ? `\nad.id（URL申告値）: ${candidate}` : ''}`;
-  const catalog = await catalogPromise;
+  const catalog = candidate ? await resolveCatalogWithinBudget(resolveCatalog, candidate) : undefined;
   if (catalog) {
     const status = { matched: '広告IDが台帳と一致', ambiguous: '複数候補／検索結果の続きあり・対象CRは未確定', missing: '台帳に広告ID一致なし', unavailable: '台帳参照失敗（後日確認が必要）', not_configured: '台帳参照未設定' }[catalog.status];
     result.referenceStatus += ` / CR台帳: ${status}`;

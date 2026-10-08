@@ -144,6 +144,34 @@ describe('applicants POST — outbound host allowlist', () => {
     const offlist = hosts.filter((host) => !ALLOWED_HOSTS.has(host));
     expect(offlist, `unexpected outbound host(s): ${offlist.join(', ')}`).toEqual([]);
   });
+
+  it('nonfatal SMS and Meta failures appear in one JSON summary while keeping a saved application successful', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input, init) => {
+      const host = hostOf(input);
+      if (host === 'leomeet.pmagent.jp' || host === 'graph.facebook.com') return Response.json({}, { status: 500 });
+      return successResponse(input, init);
+    });
+    try {
+      const { POST, maxDuration } = await import('./route');
+      const response = await POST(makeRequest(applicantBody));
+      expect(response.status).toBe(200);
+      expect(maxDuration).toBe(60);
+      const lines = log.mock.calls.filter(([line]) => String(line).startsWith('[applicants] submission settled:'));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toHaveLength(1);
+      const line = String(lines[0][0]);
+      const summary = JSON.parse(line.slice(line.indexOf('{')));
+      expect(summary.failed).toEqual(expect.arrayContaining(['application-sms', 'meta-capi']));
+      expect(line).not.toContain(applicantBody.fullName);
+      expect(line).not.toContain(applicantBody.phoneNumber);
+      expect(summary.phaseMs['base-save']).toEqual(expect.any(Number));
+    } finally {
+      log.mockRestore();
+      error.mockRestore();
+    }
+  });
   it('Baseのみの受付でもCR情報を保存し、画像の二重保存を予約しない', async () => {
     vi.stubEnv('LARK_SEND_BASE_ONLY', 'true');
     vi.stubEnv('META_ACCESS_TOKEN', 'test-meta-read');
@@ -155,6 +183,24 @@ describe('applicants POST — outbound host allowlist', () => {
     expect(response.status).toBe(200);
     expect(afterTasks.queue).toHaveLength(0);
     expect(fetchSpy.mock.calls.some(call => String(call[0]).includes('/medias/upload_all'))).toBe(false);
+  });
+  it('contextがある旧URLでも同じ外部経路のterm広告IDを保存する', async () => {
+    vi.stubEnv('LARK_SEND_BASE_ONLY', 'true');
+    vi.stubEnv('META_ACCESS_TOKEN', 'test-meta-read');
+    fetchSpy.mockImplementation(async (input, init) => String(input).includes('graph.facebook.com')
+      ? Response.json({ id: '52648617245839', account_id: '1435983094817075', creative: { id: '987654321', body: 'legacy CR' } })
+      : successResponse(input, init));
+    const { POST } = await import('./route');
+    const response = await POST(makeRequest({ ...applicantBody, metaEventId: undefined, submissionId: 'legacy-context-term',
+      applicationContext: { acquisition: { source: 'fb', medium: 'cpc', campaign: '123456789', id: '123456789', at: new Date().toISOString() } },
+      utmParams: { utm_source: 'fb', utm_medium: 'cpc', utm_campaign: '123456789', utm_id: '123456789', utm_term: '52648617245839' },
+    }));
+    expect(response.status).toBe(200);
+    const graph = fetchSpy.mock.calls.filter(call => String(call[0]).includes('graph.facebook.com'));
+    expect(graph).toHaveLength(1);
+    expect(String(graph[0][0])).toContain('/52648617245839?');
+    const saves = fetchSpy.mock.calls.filter(call => new URL(String(call[0])).pathname.endsWith('/records') && call[1]?.method === 'POST');
+    expect(saves.some(call => String(call[1]?.body).includes('legacy CR'))).toBe(true);
   });
   it('同じ応募IDの再送で先着レコードのCR素材を上書きしない', async () => {
     vi.stubEnv('LARK_SEND_BASE_ONLY', 'true');

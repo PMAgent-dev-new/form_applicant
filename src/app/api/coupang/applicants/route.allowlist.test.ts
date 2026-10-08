@@ -142,6 +142,25 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     expect(offlist, `想定外の送信先: ${offlist.join(', ')}`).toEqual([]);
   });
 
+  it('処理結果は個人情報を含まない単一JSON行で出し、実行枠を明示する', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const { POST, maxDuration } = await import('./route');
+      const response = await POST(makeRequest(coupangBody));
+      expect(response.status).toBe(200);
+      expect(maxDuration).toBe(60);
+      const lines = log.mock.calls.filter(([line]) => String(line).startsWith('[coupang] submission settled:'));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toHaveLength(1);
+      const line = String(lines[0][0]);
+      expect(JSON.parse(line.slice(line.indexOf('{')))).toMatchObject({ totalMs: expect.any(Number), failed: [], phaseMs: { 'base-save': expect.any(Number) } });
+      expect(line).not.toContain(coupangBody.fullName);
+      expect(line).not.toContain(coupangBody.phoneNumber);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it('Lark通知・Base・SMS・CAPI の経路を実際に通っている(ガードが空振りでない)', async () => {
     const { POST } = await import('./route');
     await POST(makeRequest(coupangBody));
@@ -803,6 +822,7 @@ const { POST } = await import('./route');
     vi.stubEnv('LARK_SEND_BASE_ONLY', 'true');
     vi.resetModules();
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     fetchSpy.mockImplementation(async (input: unknown) => {
       const url = String(input);
       const isBase =
@@ -821,6 +841,9 @@ const { POST } = await import('./route');
     expect(hookCalls.length, 'base-only でも Base が落ちたら通知を出すこと').toBeGreaterThan(0);
     const sent = hookCalls.map((call) => String((call[1] as RequestInit)?.body ?? '')).join('\n');
     expect(sent, '手入力が要ることが通知から分かること').toContain('Base未登録');
+    const line = logSpy.mock.calls.find(([value]) => String(value).startsWith('[coupang] submission settled:'))?.[0];
+    expect(JSON.parse(String(line).slice(String(line).indexOf('{')))).toMatchObject({ mode: 'full', failed: expect.arrayContaining(['base-save']), phaseMs: { 'base-save': expect.any(Number) } });
+    logSpy.mockRestore();
     errorSpy.mockRestore();
   });
 

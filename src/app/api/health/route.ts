@@ -199,6 +199,26 @@ async function relayIsReady(): Promise<boolean> {
   }
 }
 
+// CRの参照トークンは応募受付とは別。設定済みの鍵が失効してもreadyのままにしない。
+// CAPI送信は行わず、対象アカウントの読み取りだけで既存の死活監視へ渡す。
+async function metaReferenceIsReady(): Promise<boolean> {
+  const token = process.env.META_ACCESS_TOKEN?.trim();
+  if (!token) return true; // 既存の任意設定という契約は維持する。
+  try {
+    const accountId = '1435983094817075';
+    const version = process.env.META_GRAPH_VERSION || 'v25.0';
+    const params = new URLSearchParams({ fields: 'id', access_token: token });
+    const response = await fetch(`https://graph.facebook.com/${version}/act_${accountId}?${params}`, {
+      signal: AbortSignal.timeout(2500),
+      cache: 'no-store',
+    });
+    const data = (await response.json()) as { id?: string; error?: unknown };
+    return response.ok && !data.error && data.id === `act_${accountId}`;
+  } catch {
+    return false;
+  }
+}
+
 export async function GET(request: NextRequest) {
   const token = process.env.HEALTH_CHECK_TOKEN;
   const provided = request.headers.get('x-health-token');
@@ -226,15 +246,17 @@ export async function GET(request: NextRequest) {
   let unreachable: string[] = [];
   let mismatched: string[] = [];
   if (deep) {
-    const results = await Promise.all(
-      DEEP_CHECK_PROFILES.map(async (p) => ({ profile: p, result: await checkLarkAuth(p) })),
-    );
+    const [results, metaReady] = await Promise.all([
+      Promise.all(DEEP_CHECK_PROFILES.map(async (p) => ({ profile: p, result: await checkLarkAuth(p) }))),
+      metaReferenceIsReady(),
+    ]);
     // not_configured は載せない。APP_* の欠落は REQUIRED_ENV_GROUPS が同じ9変数を持つので
     // missing で必ず名指しされている。unreachable に載せると監視側で「資格情報が通らない」
     // （🔴 毎回）と読まれ、既知の設定漏れで鳴りっぱなしになる。
     unreachable = results
       .filter((r) => !r.result.ok && (r.result as { reason: string }).reason !== 'not_configured')
       .map((r) => `lark_auth_${r.profile}:${(r.result as { reason: string }).reason}`);
+    if (!metaReady) unreachable.push('meta_reference:unavailable');
 
     // 認証が通らない・未設定のプロファイルは、列を調べても意味が無いので重ねて呼ばない。
     const okProfiles = new Set(results.filter((r) => r.result.ok).map((r) => r.profile));

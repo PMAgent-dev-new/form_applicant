@@ -36,6 +36,11 @@ import { findRecentRecordByPhone } from '@/lib/larkBase';
 import { markSubmissionVaultNotified, saveToSubmissionVault } from '@/lib/submissionVault';
 import { neutralizeLarkTags } from '@/lib/lark-text';
 import { isLarkWebhookAccepted, type LarkWebhookResult } from '@/lib/larkWebhookResult';
+import { createSubmissionObservability } from '@/lib/submission-observability';
+
+// 外部送信ライブラリの個別タイムアウトに加え、保存→通知→後続処理の実行枠を明示する。
+// 全段が上限まで遅延した場合の完了保証ではない。実測時間はサマリで監視する。
+export const maxDuration = 60;
 
 // Bitable 直書きの投入先テーブル（env で上書き可）。
 //   default / bus       → 求職者DB🚕   （ridejob base：APP_*_RIDEJOB）
@@ -484,6 +489,7 @@ function calculateAge(birthDate?: string): string | null {
 }
 
 export async function POST(request: NextRequest) {
+  const observation = createSubmissionObservability('applicants');
   try {
     const submissionData = (await request.json()) as ApplicantSubmission;
     const { utmParams, formOrigin, ...formData } = submissionData;
@@ -649,11 +655,11 @@ export async function POST(request: NextRequest) {
     console.log('Generated media name:', mediaName, 'isCoupang:', isCoupang);
 
     // Meta広告の広告ID(ad.id)から広告画像URLを解決する。
-    // 入稿URLの utm_id={{ad.id}} を優先。後方互換で utm_content / utm_creative が数値なら ad.id とみなす。
-    // ※ utm_content は {{ad.name}}（広告名）、utm_term は {{adset.id}} のため ad.id には使わない。
+    // utm_idを優先し、旧URLのcontent/creative/termも予備候補とする。
+    // campaign.idと同値の候補は除外し、自社アカウントのcreativeが取得できた候補だけを確定する。
     const enrichment = await enrichApplication(submissionData.applicationContext, {
       source: utmParams?.utm_source || (isCoupang ? 'meta' : undefined), medium: utmParams?.utm_medium, campaign: utmParams?.utm_campaign,
-      content: utmParams?.utm_content, id: utmParams?.utm_id, creative: utmParams?.utm_creative,
+      content: utmParams?.utm_content, id: utmParams?.utm_id, creative: utmParams?.utm_creative, term: utmParams?.utm_term,
       at: submissionData.attributionLastTouchAt, landing: referer,
     }, Date.now(), resolveApplicationCatalogCreative);
     const { adId, creativeId: adCreativeId, imageUrl: adImageUrl } = enrichment;
@@ -746,7 +752,7 @@ export async function POST(request: NextRequest) {
     /** Base に入らなかった応募を Supabase の退避先に残せたか */
     let vaultSaved = false;
     try {
-      baseSave = await saveToBase(baseWriteCtx, baseWebhookUrl, basePayload);
+      baseSave = await observation.timed('base-save', () => saveToBase(baseWriteCtx, baseWebhookUrl, basePayload));
     } catch (error) {
       // ⚠️ ここで 500 を返してはいけない。この行より後ろに Lark通知・確認メール・SMS・
       // Meta CAPI・OpenAI CAPI が全部ある。500 で抜けると応募者の氏名・電話・メールが
@@ -755,6 +761,7 @@ export async function POST(request: NextRequest) {
       const reason = describeError(error);
       console.error('Lark Base save failed; 通知は継続する:', `submission=${submissionId} ${reason}`);
       baseSave = { notificationAlreadySent: false, baseSaveFailed: reason };
+      observation.markFailed('base-save');
       // Lark に入らなかった応募を構造化して退避する。通知は流れて埋もれるため、
       // 後から「取りこぼした応募」を機械的に数えられる受け皿を1つ持たせる。
       // 退避の成否は応募の成否に影響させない（saveToSubmissionVault は投げない）。
@@ -897,18 +904,19 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
 
         let notificationSent = false;
         if (larkChatId) {
-          const apiResult = await sendLarkTextMessage(
+          const apiResult = await observation.timed('lark-im', () => sendLarkTextMessage(
             larkChatId,
             messageContent,
             submissionId,
             // 両chatともRIDE JOB通知アプリを参加済みとして実測した共通送信経路。
             'ridejob',
-          );
+          ));
           if (apiResult.ok) {
             notificationSent = true;
             larkNotified = true;
             console.log('Lark API notification sent successfully:', { messageId: apiResult.messageId });
           } else {
+            observation.markFailed('lark-api-notification');
             // 通常は Webhook へ落とすと同じ応募が別経路で二重通知されるため、同じuuidでの再送に任せる。
             // ただし Base 保存が全滅しているときは、この通知が唯一の記録になる。
             // 502 で抜けると応募がどこにも残らないので、そのときだけ Webhook へフォールバックする。
@@ -942,6 +950,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
             });
             const result = (await resp.json().catch(() => ({}))) as LarkWebhookResult;
             if (!resp.ok || !isLarkWebhookAccepted(result)) {
+              observation.markFailed('lark-webhook-notification');
               console.error('Failed to send notification to Lark', {
                 status: resp.status,
                 code: result.code ?? result.StatusCode,
@@ -954,12 +963,14 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
               console.log('Lark webhook notification sent successfully:', result);
             }
           } catch (error) {
+            observation.markFailed('lark-webhook-notification');
             // 例外のまま外へ出すと 500 になり、下の退避にも残らない（応募者は再送して重複を作る）。
             // 送れなかったものとして扱い、下の退避へ進める。
             console.error('Lark webhook notification threw:', describeError(error));
           }
         }
         if (!notificationSent) {
+          observation.markFailed('lark-notification');
           // 通知が1つも出せなかった。応募は Base に残っているので 200 で返すが、
           // 誰も気づいていないので退避に残して監視で拾う。
           console.error('Lark通知を1つも出せなかった（応募自体は記録済み）:', `submission=${submissionId}`);
@@ -1001,7 +1012,8 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
             }
           }
           if (!notificationStatePersisted) {
-            console.error('Lark通知送信済みの書き戻しが3回失敗:', lastPersistError);
+            observation.markFailed('lark-notification-state');
+            console.error('Lark通知送信済みの書き戻しが3回失敗:', describeError(lastPersistError));
             return NextResponse.json({ message: 'Internal Server Error' }, { status: 503 });
           }
         }
@@ -1024,7 +1036,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
         const recipientEmail = formData.email;
         const origin = emailOriginCandidate;
         tasks.push(
-          (async () => {
+          observation.trackTask('confirmation-email', async () => {
             const result = await sendApplicationConfirmationEmail({
               to: recipientEmail,
               applicantName: formData.fullName || '',
@@ -1040,6 +1052,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
                 formOrigin: origin,
               });
             } else if (result.reason === 'error') {
+              observation.markFailed('confirmation-email');
               console.error('Confirmation email failed:', {
                 submissionId,
                 error: result.error,
@@ -1052,7 +1065,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
                 formOrigin: origin,
               });
             }
-          })()
+          })
         );
       }
 
@@ -1066,7 +1079,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
         const channel = smsChannel;
         const media = (utmParams?.utm_source || 'form').toLowerCase().slice(0, 32);
         tasks.push(
-          (async () => {
+          observation.trackTask('application-sms', async () => {
             const r = await sendApplicationSms({
               channel,
               phone: formData.phoneNumber,
@@ -1076,9 +1089,10 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
             if (r.sent) {
               console.log('Application SMS sent:', { order: r.deliveryOrderId, ref: r.ref, channel, media });
             } else {
+              if (r.reason === 'error' || /^http_[45]/.test(r.reason || '') || r.error) observation.markFailed('application-sms');
               console.log('Application SMS skipped/failed:', { reason: r.reason, error: r.error, channel, media });
             }
-          })()
+          })
         );
       }
 
@@ -1089,9 +1103,11 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
         const capiHost = request.headers.get('x-forwarded-host') || request.headers.get('host') || '';
         const capiProto = request.headers.get('x-forwarded-proto') || 'https';
         const capiFallbackSourceUrl = capiHost ? `${capiProto}://${capiHost}` : undefined;
+        const capiEventId = submissionData.metaEventId;
         tasks.push(
-          sendMetaCapiLead({
-            eventId: submissionData.metaEventId,
+          observation.trackTask('meta-capi', async () => {
+            const result = await sendMetaCapiLead({
+            eventId: capiEventId,
             eventSourceUrl: referer,
             email: formData.email,
             phone: formData.phoneNumber,
@@ -1100,14 +1116,17 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
             clientIpAddress: capiClientIp || undefined,
             clientUserAgent: capiUserAgent || undefined,
             contentIds: submissionData.appliedJobId ? [submissionData.appliedJobId] : undefined,
-          }).then(() => {})
+            });
+            if (!result.ok && !result.skipped) observation.markFailed('meta-capi');
+          })
         );
 
         // OpenAI（ChatGPT広告）Conversions API — 非致命。
         // oppref が無い応募（＝広告クリック由来でない）は lib 側で送信をスキップする。
         tasks.push(
-          sendOpenAiConversion({
-            eventId: submissionData.metaEventId,
+          observation.trackTask('openai-capi', async () => {
+            const result = await sendOpenAiConversion({
+            eventId: capiEventId,
             oppref: typeof submissionData.oppref === 'string' ? submissionData.oppref : undefined,
             // action_source=web では source_url が必須。Referer を送らない環境
             // （プライバシー拡張・no-referrer のアプリ内ブラウザ等）でも欠落させないよう、
@@ -1117,7 +1136,9 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
             phone: formData.phoneNumber,
             clientIpAddress: capiClientIp || undefined,
             clientUserAgent: capiUserAgent || undefined,
-          }).then(() => {})
+            });
+            if (!result.ok && !result.skipped) observation.markFailed('openai-capi');
+          })
         );
       }
 
@@ -1145,8 +1166,11 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
     return NextResponse.json({ message: 'Application submitted successfully!' }, { status: 200 });
 
   } catch (error) {
+    observation.markFailed('request');
     console.error('Error processing application in API route:', describeError(error));
     // 予期せぬエラー
     return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
+  } finally {
+    observation.settled();
   }
 } 

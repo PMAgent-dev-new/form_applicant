@@ -15,6 +15,7 @@ import { getMediaName } from '@/lib/media-name';
 import { resolveApplicationSourceMasterName } from '@/lib/lark-masters';
 import { isMetaAdsAttribution, isOpenAiAdsAttribution } from '@/lib/attribution';
 import { describeError } from '@/lib/describe-error';
+import { createSubmissionObservability } from '@/lib/submission-observability';
 import { markSubmissionVaultNotified, saveToSubmissionVault } from '@/lib/submissionVault';
 import {
   isLarkBaseConfigured,
@@ -38,6 +39,7 @@ const COUPANG_EVENT_SOURCE_URL = BASE_PATH
  * 既存の `src/app/api/entry-bp/route.ts` に合わせて 5 秒。
  */
 const LARK_FETCH_TIMEOUT_MS = 5000;
+export const maxDuration = 60;
 export const LIFTJOB_TABLE_ID = process.env.LARK_BASE_TABLE_ID_LIFTJOB || 'tblVBAB0nVCgWVWJ';
 
 type LarkWebhookResult = {
@@ -401,6 +403,7 @@ export function buildLiftJobDirectBaseFields(
 
 
 export async function POST(request: NextRequest) {
+  const observation = createSubmissionObservability('coupang');
   try {
     const submissionData = (await request.json()) as CoupangSubmission;
     const {
@@ -583,6 +586,7 @@ export async function POST(request: NextRequest) {
     let notificationInProgress = false;
     /** 直書き・Webhook ともに失敗したときの理由。応募は通すが通知に印を付ける。 */
     let baseSaveFailed = '';
+    const finishBaseSave = observation.startPhase('base-save');
     try {
       if (directBaseConfigured) {
         let saved = await upsertBaseRecordByTextField(
@@ -640,6 +644,7 @@ export async function POST(request: NextRequest) {
       // RIDE JOB 側（applicants/route.ts）では同型の分岐で応募が5日間失われた（2026-09-17〜09-23）。
       // Base に入らなくても通知だけは必ず出す。
       baseSaveFailed = describeError(error);
+      observation.markFailed('base-save');
       console.error('[coupang] Lark Base save failed; 通知は継続する:', `submission=${submissionId} ${baseSaveFailed}`);
       // Lark に入らなかった応募を構造化して退避する（応募の成否には影響させない）。
       vaultSaved = await saveToSubmissionVault({
@@ -651,19 +656,19 @@ export async function POST(request: NextRequest) {
         notified: false,
         payload: basePayload,
       });
+    } finally {
+      // Includes the existing vault fallback, even when critical storage throws.
+      finishBaseSave();
     }
 
     if (sendBaseOnly && !baseSaveFailed) {
-      console.log('[coupang] submission settled:', {
-        mode: 'base-only',
-        directBaseConfigured,
-        baseRecordId: baseRecordId || undefined,
-      });
+      observation.setMode('base-only');
       return NextResponse.json(
         { message: 'Application submitted successfully!', ...(isTestMode ? { baseRecordId } : {}) },
         { status: 200 },
       );
     }
+    observation.setMode('full');
 
     // 不変条件: Base 保存が全滅したうえ通知先も無いなら、応募はどこにも残らない。
     // 200 を返すと応募者は「送信できた」と思って離脱し、こちらは応募があったことすら分からない。
@@ -686,24 +691,8 @@ export async function POST(request: NextRequest) {
     /** Lark 通知を出せたか */
     let notified = false;
     const tasks: Promise<void>[] = [];
-    const taskFailures: string[] = [];
-    const markFailed = (label: string) => {
-      if (!taskFailures.includes(label)) taskFailures.push(label);
-    };
-    const trackTask = (label: string, run: () => Promise<unknown>): Promise<void> =>
-      Promise.resolve()
-        .then(run)
-        .then(
-          () => undefined,
-          (error: unknown) => {
-            markFailed(label);
-            const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-            const cause = error instanceof Error && error.cause
-              ? ` cause=${String((error.cause as { code?: string })?.code ?? error.cause)}`
-              : '';
-            console.error(`[coupang] ${label} failed: ${detail}${cause}`);
-          },
-        );
+    const taskFailures = observation.failed;
+    const { markFailed, trackTask } = observation;
 
     // Base upsertが冪等なので、通知失敗は500にして同じsubmission_idで安全に再送できる。
     if (notifyWebhookUrl && !notificationAlreadySent) {
@@ -757,6 +746,7 @@ export async function POST(request: NextRequest) {
         // ⚠️ 500 を返さない。応募者に「エラーが発生しました」が出て再送し、
         // 冪等性の無い Webhook 経路で重複が増える（RIDE JOB 側で実際に起きた）。
         // 応募が Base に残っているなら、通知の失敗は応募者に転嫁しない。
+        markFailed('lark-notification');
         console.error('[coupang] Lark通知に失敗（応募は記録済み）:', `submission=${submissionId} ${describeError(error)}`);
         vaultSaved = await saveToSubmissionVault({
           source: 'form_applicant/coupang',
@@ -858,7 +848,7 @@ export async function POST(request: NextRequest) {
               clientIpAddress: capiClientIp || undefined,
               clientUserAgent: capiUserAgent || undefined,
             });
-            if (!result.ok) throw new Error(`status=${result.status ?? 'unknown'}`);
+            if (!result.ok && !result.skipped) throw new Error(`status=${result.status ?? 'unknown'}`);
           })
         );
       }
@@ -903,18 +893,6 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      // 応募1件につき必ず1行出す。無言で壊れていることを検知するための足跡。
-      console.log('[coupang] submission settled:', {
-        mode: 'full',
-        tasks: tasks.length + 1,
-        failed: taskFailures,
-        larkWebhookConfigured: Boolean(larkWebhookUrl),
-        directBaseConfigured,
-        baseWebhookConfigured: Boolean(baseWebhookUrl),
-        emailEnabled: !isTestMode && process.env.COUPANG_EMAIL_ENABLED === 'true',
-        smsEnabled: !isTestMode && process.env.COUPANG_SMS_ENABLED === 'true',
-      });
-
     return NextResponse.json(
       {
         message: 'Application submitted successfully!',
@@ -923,7 +901,10 @@ export async function POST(request: NextRequest) {
       { status: 200 },
     );
   } catch (error) {
+    observation.markFailed('request');
     console.error('Error processing Coupang application:', describeError(error));
     return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
+  } finally {
+    observation.settled();
   }
 }
