@@ -16,6 +16,8 @@
  *    改名するときは Base 側と同時に直すこと。
  */
 
+import { isAdMedium, UNRESOLVED_META_SOURCE } from './media-name';
+
 /** 判定に使う utm。route.ts の UTMParams と同形だが、必要な3つだけに絞っている。 */
 export type MasterNameUtm = {
   utm_source?: string;
@@ -32,8 +34,6 @@ const AD_MEDIUMS = new Set(['ad', 'cpc', 'ads', 'paid', 'search']);
  * （fb と ig で面談率が2倍以上違うため統合してはいけない）。
  */
 const AD_SOURCE_PREFIXES: Record<string, string> = {
-  // Explicit unresolved Meta placement macro; never infer fb/ig or a CAPI event.
-  '{{site_source_name}}': 'meta',
   meta: 'meta',
   fb: 'fb',
   facebook: 'fb',
@@ -45,6 +45,10 @@ const AD_SOURCE_PREFIXES: Record<string, string> = {
   messenger: 'msg',
   tiktok: 'tiktok',
   google: 'google',
+  // Meta の動的パラメータが置換されずに届いたもの（media-name.ts の UNRESOLVED_META_SOURCE 参照）。
+  // Meta広告の入稿URL由来だが配置が分からないので、配置別ではない meta に寄せる
+  // （🚕Base のマスタ `meta(ad)` の説明は「utm_source=meta(配置不明) × medium=ad|cpc」）。
+  [UNRESOLVED_META_SOURCE]: 'meta',
   // ChatGPT広告（OpenAI Ads）。入稿URLは utm_source=openai / utm_medium=cpc で統一している。
   // 回答内で引用されたリンクからの自然流入は utm を持たず referrer で判定するため（media-name.ts）、
   // ここには来ない。よって organic 側には足さない。
@@ -72,6 +76,7 @@ const text = (value?: string): string => (value ?? '').trim().toLowerCase();
  *
  * - utm_source なし … 自社サイト・直接流入なので `RIDEJOB HP`
  * - 広告媒体 × 広告medium … `fb(ad)` 等
+ * - Meta の動的パラメータが未置換（`{{site_source_name}}`）× 広告medium … `meta(ad)`
  * - 広告媒体 × organic … `fb(organic)` 等（マスタに実在する媒体だけ）
  * - スタンバイ … `スタンバイ`
  * - それ以外（未知のsource、求人ボックス等からのreferral）… undefined（空欄のまま）
@@ -87,6 +92,7 @@ export function resolveApplicationSourceMasterName(utm: MasterNameUtm): string |
   if (!prefix) return undefined;
 
   const medium = text(utm.utm_medium);
+  if (source === UNRESOLVED_META_SOURCE && !isAdMedium(medium)) return undefined;
   if (AD_MEDIUMS.has(medium)) return `${prefix}(ad)`;
   if (medium === 'organic' && ORGANIC_PREFIXES.has(prefix)) return `${prefix}(organic)`;
   return undefined;

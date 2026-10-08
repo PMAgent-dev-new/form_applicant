@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { resolveApplicationSourceMasterName, resolveJobCategoryMasterName } from './lark-masters';
 
 describe('resolveApplicationSourceMasterName', () => {
+  it('未置換macroのsearchは広告入稿と決めつけない', () => {
+    expect(resolveApplicationSourceMasterName({ utm_source: '{{site_source_name}}', utm_medium: 'search' })).toBeUndefined();
+  });
   it('treats only the exact unresolved Meta placement macro with paid medium as meta(ad)', () => {
     expect(resolveApplicationSourceMasterName({ utm_source: '{{SITE_SOURCE_NAME}}', utm_medium: 'cpc' })).toBe('meta(ad)');
     expect(resolveApplicationSourceMasterName({ utm_source: '{{site_source_name}}', utm_medium: 'organic' })).toBeUndefined();
@@ -34,6 +37,19 @@ describe('resolveApplicationSourceMasterName', () => {
   it('FacebookとInstagramは配置別のまま分けて紐付ける', () => {
     expect(resolveApplicationSourceMasterName({ utm_source: 'facebook', utm_medium: 'ad' })).toBe('fb(ad)');
     expect(resolveApplicationSourceMasterName({ utm_source: 'instagram', utm_medium: 'ad' })).toBe('ig(ad)');
+  });
+
+  // 広告クリック以外の経路でリンクが開かれると、Meta のマクロが置換されずに届く（配置は分からない）。
+  it('置換されなかった {{site_source_name}} は配置不明の meta(ad)', () => {
+    expect(resolveApplicationSourceMasterName({ utm_source: '{{site_source_name}}', utm_medium: 'cpc' })).toBe('meta(ad)');
+    expect(resolveApplicationSourceMasterName({ utm_source: '{{site_source_name}}', utm_medium: 'ad' })).toBe('meta(ad)');
+    expect(resolveApplicationSourceMasterName({ utm_source: '{{SITE_SOURCE_NAME}}', utm_medium: 'CPC' })).toBe('meta(ad)');
+  });
+
+  it('置換されなかったマクロでも広告medium以外や別のマクロは空欄のまま', () => {
+    expect(resolveApplicationSourceMasterName({ utm_source: '{{site_source_name}}' })).toBeUndefined();
+    expect(resolveApplicationSourceMasterName({ utm_source: '{{site_source_name}}', utm_medium: 'organic' })).toBeUndefined();
+    expect(resolveApplicationSourceMasterName({ utm_source: '{{campaign.id}}', utm_medium: 'cpc' })).toBeUndefined();
   });
 
   it('入稿URLのコピペで混ざる大文字・前後の空白を吸収する', () => {
