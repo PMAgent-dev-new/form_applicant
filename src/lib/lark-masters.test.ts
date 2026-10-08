@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { resolveApplicationSourceMasterName, resolveJobCategoryMasterName } from './lark-masters';
 
 describe('resolveApplicationSourceMasterName', () => {
+  it('未置換macroのsearchは広告入稿と決めつけない', () => {
+    expect(resolveApplicationSourceMasterName({ utm_source: '{{site_source_name}}', utm_medium: 'search' })).toBeUndefined();
+  });
   it('treats only the exact unresolved Meta placement macro with paid medium as meta(ad)', () => {
     expect(resolveApplicationSourceMasterName({ utm_source: '{{SITE_SOURCE_NAME}}', utm_medium: 'cpc' })).toBe('meta(ad)');
     expect(resolveApplicationSourceMasterName({ utm_source: '{{site_source_name}}', utm_medium: 'organic' })).toBeUndefined();

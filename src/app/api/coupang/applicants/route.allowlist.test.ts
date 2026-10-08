@@ -579,6 +579,8 @@ describe('coupang applicants POST — outbound host allowlist', () => {
     expect(payload.media_name).toBe('Meta広告');
     expect(payload.application_source).toBe('meta(ad)');
     expect(payload.utm_source).toBe('{{site_source_name}}');
+    expect(getLiftJobMediaName({ utm_source: ' {{site_source_name}} ', utm_medium: 'cpc' })).toBe('Meta広告');
+    expect(describeLiftJobRoute({ utm_source: ' {{site_source_name}} ', utm_medium: 'cpc' })).toBe('Meta広告・配置不明（cpc）');
   });
 
   it('organicや区分不明のMeta系流入を広告と誤表示しない', async () => {
@@ -587,6 +589,9 @@ describe('coupang applicants POST — outbound host allowlist', () => {
       'Instagram（organic）',
     );
     expect(getLiftJobMediaName({ utm_source: 'ig', utm_medium: 'organic' })).not.toBe('Meta広告');
+    expect(getLiftJobMediaName({ utm_source: '{{site_source_name}}', utm_medium: 'organic' })).toBe('{{site_source_name}}(organic)');
+    expect(getLiftJobMediaName({ utm_source: '{{site_source_name}}' })).toBe('{{site_source_name}}');
+    expect(getLiftJobMediaName({ utm_source: '{{site_source_name}}', utm_medium: 'search' })).toBe('{{site_source_name}}(search)');
     expect(describeLiftJobRoute({ utm_source: 'fb' })).toBe('Facebook（流入区分未取得）');
   });
 

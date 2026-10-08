@@ -16,7 +16,7 @@
  *    改名するときは Base 側と同時に直すこと。
  */
 
-import { UNRESOLVED_META_SOURCE } from './media-name';
+import { isAdMedium, UNRESOLVED_META_SOURCE } from './media-name';
 
 /** 判定に使う utm。route.ts の UTMParams と同形だが、必要な3つだけに絞っている。 */
 export type MasterNameUtm = {
@@ -34,8 +34,6 @@ const AD_MEDIUMS = new Set(['ad', 'cpc', 'ads', 'paid', 'search']);
  * （fb と ig で面談率が2倍以上違うため統合してはいけない）。
  */
 const AD_SOURCE_PREFIXES: Record<string, string> = {
-  // Explicit unresolved Meta placement macro; never infer fb/ig or a CAPI event.
-  '{{site_source_name}}': 'meta',
   meta: 'meta',
   fb: 'fb',
   facebook: 'fb',
@@ -94,6 +92,7 @@ export function resolveApplicationSourceMasterName(utm: MasterNameUtm): string |
   if (!prefix) return undefined;
 
   const medium = text(utm.utm_medium);
+  if (source === UNRESOLVED_META_SOURCE && !isAdMedium(medium)) return undefined;
   if (AD_MEDIUMS.has(medium)) return `${prefix}(ad)`;
   if (medium === 'organic' && ORGANIC_PREFIXES.has(prefix)) return `${prefix}(organic)`;
   return undefined;

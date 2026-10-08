@@ -76,11 +76,23 @@ describe('getMediaName', () => {
   describe('Meta の動的パラメータが置換されずに届いた応募', () => {
     it('{{site_source_name}} は Meta広告・配置不明', () => {
       expect(getMediaName({ utm_source: '{{site_source_name}}', utm_medium: 'cpc' })).toBe('Meta広告・配置不明');
-      expect(getMediaName({ utm_source: '{{site_source_name}}' })).toBe('Meta広告・配置不明');
+      expect(getMediaName({ utm_source: '{{site_source_name}}', utm_medium: 'paid' })).toBe('Meta広告・配置不明');
+    });
+
+    it('medium不明や非広告は広告と推定しない', () => {
+      expect(getMediaName({ utm_source: '{{site_source_name}}' })).toBe('{{site_source_name}}');
+      expect(getMediaName({ utm_source: '{{site_source_name}}', utm_medium: 'organic' })).toBe('{{site_source_name}}(organic)');
+      expect(getMediaName({ utm_source: '{{site_source_name}}', utm_medium: 'referral' })).toBe('{{site_source_name}}(referral)');
+      expect(getMediaName({ utm_source: '{{site_source_name}}', utm_medium: 'search' })).toBe('{{site_source_name}}(search)');
     });
 
     it('大文字で届いても同じ扱い（lark-masters と揃える）', () => {
       expect(getMediaName({ utm_source: '{{SITE_SOURCE_NAME}}', utm_medium: 'cpc' })).toBe('Meta広告・配置不明');
+    });
+
+    it('未置換マクロの前後空白をマスタと同じように吸収する', () => {
+      expect(getMediaName({ utm_source: ' {{site_source_name}} ', utm_medium: 'cpc' })).toBe('Meta広告・配置不明');
+      expect(describeMedia({ utm_source: ' {{site_source_name}} ', utm_medium: 'cpc' })).toBe('Meta広告・配置不明（cpc）');
     });
 
     it('置換済みの配置（fb / ig）の表示は変えない', () => {

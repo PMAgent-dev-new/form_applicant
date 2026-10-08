@@ -37,7 +37,7 @@ const REFERRER_HOST_ALIASES: Record<string, string> = {
  * 落として500にするより、文字列化して素の値を見せる方が調査しやすい。
  */
 export function displaySource(utmSource?: string): string | undefined {
-  const raw = asText(utmSource);
+  const raw = asText(utmSource)?.trim();
   if (!raw) return raw;
   return REFERRER_HOST_ALIASES[raw.toLowerCase()] ?? raw;
 }
@@ -51,12 +51,12 @@ function asText(value: unknown): string | undefined {
 /**
  * 広告として扱う medium。媒体ごとに命名が違うので許容表記を並べる。
  *
- * ⚠️ この揺れ吸収は openai にだけ効かせる。meta/google/tiktok を厳密一致から変えると
+ * ⚠️ この揺れ吸収は openai と未置換Metaマクロに効かせる。meta/google/tiktok を厳密一致から変えると
  * 既存の応募の見え方が変わるため、ここでは触らない（入稿規約は parameter.md 参照）。
  */
 const AD_MEDIUMS = new Set(['ad', 'cpc', 'ads', 'paid']);
 
-function isAdMedium(utmMedium?: unknown): boolean {
+export function isAdMedium(utmMedium?: unknown): boolean {
   // 入稿URLのコピペで前後に空白が入る事故があるため trim する。
   return AD_MEDIUMS.has((asText(utmMedium) ?? '').trim().toLowerCase());
 }
@@ -86,9 +86,7 @@ export function describeMedia(utmParams: { utm_source?: string; utm_medium?: str
 /**
  * Meta の動的URLパラメータが置換されないまま届いた utm_source。
  * 入稿URLは `utm_source={{site_source_name}}` で配置（fb / ig 等）を受け取る。
- * 2026-07〜09 の応募では、マクロがすべて未置換のまま届いたものが3件あり、3件とも fbclid が無かった
- * （置換済みの886件はすべて fbclid あり）。広告クリック以外の経路で開かれたものと推測している。
- * Meta広告の入稿URL由来なのは確かだが、配置は分からない。
+ * 広告mediumとの組み合わせだけを広告URL由来として表示する。配置や実クリックは確証できない。
  * 以前は default 節で `{{site_source_name}}(cpc)` と出ており、流入元として読めなかった。
  * lark-masters.ts と LIFT JOB の route も同じ定数で判定する。
  */
@@ -125,8 +123,11 @@ function resolve(utmParams: { utm_source?: string; utm_medium?: string }): { nam
       return { name: 'Meta', matched: true };
 
     case UNRESOLVED_META_SOURCE:
-      // マクロは広告の入稿URLにしか無いので medium によらず広告扱い。生の medium は describeMedia が併記する。
-      return { name: 'Meta広告・配置不明', matched: true };
+      if (isAdMedium(utm_medium)) {
+        return { name: 'Meta広告・配置不明', matched: true };
+      }
+      // medium不明/非広告は広告と推定せず生値を残す（マスタ判定とも一致させる）。
+      return { name: `${utm_source}${utm_medium ? `(${utm_medium})` : ''}`, matched: false };
 
     case 'openai':
       // 広告（ChatGPT Ads）と、回答内引用からの自然流入を分ける。

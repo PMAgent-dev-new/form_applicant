@@ -5,7 +5,7 @@ Larkの「フィールドの説明」とコードの仕様を一致させるた�
 
 | フィールド | 説明 |
 | --- | --- |
-| 流入媒体（自動判定） | URLのutm_source・utm_mediumなどから自動判定した応募の流入媒体です。例：Meta広告、Googleリスティング、TikTok広告、直接アクセス。Meta広告のURLの{{site_source_name}}が置換されずに届いた応募は「Meta広告・配置不明」（LIFT JOBは「Meta広告」）です。広告名や広告画像ではありません。 |
+| 流入媒体（自動判定） | URLのutm_source・utm_mediumなどから自動判定した応募の流入媒体です。例：Meta広告、Googleリスティング、TikTok広告、直接アクセス。Meta広告のURLの{{site_source_name}}が置換されず、広告mediumとともに届いた応募は「Meta広告・配置不明」（LIFT JOBは「Meta広告」）です。実クリックの証明や広告名・広告画像ではありません。 |
 | utm_source | 応募者が流入した媒体を表すURLパラメータの値です。例：meta、facebook、google、tiktok。流入媒体の自動判定やSMS送信時の媒体記録に使用します。 |
 | utm_medium | 流入の種類を表すURLパラメータの値です。例：ad、search、organic。utm_sourceと組み合わせて流入媒体を判定します。 |
 | utm_campaign | 広告URLのutm_campaignに設定された値をそのまま保存します。キャンペーン名・キャンペーンIDなど、何が入るかは広告側のURL設定によって決まります。キャンペーン別の応募集計に使用します。 |
@@ -17,7 +17,7 @@ Larkの「フィールドの説明」とコードの仕様を一致させるた�
 | ad_creative_id | ad_idを使ってMeta APIから取得した広告クリエイティブIDです。Meta広告管理画面との照合や、広告と素材の紐付け確認に使用します。 |
 | ad_image_url | Meta APIから取得した広告画像または動画サムネイルのURLです。応募につながった広告素材の確認に使用します。Facebook CDNの署名付きURLのため、数日で表示できなくなる場合があります。 |
 | LP_URL | 応募フォームが送信されたページのURLです。どのLP・導線から応募されたかの確認や、UTM設定の調査に使用します。 |
-| 応募経由(マスタ連動) | 応募経由マスタへのリンクです。utm_source・utm_mediumから応募時に自動で紐付けます。例：fb(ad)、ig(ad)、google(ad)、RIDEJOB HP。Meta広告のURLの{{site_source_name}}が置換されずに届いた広告流入は、配置が分からないため meta(ad) です。媒体別集計の一次キーです。判定できない流入元は誤った値を書かず空欄のままにします。 |
+| 応募経由(マスタ連動) | 応募経由マスタへのリンクです。utm_source・utm_mediumから応募時に自動で紐付けます。例：fb(ad)、ig(ad)、google(ad)、RIDEJOB HP。{{site_source_name}}が置換されず、広告medium（ad/cpc/ads/paid）を伴うURLでは、配置が分からないため meta(ad) です。実クリックの証明ではありません。媒体別集計の一次キーです。判定できない流入元は誤った値を書かず空欄のままにします。 |
 | マスタ-応募職種 | 応募職種マスタへのリンクです。LPと広告クリエイティブから応募時に自動で紐付けます。例：タクシードライバー、ハイヤー/役員専属運転手、トラックドライバー、バスドライバー。求職者DB🚕のみで、整備士Baseは「登録職種」を使います。 |
 
 ## Meta広告の推奨URLパラメータ
