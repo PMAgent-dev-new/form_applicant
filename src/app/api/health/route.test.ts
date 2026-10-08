@@ -43,6 +43,7 @@ function stubFetch({
   relay,
   missingColumns,
   fieldsError,
+  meta,
 }: {
   /** 一様に指定するか、プロファイル別に指定する（一部だけ壊れた状態を作れる） */
   larkAuth?: LarkAuthMode | Partial<Record<'ridejob' | 'mechanic' | 'liftjob', LarkAuthMode>>;
@@ -51,11 +52,17 @@ function stubFetch({
   missingColumns?: Partial<Record<'ridejob' | 'mechanic' | 'liftjob', string[]>>;
   /** プロファイル別に、列一覧の読み取りそのものを失敗させる応答。 */
   fieldsError?: Partial<Record<'ridejob' | 'mechanic' | 'liftjob', { status: number; body: unknown }>>;
+  meta?: { status: number; body: unknown; throws?: boolean };
 } = {}) {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (url.includes('graph.facebook.com/')) {
+        if (meta?.throws) throw new Error('reference lookup unavailable');
+        const result = meta ?? { status: 200, body: { id: 'act_1435983094817075' } };
+        return new Response(JSON.stringify(result.body), { status: result.status });
+      }
       if (url.includes('tenant_access_token')) {
         // どのプロファイルの呼び出しかは app_id で分かる（LARK_ENV は cli_<profile>）。
         let appId = '';
@@ -158,6 +165,46 @@ describe('GET /api/health', () => {
     const res = await GET(makeRequest({ 'x-health-token': 'secret' }));
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ status: 'degraded', deep: true, missing: ['lark_base'] });
+  });
+
+  it.each([
+    { status: 400, body: { error: { code: 190, message: 'do not expose token or raw message' } } },
+    { status: 200, body: { id: 'act_another_account' } },
+    { status: 500, body: {} },
+    { status: 200, body: {}, throws: true },
+  ])('reports configured Meta reference credential failure without exposing details: %j', async (meta) => {
+    vi.stubEnv('HEALTH_CHECK_TOKEN', 'secret');
+    for (const [key, value] of Object.entries(LARK_ENV)) vi.stubEnv(key, value);
+    vi.stubEnv('META_ACCESS_TOKEN', 'test-reference-token');
+    stubFetch({ meta });
+    const response = await GET(makeRequest({ 'x-health-token': 'secret' }));
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      status: 'degraded', deep: true, unreachable: ['meta_reference:unavailable'],
+    });
+  });
+
+  it('does not call Meta for unauthenticated or shallow health requests', async () => {
+    vi.stubEnv('HEALTH_CHECK_TOKEN', 'secret');
+    for (const [key, value] of Object.entries(LARK_ENV)) vi.stubEnv(key, value);
+    vi.stubEnv('META_ACCESS_TOKEN', 'test-reference-token');
+    stubFetch();
+    await GET(makeRequest());
+    const response = await GET(new NextRequest('https://ridejob.jp/api/health?deep=0', {
+      headers: { 'x-health-token': 'secret' },
+    }));
+    expect(response.status).toBe(200);
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes('graph.facebook.com/'))).toHaveLength(0);
+  });
+
+  it('accepts a configured reference credential only for the expected account', async () => {
+    vi.stubEnv('HEALTH_CHECK_TOKEN', 'secret');
+    for (const [key, value] of Object.entries(LARK_ENV)) vi.stubEnv(key, value);
+    vi.stubEnv('META_ACCESS_TOKEN', 'test-reference-token');
+    stubFetch();
+    const response = await GET(makeRequest({ 'x-health-token': 'secret' }));
+    expect(response.status).toBe(200);
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes('graph.facebook.com/'))).toHaveLength(1);
   });
 
   it('RIDE JOBの直接Base資格情報が欠けたら求人帰属を守るためdegradedにする', async () => {

@@ -2,6 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { resolveApplicationSourceMasterName, resolveJobCategoryMasterName } from './lark-masters';
 
 describe('resolveApplicationSourceMasterName', () => {
+  it('treats only the exact unresolved Meta placement macro with paid medium as meta(ad)', () => {
+    expect(resolveApplicationSourceMasterName({ utm_source: '{{SITE_SOURCE_NAME}}', utm_medium: 'cpc' })).toBe('meta(ad)');
+    expect(resolveApplicationSourceMasterName({ utm_source: '{{site_source_name}}', utm_medium: 'organic' })).toBeUndefined();
+    expect(resolveApplicationSourceMasterName({ utm_source: '{{campaign.id}}', utm_medium: 'cpc' })).toBeUndefined();
+    expect(resolveApplicationSourceMasterName({ utm_source: 'standby' })).toBe('スタンバイ');
+  });
   // 2026-09-01 に求職者DB🚕の実レコードから作った表。営業の実入力と一致することを確認済み。
   it.each([
     ['meta', 'ad', 'meta(ad)'],
