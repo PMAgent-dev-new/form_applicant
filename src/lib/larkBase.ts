@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 
 import { describeError } from "./describe-error";
 import { neutralizeLarkTags } from './lark-text';
+import { lookupCatalogCreative, type CatalogLookup } from './creative-catalog';
 
 // 認証プロファイル。投入先 Base（Bitable アプリ）ごとに異なるアプリ資格情報を使う。
 //   mechanic … 求職者DB👷‍♂️ / IDOM_新卒2027 等（既存 APP_*_MECHANIC）
@@ -25,6 +26,16 @@ interface LarkBaseConfig {
 
 // Bitable のフィールド値。Text/Select=string、MultiSelect=string[]、Number/DateTime=number、Checkbox=boolean。
 export type LarkFieldValue = string | number | boolean | string[];
+
+export async function resolveApplicationCatalogCreative(adId: string): Promise<CatalogLookup> {
+  try {
+    const cfg = readConfig('ridejob');
+    if (!cfg) return { matches: [], status: 'not_configured' };
+    return await lookupCatalogCreative({ adId, domain: cfg.domain, token: await fetchTenantAccessToken(cfg, 'ridejob') });
+  } catch {
+    return { matches: [], status: 'unavailable' };
+  }
+}
 
 export type LarkLinkedRecordName = {
   linkedRecordName: string;

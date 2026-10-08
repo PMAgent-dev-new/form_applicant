@@ -13,6 +13,7 @@ import { genEventId, trackMeta } from '@/lib/meta/pixel';
 import { isValidEmail, isValidPhoneNumber, validateBirthDateCard, validateCard2, validateDesiredIncome, validateFinalStep, validateJobTiming, validateMechanicQualification, validateNameFields, validateTruckLicenses } from '../utils/validators';
 import { fetchJobCount, type JobCountParams } from '../utils/fetchJobCount';
 import { EMPTY_UTM_PARAMS, readAttribution, resolveUtmParams, type UtmParams } from '@/lib/attribution';
+import { readApplicationContext } from '@/lib/application-context';
 
 type UseApplicationFormStateParams = {
   showLoadingScreen: boolean;
@@ -708,6 +709,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         const appliedJobId = query.get('job_id')?.trim() || undefined;
         const catalog = attribution.catalogTouch;
         const body = {
+          applicationContext: readApplicationContext(),
           ...formData,
           birthDate: birthDateString,
           prefectureName,

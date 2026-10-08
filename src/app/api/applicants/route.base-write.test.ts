@@ -39,6 +39,13 @@ function mechanicContext(): BaseWriteContext {
 }
 
 describe('resolveDirectBaseWrite', () => {
+  it('経路・CR台帳参照・本文・備考を既存欄へ保存し、新しい添付欄を要求しない', () => {
+    const target = resolveDirectBaseWrite({ ...mechanicContext(), applicationDetails: ['集客元: fb / cpc', '応募時備考: 日産→タクシー'], creativeText: 'CR台帳リンク: https://example.com/cr\n本文: 年休150日' });
+    expect(target?.fields.対応履歴メモ).toContain('応募時備考: 日産→タクシー');
+    expect(target?.fields.クリエイティブ).toContain('CR台帳リンク:');
+    expect(target?.fields).not.toHaveProperty('CR素材');
+    expect(target?.fields).not.toHaveProperty('CR素材状態');
+  });
   it('担当者が追記したメモを保持して通知済み印を追加する', () => {
     expect(appendLarkNotificationMarker('[submission_id:submission-1]\n電話済み', 'submission-1'))
       .toBe('[submission_id:submission-1]\n電話済み\n[lark_notified:submission-1]');

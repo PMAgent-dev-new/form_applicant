@@ -14,7 +14,8 @@ import {
   resolveApplicationSourceMasterName,
   resolveJobCategoryMasterName,
 } from '@/lib/lark-masters';
-import { resolveAdImageUrl, isLikelyAdId } from '@/lib/meta/resolveAdImage';
+import { enrichApplication, applicationDetailsWithRemarks, applicationNotificationText } from '@/lib/application-enrichment';
+import { resolveApplicationCatalogCreative } from '@/lib/larkBase';
 import { sendMetaCapiLead } from '@/lib/meta/capi';
 import { sendOpenAiConversion } from '@/lib/openai/capi';
 import {
@@ -69,6 +70,8 @@ export type BaseWriteContext = {
   adId: string;
   adCreativeId: string;
   adImageUrl: string;
+  applicationDetails?: string[];
+  creativeText?: string;
   form: ApplicantFormData;
   jobTimingLabel: string;
   jobIntentLabel: string;
@@ -129,7 +132,8 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
       ctx.isMechanicNewgrad && ctx.mechanicQualificationsLabel
         ? `${ctx.qualificationFieldLabel}: ${ctx.mechanicQualificationsLabel}`
         : '',
-    ].filter(Boolean).join(' / ') || undefined;
+      ...(ctx.applicationDetails || []),
+    ].filter(Boolean).join('\n') || undefined;
 
     // 希望年収（経験者フォームのみの設問）は「履歴書（添付なし）」欄（テキスト）へ保存する。
     // mapDesiredIncomeLabel は未回答時に「未選択」を返すため、その場合は書き込まない。
@@ -169,6 +173,7 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
         ad_id: ctx.adId,
         ad_creative_id: ctx.adCreativeId,
         ad_image_url: ctx.adImageUrl,
+        クリエイティブ: ctx.creativeText,
         LP_URL: ctx.pageUrl,
         '流入媒体（自動判定）': ctx.mediaName,
         submission_id: ctx.submissionId,
@@ -189,6 +194,7 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
   const memo = [
     ctx.jobTimingLabel ? `転職時期: ${ctx.jobTimingLabel}` : '',
     ...buildCatalogMemoLines(ctx),
+    ...(ctx.applicationDetails || []),
   ].filter(Boolean).join('\n') || undefined;
 
   // 応募職種マスタ側のレコード名。タクシーLPは1本で「タクシー」と「ハイヤー転向」の両方を受けるため、
@@ -228,6 +234,7 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
       ad_id: ctx.adId,
       ad_creative_id: ctx.adCreativeId,
       ad_image_url: ctx.adImageUrl,
+      クリエイティブ: ctx.creativeText,
       LP_URL: ctx.pageUrl,
       '流入媒体（自動判定）': ctx.mediaName,
       '応募経由(マスタ連動)': applicationSourceLink,
@@ -238,6 +245,7 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
 // Base への保存。可能なら Bitable API で直書きし、未設定 or 失敗 or 対象外(coupang) なら
 // 既存の Base 自動化 Webhook にフォールバックする（応募データを取りこぼさないため）。
 type BaseSaveResult = {
+  created?: boolean;
   recordId?: string;
   /** Base への保存が直書き・Webhook ともに失敗した。応募は通すが通知に印を付ける。 */
   baseSaveFailed?: string;
@@ -322,6 +330,7 @@ async function saveToBase(
         });
         return {
           recordId: saved.recordId,
+          created: saved.created,
           savedVia: 'direct',
           notificationAlreadySent,
           notificationInProgress,
@@ -435,6 +444,7 @@ type ApplicantFormData = {
 };
 
 type ApplicantSubmission = ApplicantFormData & {
+  applicationContext?: unknown;
   utmParams?: UTMParams;
   experiment?: ExperimentInfo;
   formOrigin?: 'coupang' | 'default' | 'bus' | 'mechanic' | 'mechanic_newgrad' | 'truck';
@@ -471,12 +481,6 @@ function calculateAge(birthDate?: string): string | null {
   }
   if (age < 0 || age > 120) return null;
   return `${age}歳`;
-}
-
-// Meta(Facebook/Instagram)広告の流入判定。広告側UTMは utm_source=fb 等で来るため複数表記を許容する。
-const META_UTM_SOURCES = new Set(['meta', 'fb', 'facebook', 'ig', 'instagram']);
-function isMetaUtmSource(utmSource?: string): boolean {
-  return META_UTM_SOURCES.has((utmSource || '').toLowerCase());
 }
 
 export async function POST(request: NextRequest) {
@@ -647,24 +651,13 @@ export async function POST(request: NextRequest) {
     // Meta広告の広告ID(ad.id)から広告画像URLを解決する。
     // 入稿URLの utm_id={{ad.id}} を優先。後方互換で utm_content / utm_creative が数値なら ad.id とみなす。
     // ※ utm_content は {{ad.name}}（広告名）、utm_term は {{adset.id}} のため ad.id には使わない。
-    const isMetaInflowForImage = isCoupang || isMetaUtmSource(utmParams?.utm_source);
-    const adId = isLikelyAdId(utmParams?.utm_id)
-      ? (utmParams?.utm_id as string)
-      : isLikelyAdId(utmParams?.utm_content)
-        ? (utmParams?.utm_content as string)
-        : isLikelyAdId(utmParams?.utm_creative)
-          ? (utmParams?.utm_creative as string)
-          : '';
-    let adImageUrl = '';
-    let adCreativeId = '';
-    if (isMetaInflowForImage && adId) {
-      const resolved = await resolveAdImageUrl(adId);
-      if (resolved) {
-        adImageUrl = resolved.imageUrl || '';
-        adCreativeId = resolved.creativeId || '';
-      }
-      console.log('Resolved Meta ad image:', { adId, adImageUrl: adImageUrl ? '(取得済)' : '(なし)', adCreativeId });
-    }
+    const enrichment = await enrichApplication(submissionData.applicationContext, {
+      source: utmParams?.utm_source || (isCoupang ? 'meta' : undefined), medium: utmParams?.utm_medium, campaign: utmParams?.utm_campaign,
+      content: utmParams?.utm_content, id: utmParams?.utm_id, creative: utmParams?.utm_creative,
+      at: submissionData.attributionLastTouchAt, landing: referer,
+    }, Date.now(), resolveApplicationCatalogCreative);
+    const { adId, creativeId: adCreativeId, imageUrl: adImageUrl } = enrichment;
+    const applicationDetails = applicationDetailsWithRemarks(enrichment, submissionData);
 
     // Base 保存用コンテキスト（直書き／Webhook 両方で共有）
     const baseWriteCtx: BaseWriteContext = {
@@ -680,6 +673,8 @@ export async function POST(request: NextRequest) {
       adId,
       adCreativeId,
       adImageUrl,
+      applicationDetails,
+      creativeText: enrichment.creativeText,
       form: formData,
       jobTimingLabel: baseJobTimingLabel,
       jobIntentLabel: baseJobIntentLabel,
@@ -745,6 +740,8 @@ export async function POST(request: NextRequest) {
       catalog_attribution_status: catalog.status || '',
     } as Record<string, unknown>;
 
+    basePayload.application_context = applicationDetails.join('\n');
+    basePayload.creative_text = enrichment.creativeText;
     let baseSave: BaseSaveResult;
     /** Base に入らなかった応募を Supabase の退避先に残せたか */
     let vaultSaved = false;
@@ -882,6 +879,7 @@ export async function POST(request: NextRequest) {
 ${title}
 -------------------------
 流入元: ${utmDisplay}
+${applicationNotificationText(applicationDetails)}
 ${catalogDisplay ? `${catalogDisplay}\n` : ''}生年月日: ${formData.birthDate || '未入力'}
 年齢: ${ageDisplay}
 氏名: ${formData.fullName || '未入力'} (${formData.fullNameKana || '未入力'})

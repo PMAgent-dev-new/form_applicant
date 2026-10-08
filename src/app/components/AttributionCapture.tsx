@@ -3,6 +3,7 @@
 import { useEffect } from 'react';
 
 import { captureAttribution } from '@/lib/attribution';
+import { captureApplicationContext } from '@/lib/application-context';
 
 /**
  * 全ページでマウントし、着地時点の流入元を Cookie（rj_attr）へ取り込む。
@@ -27,6 +28,7 @@ export default function AttributionCapture() {
     // **そのユーザーは応募フォームを一切使えなくなる**（原因が Cookie なのでリロードしても直らない）。
     // 流入元の計測が取れないことより、応募が1件失われることの方が桁違いに重い。
     try {
+      captureApplicationContext({ search: window.location.search, url: window.location.href, referrer: document.referrer });
       captureAttribution(
         window.location.search,
         window.location.pathname,
