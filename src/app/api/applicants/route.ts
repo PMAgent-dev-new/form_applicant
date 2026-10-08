@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse, after } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import type { FormData } from '@/app/components/application-form/types';
 import { mapJobTimingLabel } from '@/app/components/application-form/utils/mapJobTimingLabel';
 import { getMechanicQualificationFieldLabel, mapMechanicQualifications, mapMechanicQualificationToBaseOptions } from '@/app/components/application-form/utils/mapMechanicQualifications';
@@ -14,8 +14,8 @@ import {
   resolveApplicationSourceMasterName,
   resolveJobCategoryMasterName,
 } from '@/lib/lark-masters';
-import { enrichApplication, applicantRemarks, applicationNotificationText } from '@/lib/application-enrichment';
-import { archiveApplicationCreative } from '@/lib/larkBase';
+import { enrichApplication, applicationDetailsWithRemarks, applicationNotificationText } from '@/lib/application-enrichment';
+import { resolveApplicationCatalogCreative } from '@/lib/larkBase';
 import { sendMetaCapiLead } from '@/lib/meta/capi';
 import { sendOpenAiConversion } from '@/lib/openai/capi';
 import {
@@ -72,7 +72,6 @@ export type BaseWriteContext = {
   adImageUrl: string;
   applicationDetails?: string[];
   creativeText?: string;
-  materialStatus?: string;
   form: ApplicantFormData;
   jobTimingLabel: string;
   jobIntentLabel: string;
@@ -175,8 +174,6 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
         ad_creative_id: ctx.adCreativeId,
         ad_image_url: ctx.adImageUrl,
         クリエイティブ: ctx.creativeText,
-        CR素材: undefined,
-        CR素材状態: ctx.materialStatus,
         LP_URL: ctx.pageUrl,
         '流入媒体（自動判定）': ctx.mediaName,
         submission_id: ctx.submissionId,
@@ -238,8 +235,6 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
       ad_creative_id: ctx.adCreativeId,
       ad_image_url: ctx.adImageUrl,
       クリエイティブ: ctx.creativeText,
-      CR素材: undefined,
-      CR素材状態: ctx.materialStatus,
       LP_URL: ctx.pageUrl,
       '流入媒体（自動判定）': ctx.mediaName,
       '応募経由(マスタ連動)': applicationSourceLink,
@@ -660,9 +655,9 @@ export async function POST(request: NextRequest) {
       source: utmParams?.utm_source || (isCoupang ? 'meta' : undefined), medium: utmParams?.utm_medium, campaign: utmParams?.utm_campaign,
       content: utmParams?.utm_content, id: utmParams?.utm_id, creative: utmParams?.utm_creative,
       at: submissionData.attributionLastTouchAt, landing: referer,
-    });
+    }, Date.now(), resolveApplicationCatalogCreative);
     const { adId, creativeId: adCreativeId, imageUrl: adImageUrl } = enrichment;
-    const applicationDetails = [...enrichment.lines, ...applicantRemarks(submissionData)];
+    const applicationDetails = applicationDetailsWithRemarks(enrichment, submissionData);
 
     // Base 保存用コンテキスト（直書き／Webhook 両方で共有）
     const baseWriteCtx: BaseWriteContext = {
@@ -680,7 +675,6 @@ export async function POST(request: NextRequest) {
       adImageUrl,
       applicationDetails,
       creativeText: enrichment.creativeText,
-      materialStatus: enrichment.materialStatus,
       form: formData,
       jobTimingLabel: baseJobTimingLabel,
       jobIntentLabel: baseJobIntentLabel,
@@ -789,11 +783,6 @@ export async function POST(request: NextRequest) {
     // Base 保存が全滅したときは LARK_SEND_BASE_ONLY を無視して通知へ進む。
     // base-only のまま 200 を返すと、記録も通知も無いまま応募が消える。
     let larkNotified = false;
-    if (enrichment.imageUrl && baseSave.created && baseSave.recordId && baseSave.profile && baseSave.tableId) {
-      const { profile, tableId, recordId } = baseSave;
-      try { after(() => archiveApplicationCreative(profile, tableId, recordId, enrichment)); }
-      catch { console.error('[application-context] snapshot scheduling failed; application continues'); }
-    }
     if (sendBaseOnly && !baseSave.baseSaveFailed) {
       return NextResponse.json({
         message: 'Application submitted successfully!',

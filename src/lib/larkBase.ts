@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 
 import { describeError } from "./describe-error";
 import { neutralizeLarkTags } from './lark-text';
-import { saveCreativeMaterial, type ApplicationEnrichment } from './application-enrichment';
+import { lookupCatalogCreative, type CatalogLookup } from './creative-catalog';
 
 // 認証プロファイル。投入先 Base（Bitable アプリ）ごとに異なるアプリ資格情報を使う。
 //   mechanic … 求職者DB👷‍♂️ / IDOM_新卒2027 等（既存 APP_*_MECHANIC）
@@ -25,18 +25,15 @@ interface LarkBaseConfig {
 }
 
 // Bitable のフィールド値。Text/Select=string、MultiSelect=string[]、Number/DateTime=number、Checkbox=boolean。
-export type LarkFieldValue = string | number | boolean | string[] | { file_token: string }[];
+export type LarkFieldValue = string | number | boolean | string[];
 
-export async function archiveApplicationCreative(profile: LarkProfile, tableId: string, recordId: string, enrichment: ApplicationEnrichment): Promise<void> {
+export async function resolveApplicationCatalogCreative(adId: string): Promise<CatalogLookup> {
   try {
-    const cfg = readConfig(profile);
-    if (!cfg) throw new Error('not_configured');
-    const token = await fetchTenantAccessToken(cfg, profile);
-    await saveCreativeMaterial({ enrichment, domain: cfg.domain, token, appToken: cfg.appToken,
-      update: fields => updateBaseRecord(tableId, recordId, fields as Record<string, LarkFieldValue>, profile) });
+    const cfg = readConfig('ridejob');
+    if (!cfg) return { matches: [], status: 'not_configured' };
+    return await lookupCatalogCreative({ adId, domain: cfg.domain, token: await fetchTenantAccessToken(cfg, 'ridejob') });
   } catch {
-    console.error('[application-context] snapshot credentials unavailable');
-    try { await updateBaseRecord(tableId, recordId, { CR素材状態: '素材保存失敗（認証・権限を確認）' }, profile); } catch { /* Existing health check verifies credentials. */ }
+    return { matches: [], status: 'unavailable' };
   }
 }
 

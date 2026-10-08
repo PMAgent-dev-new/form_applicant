@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { enrichApplication, applicantRemarks, applicationNotificationText, saveCreativeMaterial, type ApplicationEnrichment } from './application-enrichment';
+import { enrichApplication, applicantRemarks, applicationDetailsWithRemarks, applicationNotificationText } from './application-enrichment';
 const now = Date.parse('2026-10-08T01:00:00Z');
 const touch = { acquisition: { source: 'fb', medium: 'cpc', id: '52648617245839', at: new Date(now).toISOString() } };
 const ad = { id: '52648617245839', account_id: '1435983094817075', name: 'CR-test', creative: { id: '111111111', body: '本文\n2行目', title: '見出し', image_url: 'https://a.fbcdn.net/a.jpg', effective_object_story_id: '12345_67890' } };
@@ -35,19 +35,35 @@ describe('application enrichment failure isolation and exact ad matching', () =>
     expect(applicantRemarks({ note: '日産→タクシー\n休日の相談', password: 'secret' })).toEqual(['応募時備考: 日産→タクシー\n休日の相談']);
     expect(applicantRemarks({ remarks: 'a'.repeat(5000) })[0].length).toBeLessThan(2020);
   });
-});
-describe('durable creative attachment', () => {
-  const e: ApplicationEnrichment = { adId: '12345', creativeId: '67890', imageUrl: 'https://a.fbcdn.net/a.jpg', dynamic: false, lines: [], creativeText: '', materialStatus: '素材保存待ち' };
-  it('uploads into the existing Base and saves only the attachment/status columns', async () => {
-    const f = vi.fn().mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), { headers: { 'content-type': 'image/jpeg' } })).mockResolvedValueOnce(Response.json({ code: 0, data: { file_token: 'file-token' } })); vi.stubGlobal('fetch', f);
-    const update = vi.fn().mockResolvedValue(undefined);
-    await saveCreativeMaterial({ enrichment: e, domain: 'https://open.larksuite.com', token: 'token', appToken: 'existing-base', update });
-    expect(update).toHaveBeenCalledWith({ CR素材: [{ file_token: 'file-token' }], CR素材状態: '保存済み（動画の場合はサムネイル）' });
-    const form = f.mock.calls[1][1].body as FormData; expect(form.get('parent_type')).toBe('bitable_image'); expect(form.get('parent_node')).toBe('existing-base');
+  it('shows remarks before long creative copy can exhaust the notification budget', async () => {
+    const e = await enrichApplication(touch, {}, now);
+    e.creativeText = '広告文'.repeat(10000); e.lines[e.lines.length - 1] = e.creativeText;
+    const lines = applicationDetailsWithRemarks(e, { remarks: '休日を確認したい' });
+    expect(applicationNotificationText(lines)).toContain('応募時備考: 休日を確認したい');
   });
-  it('does not fetch foreign hosts and makes failure visible without rejecting intake', async () => {
-    const f = vi.fn(); vi.stubGlobal('fetch', f); const update = vi.fn().mockResolvedValue(undefined);
-    await saveCreativeMaterial({ enrichment: { ...e, imageUrl: 'https://evil.example/a.jpg' }, domain: 'https://open.larksuite.com', token: 'token', appToken: 'existing', update });
-    expect(f).not.toHaveBeenCalled(); expect(update).toHaveBeenCalledWith({ CR素材状態: '素材保存失敗（広告リンクで確認）' });
+});
+describe('existing CR master references', () => {
+  const cr = { crId: 'CR-test', recordUrl: 'https://example.com/cr', imageUrl: 'https://example.com/image', copy: '原稿', adName: '台帳名' };
+  it('preserves master link and draft copy when Meta is unavailable, without downloading or uploading images', async () => {
+    const f = vi.fn(); vi.stubGlobal('fetch', f);
+    const resolve = vi.fn().mockResolvedValue({ status: 'matched', matches: [cr] });
+    const e = await enrichApplication(touch, {}, now, resolve);
+    expect(resolve).toHaveBeenCalledWith(ad.id); expect(f).not.toHaveBeenCalled();
+    expect(e.creativeText).toContain('CR台帳リンク: https://example.com/cr');
+    expect(e.creativeText).toContain('CR台帳コピー案（配信本文と一致するとは限りません）: 原稿');
+    expect(e.lines.join('\n')).not.toContain('保存待ち');
+  });
+  it('shows multiple matches as candidates and does not select one CR', async () => {
+    const e = await enrichApplication(touch, {}, now, async () => ({ status: 'ambiguous', matches: [cr, { ...cr, crId: 'CR-other' }] }));
+    expect(e.creativeText).toContain('対象CRは未確定'); expect(e.creativeText).toContain('CR台帳候補: CR-other');
+  });
+  it('keeps intake and Meta copy working when the master throws', async () => {
+    vi.stubEnv('META_ACCESS_TOKEN', 'test-token'); vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(ad)));
+    const e = await enrichApplication(touch, {}, now, async () => { throw new Error('secret'); });
+    expect(e.creativeText).toContain('台帳参照失敗'); expect(e.creativeText).toContain('本文\n2行目'); expect(e.creativeText).not.toContain('secret');
+  });
+  it('does not query the master with internal CTA ids or unresolved ad ids', async () => {
+    const resolve = vi.fn(); await enrichApplication({}, { source: 'ridejob_media', content: 'article1' }, now, resolve);
+    expect(resolve).not.toHaveBeenCalled();
   });
 });

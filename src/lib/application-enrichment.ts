@@ -1,4 +1,5 @@
 import { applicationContextLines, normalizeApplicationContext, isInternalSource } from './application-context';
+import { resolveCatalogWithinBudget, type CatalogResolver } from './creative-catalog';
 
 /** Server only. No applicant information is sent to Meta. Keep identical in both intake apps. */
 const ACCOUNT_ID = '1435983094817075';
@@ -13,11 +14,11 @@ type Creative = {
   asset_feed_spec?: { bodies?: { text?: string }[]; titles?: { text?: string }[]; descriptions?: { text?: string }[]; images?: unknown[]; videos?: unknown[] };
 };
 export type ApplicationEnrichment = {
-  lines: string[]; creativeText: string; materialStatus: string;
+  lines: string[]; creativeText: string; referenceStatus: string;
   adId: string; creativeId: string; imageUrl: string; dynamic: boolean;
 };
 type Legacy = { source?: string; medium?: string; campaign?: string; content?: string; id?: string; creative?: string; at?: string; landing?: string };
-export async function enrichApplication(raw: unknown, legacy: Legacy = {}, now = Date.now()): Promise<ApplicationEnrichment> {
+export async function enrichApplication(raw: unknown, legacy: Legacy = {}, now = Date.now(), resolveCatalog?: CatalogResolver): Promise<ApplicationEnrichment> {
   let context = normalizeApplicationContext(raw, now);
   if (!context.acquisition && legacy.source && !isInternalSource(legacy.source)) {
     context = normalizeApplicationContext({ ...context, acquisition: { ...legacy, at: legacy.at || new Date(now).toISOString() } }, now);
@@ -29,7 +30,8 @@ export async function enrichApplication(raw: unknown, legacy: Legacy = {}, now =
   const a = context.acquisition;
   const meta = /^(meta|facebook|instagram|fb|ig|\{\{site_source_name\}\})$/i.test(a?.source || '');
   const candidate = meta ? [a?.id, a?.content, a?.creative].find(v => /^\d{5,32}$/.test(v || '')) || '' : '';
-  const result: ApplicationEnrichment = { lines: applicationContextLines(context, now), creativeText: '', materialStatus: candidate ? '広告情報取得失敗（後日確認が必要）' : '広告IDなし・CR未特定', adId: candidate, creativeId: '', imageUrl: '', dynamic: false };
+  const result: ApplicationEnrichment = { lines: applicationContextLines(context, now), creativeText: '', referenceStatus: candidate ? '広告情報取得失敗（後日確認が必要）' : '広告IDなし・CR未特定', adId: candidate, creativeId: '', imageUrl: '', dynamic: false };
+  const catalogPromise = candidate ? resolveCatalogWithinBudget(resolveCatalog, candidate) : undefined;
   const token = process.env.META_ACCESS_TOKEN;
   if (candidate && token) {
     try {
@@ -41,7 +43,7 @@ export async function enrichApplication(raw: unknown, legacy: Legacy = {}, now =
         result.creativeId = str(c.id, 32);
         result.dynamic = !!c.product_set_id || !!c.asset_feed_spec || !!link?.child_attachments?.length;
         result.imageUrl = str(c.image_url || video?.image_url || link?.picture, 3000);
-        result.materialStatus = result.imageUrl ? '素材保存待ち' : '画像URLなし（広告リンクで確認）';
+        result.referenceStatus = 'Meta広告設定を取得済み（本人の表示内容は未確定）';
         const copy = (label: string, values: unknown[]) => [...new Set(values.map(v => str(v, 3000)).filter(Boolean))].slice(0, 5).map(v => `${label}: ${v}`);
         const story = /^\d+_\d+$/.test(c.effective_object_story_id || '') ? `https://www.facebook.com/${c.effective_object_story_id}` : '';
         result.creativeText = [
@@ -62,9 +64,20 @@ export async function enrichApplication(raw: unknown, legacy: Legacy = {}, now =
       }
     } catch { console.warn('[application-context] Meta lookup unavailable; application continues'); }
   }
-  if (!result.creativeText) result.creativeText = `${result.materialStatus}${candidate ? `\nad.id（URL申告値）: ${candidate}` : ''}`;
-  result.lines.push(result.creativeText, `CR素材状態（受付時）: ${result.materialStatus}`);
-  if (result.imageUrl) result.lines.push('画像: Lark応募レコードの「CR素材」欄へ保存（動画はサムネイル）。保存結果は「CR素材状態」欄を確認。');
+  if (!result.creativeText) result.creativeText = `${result.referenceStatus}${candidate ? `\nad.id（URL申告値）: ${candidate}` : ''}`;
+  const catalog = await catalogPromise;
+  if (catalog) {
+    const status = { matched: '広告IDが台帳と一致', ambiguous: '複数候補／検索結果の続きあり・対象CRは未確定', missing: '台帳に広告ID一致なし', unavailable: '台帳参照失敗（後日確認が必要）', not_configured: '台帳参照未設定' }[catalog.status];
+    result.referenceStatus += ` / CR台帳: ${status}`;
+    const references = catalog.matches.flatMap(c => [
+      `CR台帳${catalog.status === 'ambiguous' ? '候補' : ''}: ${c.crId || 'CR-ID未記入'}`, `CR台帳リンク: ${c.recordUrl}`,
+      c.adName ? `台帳広告名: ${c.adName}` : '',
+      c.imageUrl ? `CR素材リンク（台帳）: ${c.imageUrl}` : '',
+      c.copy ? `CR台帳コピー案（配信本文と一致するとは限りません）: ${c.copy}` : '',
+    ]).filter(Boolean);
+    result.creativeText = [`CR参照状態: ${result.referenceStatus}`, ...references, result.creativeText].join('\n');
+  }
+  result.lines.push(result.creativeText);
   return result;
 }
 
@@ -72,6 +85,11 @@ export async function enrichApplication(raw: unknown, legacy: Legacy = {}, now =
 export function applicantRemarks(raw: unknown): string[] {
   const r = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
   return [...new Set(['remarks', 'note', 'notes', 'comment', 'comments', 'message', 'coverLetter'].map(k => str(r[k], 2000)).filter(Boolean))].slice(0, 3).map(v => `応募時備考: ${v}`);
+}
+
+/** Show applicant remarks before potentially lengthy ad copy in byte-bounded notifications. */
+export function applicationDetailsWithRemarks(enrichment: ApplicationEnrichment, raw: unknown): string[] {
+  return [...enrichment.lines.slice(0, -1), ...applicantRemarks(raw), enrichment.creativeText];
 }
 
 export function applicationNotificationText(lines: string[], maxBytes = 10000): string {
@@ -82,41 +100,4 @@ export function applicationNotificationText(lines: string[], maxBytes = 10000): 
   let result = '', bytes = 0;
   for (const char of value) { const n = encoder.encode(char).length; if (bytes + n > budget) break; bytes += n; result += char; }
   return `${result}${suffix}`;
-}
-
-/** Snapshot an existing Meta image into the existing Lark Base (no public bucket). */
-export async function saveCreativeMaterial(input: {
-  enrichment: ApplicationEnrichment; domain: string; token: string; appToken: string;
-  update: (fields: Record<string, unknown>) => Promise<void>;
-}): Promise<void> {
-  const { enrichment: e } = input;
-  if (!e.imageUrl) return;
-  let status = '素材保存失敗（広告リンクで確認）';
-  try {
-    const u = new URL(e.imageUrl);
-    if (u.protocol !== 'https:' || !/(^|\.)(fbcdn\.net|facebook\.com|cdninstagram\.com)$/.test(u.hostname)) throw new Error('untrusted_image_host');
-    const image = await fetch(u, { signal: AbortSignal.timeout(4000), redirect: 'error' });
-    const mime = image.headers.get('content-type')?.split(';')[0] || '';
-    if (!image.ok || !['image/jpeg', 'image/png', 'image/webp'].includes(mime) || Number(image.headers.get('content-length')) > 5 * 1024 * 1024) throw new Error('invalid_image');
-    const reader = image.body?.getReader();
-    if (!reader) throw new Error('no_image_body');
-    const chunks: Uint8Array[] = []; let size = 0;
-    while (true) { const r = await reader.read(); if (r.done) break; size += r.value.length; if (size > 5 * 1024 * 1024) { await reader.cancel(); throw new Error('image_too_large'); } chunks.push(r.value); }
-    const bytes = new Uint8Array(size); let offset = 0;
-    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
-    const form = new FormData();
-    form.set('file_name', `ad-${e.adId}-${e.creativeId || 'unknown'}.${mime === 'image/png' ? 'png' : mime === 'image/webp' ? 'webp' : 'jpg'}`);
-    form.set('parent_type', 'bitable_image'); form.set('parent_node', input.appToken); form.set('size', String(size));
-    form.set('file', new Blob([bytes], { type: mime }), form.get('file_name') as string);
-    const upload = await fetch(`${input.domain.replace(/\/+$/, '')}/open-apis/drive/v1/medias/upload_all`, {
-      method: 'POST', headers: { Authorization: `Bearer ${input.token}` }, body: form, signal: AbortSignal.timeout(5000),
-    });
-    const data = await upload.json() as { code?: number; data?: { file_token?: string } };
-    if (!upload.ok || data.code !== 0 || !data.data?.file_token) throw new Error('upload_failed');
-    status = e.dynamic ? '候補素材を保存済み（表示組み合わせ未確定）' : '保存済み（動画の場合はサムネイル）';
-    await input.update({ CR素材: [{ file_token: data.data.file_token }], CR素材状態: status });
-    console.info('[application-context] creative snapshot saved', { adId: e.adId });
-    return;
-  } catch { console.warn('[application-context] creative snapshot failed; application already saved'); }
-  try { await input.update({ CR素材状態: status }); } catch { console.error('[application-context] snapshot status update failed'); }
 }

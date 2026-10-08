@@ -144,7 +144,7 @@ describe('applicants POST — outbound host allowlist', () => {
     const offlist = hosts.filter((host) => !ALLOWED_HOSTS.has(host));
     expect(offlist, `unexpected outbound host(s): ${offlist.join(', ')}`).toEqual([]);
   });
-  it('Baseのみの受付でも新規応募のCR素材保存を予約する', async () => {
+  it('Baseのみの受付でもCR情報を保存し、画像の二重保存を予約しない', async () => {
     vi.stubEnv('LARK_SEND_BASE_ONLY', 'true');
     vi.stubEnv('META_ACCESS_TOKEN', 'test-meta-read');
     fetchSpy.mockImplementation(async (input, init) => String(input).includes('graph.facebook.com')
@@ -153,7 +153,8 @@ describe('applicants POST — outbound host allowlist', () => {
     const { POST } = await import('./route');
     const response = await POST(makeRequest({ ...applicantBody, metaEventId: undefined, submissionId: 'snapshot-first', utmParams: { utm_source: 'meta', utm_id: '123456789' } }));
     expect(response.status).toBe(200);
-    expect(afterTasks.queue).toHaveLength(1);
+    expect(afterTasks.queue).toHaveLength(0);
+    expect(fetchSpy.mock.calls.some(call => String(call[0]).includes('/medias/upload_all'))).toBe(false);
   });
   it('同じ応募IDの再送で先着レコードのCR素材を上書きしない', async () => {
     vi.stubEnv('LARK_SEND_BASE_ONLY', 'true');
