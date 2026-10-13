@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { captureApplicationContext, normalizeApplicationContext, applicationContextLines, CONTEXT_WINDOW_MS } from './application-context';
+import { captureApplicationContext, normalizeApplicationContext, applicationContextLines, mediaRouteLine, CONTEXT_WINDOW_MS } from './application-context';
 const now = Date.parse('2026-10-08T01:00:00Z');
 const input = { search: '?utm_source=fb&utm_medium=cpc&utm_id=52621818563839&utm_content=CR-2609-16', url: 'https://ridejob.jp/media/blog/abc', referrer: '', title: '記事A', now };
 describe('application context shared contract', () => {
@@ -59,6 +59,7 @@ describe('application context shared contract', () => {
     expect(lines).toContain('記事URL: https://ridejob.jp/media/blog/abc');
     expect(lines).toContain(`集客接触日時: ${new Date(now).toISOString()}`);
     expect(lines).toContain(`記事接触日時: ${new Date(now).toISOString()}`);
+    expect(mediaRouteLine(form, now + 1000)).toBe('応募経路: メディア経由（元記事: 記事A）');
   });
   it('labels organic and unclassified Facebook visits without inventing paid acquisition', () => {
     const organic = captureApplicationContext({ ...input, search: '', referrer: 'https://www.google.com/search?q=private' }, {});
@@ -75,6 +76,7 @@ describe('application context shared contract', () => {
   it('does not claim media for a form without article or internal media evidence', () => {
     const direct = captureApplicationContext({ ...input, url: 'https://ridejob.jp/entry/mechanic' }, {});
     expect(applicationContextLines(direct, now).join('\n')).toContain('応募経路: 未特定（メディア経由か未確認）');
+    expect(mediaRouteLine(direct, now)).toBe('');
   });
   it('does not mistake an article view or an earlier visit for a media CTA or current article acquisition', () => {
     const earlier = captureApplicationContext(input, {});
@@ -83,6 +85,7 @@ describe('application context shared contract', () => {
     expect(viewed).toContain('応募経路: 未特定（メディア記事の閲覧のみ確認）');
     expect(viewed).toContain('記事流入元: 未特定');
     expect(viewed).toContain('集客元（直近確認）: Facebook / 広告');
+    expect(mediaRouteLine(later, now + 10000)).toBe('');
     const form = captureApplicationContext({ search: '?utm_source=ridejob_media&utm_medium=article_cta&utm_content=abc',
       url: 'https://ridejob.jp/entry/mechanic', referrer: '', now: now + 20000 }, later);
     const lines = applicationContextLines(form, now + 20000).join('\n');

@@ -166,3 +166,11 @@ export function applicationContextLines(value: unknown, now = Date.now()): strin
     c.truncated ? '計測補足: 長い項目を一部省略' : '',
   ].filter(Boolean);
 }
+
+/** One line for short notifications: only a media route that applicationContextLines would call メディア経由. */
+export function mediaRouteLine(value: unknown, now = Date.now()): string {
+  const c = normalizeApplicationContext(value, now);
+  if (c.entry?.source.toLowerCase() !== 'ridejob_media' || c.entry.medium === 'article_view') return '';
+  const article = c.article?.title || c.article?.id;
+  return `応募経路: メディア経由${article ? `（元記事: ${article}）` : ''}`;
+}

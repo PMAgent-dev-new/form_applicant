@@ -184,6 +184,27 @@ describe('applicants POST — outbound host allowlist', () => {
     expect(afterTasks.queue).toHaveLength(0);
     expect(fetchSpy.mock.calls.some(call => String(call[0]).includes('/medias/upload_all'))).toBe(false);
   });
+  it('通知の広告欄は投稿リンクと本文・見出し・説明だけにし、対応履歴メモには書かない', async () => {
+    vi.stubEnv('META_ACCESS_TOKEN', 'test-meta-read');
+    fetchSpy.mockImplementation(async (input, init) => String(input).includes('graph.facebook.com')
+      ? Response.json({ id: '123456789', account_id: '1435983094817075', creative: { id: '987654321', body: 'CR本文', title: 'CR見出し',
+        effective_object_story_id: '12345_67890', instagram_permalink_url: 'https://www.instagram.com/p/EXAMPLE/', object_story_spec: { link_data: { description: 'CR説明' } } } })
+      : successResponse(input, init));
+    const { POST } = await import('./route');
+    const response = await POST(makeRequest({ ...applicantBody, metaEventId: undefined, submissionId: 'compact-notice', utmParams: { utm_source: 'fb', utm_medium: 'cpc', utm_id: '123456789' } }));
+    expect(response.status).toBe(200);
+    const sent = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/im/v1/messages')).map(([, init]) => String((init as RequestInit)?.body ?? '')).join('\n');
+    for (const line of ['Instagram投稿: https://www.instagram.com/p/EXAMPLE/', '本文: CR本文', '見出し: CR見出し', '説明: CR説明']) expect(sent).toContain(line);
+    for (const verbose of ['ad.id', '広告管理画面', '注意:', '取得日時', '集客元', '応募経路', 'CR参照状態']) expect(sent).not.toContain(verbose);
+    const saves = fetchSpy.mock.calls.filter(call => new URL(String(call[0])).pathname.endsWith('/records') && call[1]?.method === 'POST')
+      .map(call => (JSON.parse(String(call[1]?.body)).fields ?? {}) as Record<string, unknown>);
+    expect(saves.length).toBeGreaterThan(0);
+    for (const fields of saves) {
+      expect(String(fields.対応履歴メモ ?? '')).not.toContain('CR本文');
+      expect(String(fields.対応履歴メモ ?? '')).toContain('[submission_id:compact-notice]');
+      expect(String(fields.クリエイティブ ?? '')).toContain('本文: CR本文');
+    }
+  });
   it('contextがある旧URLでも同じ外部経路のterm広告IDを保存する', async () => {
     vi.stubEnv('LARK_SEND_BASE_ONLY', 'true');
     vi.stubEnv('META_ACCESS_TOKEN', 'test-meta-read');

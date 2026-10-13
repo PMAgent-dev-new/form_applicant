@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { enrichApplication, applicantRemarks, applicationDetailsWithRemarks, applicationNotificationText } from './application-enrichment';
+import { enrichApplication, applicantRemarks, applicationNotificationLines, applicationNotificationText } from './application-enrichment';
 const now = Date.parse('2026-10-08T01:00:00Z');
 const touch = { acquisition: { source: 'fb', medium: 'cpc', id: '52648617245839', at: new Date(now).toISOString() } };
 const ad = { id: '52648617245839', account_id: '1435983094817075', name: 'CR-test', creative: { id: '111111111', body: '本文\n2行目', title: '見出し', image_url: 'https://a.fbcdn.net/a.jpg', effective_object_story_id: '12345_67890' } };
@@ -71,7 +71,7 @@ describe('application enrichment failure isolation and exact ad matching', () =>
   it('never treats an internal CTA as proof of HP or as a Meta ad', async () => {
     const f = vi.fn(); vi.stubGlobal('fetch', f);
     const e = await enrichApplication({}, { source: 'ridejob_media', medium: 'article_cta', content: 'article1' }, now);
-    expect(e.lines.join('\n')).toContain('記事流入元: 未特定'); expect(e.lines.join('\n')).toContain('集客元（直近確認）: 未特定'); expect(e.lines.join('\n')).toContain('応募経路: メディア経由'); expect(e.lines.join('\n')).toContain('article_cta'); expect(f).not.toHaveBeenCalled();
+    expect(e.summaryLines).toEqual(['応募経路: メディア経由（元記事: article1）']); expect(e.adId).toBe(''); expect(f).not.toHaveBeenCalled();
   });
   it('labels dynamic candidates, rather than claiming a rendered combination', async () => {
     vi.stubEnv('META_ACCESS_TOKEN', 'test-token'); vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ ...ad, creative: { ...ad.creative, asset_feed_spec: { bodies: [{ text: '候補B' }] } } })));
@@ -83,9 +83,30 @@ describe('application enrichment failure isolation and exact ad matching', () =>
   });
   it('shows remarks before long creative copy can exhaust the notification budget', async () => {
     const e = await enrichApplication(touch, {}, now);
-    e.creativeText = '広告文'.repeat(10000); e.lines[e.lines.length - 1] = e.creativeText;
-    const lines = applicationDetailsWithRemarks(e, { remarks: '休日を確認したい' });
+    e.summaryLines = [`本文: ${'広告文'.repeat(10000)}`];
+    const lines = applicationNotificationLines(e, { remarks: '休日を確認したい' });
     expect(applicationNotificationText(lines)).toContain('応募時備考: 休日を確認したい');
+  });
+  it('notifies only the post link and one copy of each kind, keeping CR and ad ids in creativeText', async () => {
+    vi.stubEnv('META_ACCESS_TOKEN', 'test-token');
+    const creative = { ...ad.creative, instagram_permalink_url: 'https://www.instagram.com/p/EXAMPLE/', object_story_spec: { link_data: { message: '本文\n2行目', name: '見出し', description: '説明' } } };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ ...ad, creative })));
+    const e = await enrichApplication(touch, {}, now, async () => ({ status: 'matched', matches: [{ crId: 'CR-test', recordUrl: 'https://example.com/cr', imageUrl: '', copy: '原稿', adName: '台帳名' }] }));
+    expect(applicationNotificationText(applicationNotificationLines(e, {}))).toBe('Instagram投稿: https://www.instagram.com/p/EXAMPLE/\n本文: 本文\n2行目\n見出し: 見出し\n説明: 説明');
+    expect(e.creativeText).toContain('ad.id: 52648617245839'); expect(e.creativeText).toContain('CR台帳リンク: https://example.com/cr'); expect(e.creativeText).toContain('投稿: https://www.facebook.com/12345_67890');
+  });
+  it('falls back to the Facebook post and counts other copy candidates instead of listing them', async () => {
+    vi.stubEnv('META_ACCESS_TOKEN', 'test-token');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ ...ad, creative: { ...ad.creative, asset_feed_spec: { bodies: [{ text: '候補B' }, { text: '候補C' }] } } })));
+    const e = await enrichApplication(touch, {}, now);
+    expect(e.summaryLines).toEqual(['投稿: https://www.facebook.com/12345_67890', '本文: 本文\n2行目（ほか2案）', '見出し: 見出し', '※カタログ・複数素材の広告: 本人に表示された組み合わせは未確定']);
+    expect(e.creativeText).toContain('本文: 候補C');
+  });
+  it('adds nothing about the ad when Meta cannot confirm it, nor a route for an article view', async () => {
+    vi.stubEnv('META_ACCESS_TOKEN', 'test-token'); vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('timeout')));
+    const failed = await enrichApplication(touch, {}, now);
+    expect(failed.summaryLines).toEqual([]); expect(failed.creativeText).toContain('取得失敗');
+    expect((await enrichApplication({}, { source: 'ridejob_media', medium: 'article_view', content: 'article1' }, now)).summaryLines).toEqual([]);
   });
 });
 describe('existing CR master references', () => {
@@ -97,7 +118,7 @@ describe('existing CR master references', () => {
     expect(resolve).toHaveBeenCalledWith(ad.id); expect(f).not.toHaveBeenCalled();
     expect(e.creativeText).toContain('CR台帳リンク: https://example.com/cr');
     expect(e.creativeText).toContain('CR台帳コピー案（配信本文と一致するとは限りません）: 原稿');
-    expect(e.lines.join('\n')).not.toContain('保存待ち');
+    expect([...e.summaryLines, e.creativeText].join('\n')).not.toContain('保存待ち');
   });
   it('shows multiple matches as candidates and does not select one CR', async () => {
     const e = await enrichApplication(touch, {}, now, async () => ({ status: 'ambiguous', matches: [cr, { ...cr, crId: 'CR-other' }] }));
