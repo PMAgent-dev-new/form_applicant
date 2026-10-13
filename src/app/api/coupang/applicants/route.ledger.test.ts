@@ -447,6 +447,18 @@ describe('coupang applicants POST — 受付台帳', () => {
       expect(ledgerCalls()).toHaveLength(0);
     });
 
+    it('先着が通知まで終えた重複の再送は書かない（先着の記録を残す）', async () => {
+      stubDirectBase();
+      fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => String(input).includes('/records/search')
+        ? Response.json({ code: 0, data: { items: [{ record_id: 'rec-first', fields: { 応募日: Date.now() - 60_000, Lark通知送信済み: true } }] } })
+        : directBaseResponse(input, init));
+      const { POST } = await import('./route');
+      const res = await POST(makeRequest({ ...coupangBody, submissionId: 'ledger-coupang-dup' }));
+      expect(res.status).toBe(200);
+      expect(afterTasks.queue).toHaveLength(0);
+      expect(ledgerCalls()).toHaveLength(0);
+    });
+
     // 先着が通知を終えていない同じ受付IDは、先着の完了を最大3秒待ってから 503 を返す。
     it('別のリクエストが処理中の 503（再送前提）は書かない', async () => {
       stubDirectBase();

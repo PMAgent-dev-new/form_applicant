@@ -831,6 +831,8 @@ export async function POST(request: NextRequest) {
       }
     } else if (notificationAlreadySent) {
       console.log('[coupang] Lark notification already sent; skipping duplicate', { submissionId });
+      // 重複の再送。先着の試行が記録するので記録しない（先着より先に書くと、通知なしの行が残ってしまう）。
+      recordLedger = false;
     }
     ledgerOutcome({ notified });
 
