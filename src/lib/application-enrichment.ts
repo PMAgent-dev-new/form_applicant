@@ -90,6 +90,7 @@ export async function enrichApplication(raw: unknown, legacy: Legacy = {}, now =
         result.summaryLines.push(...[
           instagram ? `Instagram投稿: ${instagram}` : story ? `投稿: ${story}` : '',
           ...copies.map(([label, list]) => list.length ? `${label}: ${list[0]}${list.length > 1 ? `（ほか${list.length - 1}案）` : ''}` : ''),
+          result.dynamic ? '※カタログ・複数素材の広告: 本人に表示された組み合わせは未確定' : '',
         ].filter(Boolean));
         break;
       } else {

@@ -99,7 +99,7 @@ describe('application enrichment failure isolation and exact ad matching', () =>
     vi.stubEnv('META_ACCESS_TOKEN', 'test-token');
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ ...ad, creative: { ...ad.creative, asset_feed_spec: { bodies: [{ text: '候補B' }, { text: '候補C' }] } } })));
     const e = await enrichApplication(touch, {}, now);
-    expect(e.summaryLines).toEqual(['投稿: https://www.facebook.com/12345_67890', '本文: 本文\n2行目（ほか2案）', '見出し: 見出し']);
+    expect(e.summaryLines).toEqual(['投稿: https://www.facebook.com/12345_67890', '本文: 本文\n2行目（ほか2案）', '見出し: 見出し', '※カタログ・複数素材の広告: 本人に表示された組み合わせは未確定']);
     expect(e.creativeText).toContain('本文: 候補C');
   });
   it('adds nothing about the ad when Meta cannot confirm it, nor a route for an article view', async () => {
