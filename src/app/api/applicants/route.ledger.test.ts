@@ -506,12 +506,13 @@ describe('applicants POST — 受付台帳', () => {
       expect(ledgerCalls()).toHaveLength(0);
     }, 15000);
 
-    it('通知の自動復旧期限を過ぎた 503（再送前提）は書かない', async () => {
+    it('通知の自動復旧期限を過ぎた 503 は書く（先の試行の記録が無いときの写し。recovery_expired）', async () => {
       const res = await postWithExistingRecord('ledger-recovery-expired', 56 * 60_000);
       expect(res.status).toBe(503);
       expect(await res.json()).toEqual({ message: 'Notification recovery requires manual confirmation' });
-      expect(afterTasks.queue).toHaveLength(0);
-      expect(ledgerCalls()).toHaveLength(0);
+      await flushAfter();
+      expect(ledgerCalls()).toHaveLength(1);
+      expect(readBody(ledgerCalls()[0]).outcome).toMatchObject({ recovery_expired: true, http_status: 503 });
     }, 15000);
   });
 

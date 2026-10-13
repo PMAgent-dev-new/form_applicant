@@ -917,12 +917,12 @@ export async function POST(request: NextRequest) {
         submissionId,
         recordId: baseSave.recordId,
       });
-      // この試行では何も進めていないので記録しない。
-      recordLedger = false;
-      return NextResponse.json(
+      // 先の試行は終わっている（記録できていればこの行は台帳に入らない）。先の試行の記録が無いときの写しとして残す。
+      ledgerOutcome({ recovery_expired: true });
+      return respond(NextResponse.json(
         { message: 'Notification recovery requires manual confirmation' },
         { status: 503 },
-      );
+      ));
     }
 
     // Base確定後に通知し、成功状態をBaseへ書き戻す。以降のメール/SMS/CAPIは並列・非致命。
