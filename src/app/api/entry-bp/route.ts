@@ -4,6 +4,7 @@ import { createBaseRecord, isLarkBaseConfigured } from "@/lib/larkBase";
 import { saveToSubmissionVault } from "@/lib/submissionVault";
 import { neutralizeLarkTags } from '@/lib/lark-text';
 import { isLarkWebhookAccepted, type LarkWebhookResult } from '@/lib/larkWebhookResult';
+import { recordSubmissionAfterResponse, type SubmissionRecord } from '@/lib/submissionLedger';
 
 // 2027新卒 鈑金塗装職LP（/gulliver/newgraduate → 本番は /entry/gulliver/newgraduate）の
 // 会社説明会お申し込み受付。
@@ -17,6 +18,15 @@ const isValidEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
 const cap = (s: string, n: number) => (s.length > n ? s.slice(0, n) : s);
 
 export async function POST(req: Request) {
+  // 受付台帳。受け入れた時点で作り、応答を返したあとに finally で1回だけ記録する。
+  let ledger: SubmissionRecord | null = null;
+  const ledgerOutcome = (patch: Record<string, unknown>) => {
+    if (ledger) ledger.outcome = { ...ledger.outcome, ...patch };
+  };
+  const respond = <T extends Response>(res: T): T => {
+    if (ledger) ledger.outcome = { ...ledger.outcome, http_status: res.status };
+    return res;
+  };
   try {
     const form = await req.formData();
 
@@ -51,6 +61,26 @@ export async function POST(req: Request) {
       .digest("hex")
       .slice(0, 32)}`;
     const vaultPayload = { name, email, tel, area } as Record<string, unknown>;
+    // 受け入れ（検証・bot 判定を通過）。以降の戻り口は respond() で http_status を残し、finally で記録する。
+    ledger = {
+      source: "form_applicant/entry-bp",
+      kind: "application",
+      submissionId,
+      profile: "mechanic",
+      applicant: { name, email, tel, area },
+      context: {
+        // IP アドレスと Cookie の値は台帳に入れない（使い道が無く、漏れたときの害だけが増える）。
+        request: {
+          referer: req.headers.get("referer") || "",
+          user_agent: req.headers.get("user-agent") || "",
+          host: req.headers.get("x-forwarded-host") || req.headers.get("host") || "",
+        },
+        environment: process.env.NODE_ENV,
+      },
+      notification: {},
+      // このルートはメール・SMS・CAPI を呼ばず、LARK_SEND_BASE_ONLY も見ない。
+      outcome: { notified: false, vaulted: false, email: "skipped", sms: "skipped", meta_capi: "skipped", openai_capi: "skipped", base_only: false },
+    };
     let baseSaveFailed = "";
     let vaultSaved = false;
 
@@ -80,6 +110,7 @@ export async function POST(req: Request) {
       baseSaveFailed = "Lark Base 認証情報が未設定";
       console.warn("[entry-bp] Lark Base 認証情報が未設定のため Base 登録をスキップ（チャット通知のみ）");
     }
+    ledgerOutcome({ base: baseSaveFailed ? { ok: false, via: "none", error: baseSaveFailed.slice(0, 200) } : { ok: true, via: "direct" } });
     if (baseSaveFailed) {
       vaultSaved = await saveToSubmissionVault({
         source: "form_applicant/entry-bp",
@@ -90,6 +121,7 @@ export async function POST(req: Request) {
         notified: false,
         payload: vaultPayload,
       });
+      if (vaultSaved) ledgerOutcome({ vaulted: true });
     }
 
     // --- 2) Lark チャット通知（ベストエフォート）---
@@ -119,6 +151,9 @@ export async function POST(req: Request) {
         textLines.push(`受付ID: ${submissionId}`, `Base 未登録の理由: ${baseSaveFailed}`);
       }
       const payload = { msg_type: "text", content: { text: neutralizeLarkTags(textLines.join("\n")) } };
+      // 台帳に残す通知（実際に送る本文）。送れたかは下で更新する。
+      const ledgerNotification = { text: payload.content.text, sent: false, via: "webhook" };
+      ledger.notification = ledgerNotification;
 
       try {
         const larkRes = await fetch(webhookUrl, {
@@ -133,11 +168,13 @@ export async function POST(req: Request) {
           console.error("[entry-bp] Lark チャット通知失敗:", larkData);
         } else {
           notified = true;
+          ledgerNotification.sent = true;
         }
       } catch (e) {
         console.error("[entry-bp] Lark チャット通知エラー:", e);
       }
     }
+    ledgerOutcome({ notified });
 
     // Base に入っても、通知が出ていなければ誰も気づかない。退避に残して定期の監視で拾う
     // （Base に入らなかったときは上で退避済み）。
@@ -151,20 +188,25 @@ export async function POST(req: Request) {
         notified: false,
         payload: vaultPayload,
       });
+      if (vaultSaved) ledgerOutcome({ vaulted: true });
     }
 
     // ⚠️ Base にも通知にも退避にも残らないのに 200 を返すと、申込は無音で消える。
     // ここだけは申込者に再送してもらうしかない。
     if (baseSaveFailed && !notified && !vaultSaved) {
       console.error("[entry-bp] 申込がどこにも残らなかった", { submissionId });
-      return NextResponse.json(
+      return respond(NextResponse.json(
         { error: "送信に失敗しました。時間をおいて再度お試しください。" },
         { status: 502 }
-      );
+      ));
     }
 
-    return NextResponse.json({ ok: true });
-  } catch {
+    return respond(NextResponse.json({ ok: true }));
+  } catch (error) {
+    // 台帳: 受け入れ後の想定外の例外（受け入れ前なら ledger は null で何もしない）
+    if (ledger) ledger.outcome = { ...ledger.outcome, http_status: 400, error: error instanceof Error ? error.name : "unknown" };
     return NextResponse.json({ error: "不正なリクエストです。" }, { status: 400 });
+  } finally {
+    if (ledger) recordSubmissionAfterResponse(ledger);
   }
 }

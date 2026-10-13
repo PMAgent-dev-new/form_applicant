@@ -2,6 +2,8 @@ import { NextRequest } from 'next/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const afterTasks = vi.hoisted(() => ({ queue: [] as (() => unknown)[] }));
 vi.mock('next/server', async (importActual) => ({ ...await importActual<typeof import('next/server')>(), after: (fn: () => unknown) => afterTasks.queue.push(fn) }));
+// 受付台帳は route.ledger.test.ts で確かめる。ここでは after のキューや fetch の数に影響させない。
+vi.mock('@/lib/submissionLedger', () => ({ recordSubmissionAfterResponse: vi.fn() }));
 
 /**
  * 送信先ホストの許可リストガード。
