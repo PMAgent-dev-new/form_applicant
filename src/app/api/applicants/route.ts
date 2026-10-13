@@ -14,7 +14,7 @@ import {
   resolveApplicationSourceMasterName,
   resolveJobCategoryMasterName,
 } from '@/lib/lark-masters';
-import { enrichApplication, applicationDetailsWithRemarks, applicationNotificationText } from '@/lib/application-enrichment';
+import { enrichApplication, applicationNotificationLines, applicationNotificationText } from '@/lib/application-enrichment';
 import { resolveApplicationCatalogCreative } from '@/lib/larkBase';
 import { sendMetaCapiLead } from '@/lib/meta/capi';
 import { sendOpenAiConversion } from '@/lib/openai/capi';
@@ -75,7 +75,6 @@ export type BaseWriteContext = {
   adId: string;
   adCreativeId: string;
   adImageUrl: string;
-  applicationDetails?: string[];
   creativeText?: string;
   form: ApplicantFormData;
   jobTimingLabel: string;
@@ -137,7 +136,6 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
       ctx.isMechanicNewgrad && ctx.mechanicQualificationsLabel
         ? `${ctx.qualificationFieldLabel}: ${ctx.mechanicQualificationsLabel}`
         : '',
-      ...(ctx.applicationDetails || []),
     ].filter(Boolean).join('\n') || undefined;
 
     // 希望年収（経験者フォームのみの設問）は「履歴書（添付なし）」欄（テキスト）へ保存する。
@@ -199,7 +197,6 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
   const memo = [
     ctx.jobTimingLabel ? `転職時期: ${ctx.jobTimingLabel}` : '',
     ...buildCatalogMemoLines(ctx),
-    ...(ctx.applicationDetails || []),
   ].filter(Boolean).join('\n') || undefined;
 
   // 応募職種マスタ側のレコード名。タクシーLPは1本で「タクシー」と「ハイヤー転向」の両方を受けるため、
@@ -663,7 +660,7 @@ export async function POST(request: NextRequest) {
       at: submissionData.attributionLastTouchAt, landing: referer,
     }, Date.now(), resolveApplicationCatalogCreative);
     const { adId, creativeId: adCreativeId, imageUrl: adImageUrl } = enrichment;
-    const applicationDetails = applicationDetailsWithRemarks(enrichment, submissionData);
+    const notificationLines = applicationNotificationLines(enrichment, submissionData);
 
     // Base 保存用コンテキスト（直書き／Webhook 両方で共有）
     const baseWriteCtx: BaseWriteContext = {
@@ -679,7 +676,6 @@ export async function POST(request: NextRequest) {
       adId,
       adCreativeId,
       adImageUrl,
-      applicationDetails,
       creativeText: enrichment.creativeText,
       form: formData,
       jobTimingLabel: baseJobTimingLabel,
@@ -746,7 +742,6 @@ export async function POST(request: NextRequest) {
       catalog_attribution_status: catalog.status || '',
     } as Record<string, unknown>;
 
-    basePayload.application_context = applicationDetails.join('\n');
     basePayload.creative_text = enrichment.creativeText;
     let baseSave: BaseSaveResult;
     /** Base に入らなかった応募を Supabase の退避先に残せたか */
@@ -886,8 +881,7 @@ export async function POST(request: NextRequest) {
 ${title}
 -------------------------
 流入元: ${utmDisplay}
-${applicationNotificationText(applicationDetails)}
-${catalogDisplay ? `${catalogDisplay}\n` : ''}生年月日: ${formData.birthDate || '未入力'}
+${notificationLines.length ? `${applicationNotificationText(notificationLines)}\n` : ''}${catalogDisplay ? `${catalogDisplay}\n` : ''}生年月日: ${formData.birthDate || '未入力'}
 年齢: ${ageDisplay}
 氏名: ${formData.fullName || '未入力'} (${formData.fullNameKana || '未入力'})
 郵便番号: ${formData.postalCode || '未入力'}

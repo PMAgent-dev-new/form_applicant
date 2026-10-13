@@ -39,12 +39,19 @@ function mechanicContext(): BaseWriteContext {
 }
 
 describe('resolveDirectBaseWrite', () => {
-  it('経路・CR台帳参照・本文・備考を既存欄へ保存し、新しい添付欄を要求しない', () => {
-    const target = resolveDirectBaseWrite({ ...mechanicContext(), applicationDetails: ['集客元: fb / cpc', '応募時備考: 日産→タクシー'], creativeText: 'CR台帳リンク: https://example.com/cr\n本文: 年休150日' });
-    expect(target?.fields.対応履歴メモ).toContain('応募時備考: 日産→タクシー');
-    expect(target?.fields.クリエイティブ).toContain('CR台帳リンク:');
-    expect(target?.fields).not.toHaveProperty('CR素材');
-    expect(target?.fields).not.toHaveProperty('CR素材状態');
+  it('CR台帳参照・本文はクリエイティブ欄にだけ保存し、対応履歴メモには書かず、新しい添付欄を要求しない', () => {
+    const creativeText = 'CR台帳リンク: https://example.com/cr\n本文: 年休150日';
+    for (const ctx of [mechanicContext(), { ...mechanicContext(), isMechanic: false, isTruck: true, submissionId: 'submission-1' }]) {
+      const target = resolveDirectBaseWrite({ ...ctx, creativeText });
+      expect(target?.fields.クリエイティブ).toBe(creativeText);
+      expect(String(target?.fields.対応履歴メモ ?? '')).not.toContain('CR台帳');
+      expect(String(target?.fields.対応履歴メモ ?? '')).not.toContain('本文');
+      expect(target?.fields).not.toHaveProperty('CR素材');
+      expect(target?.fields).not.toHaveProperty('CR素材状態');
+    }
+    // 監視が照合に使う受付IDの印は残す
+    const ridejob = resolveDirectBaseWrite({ ...mechanicContext(), isMechanic: false, isTruck: true, submissionId: 'submission-1', creativeText });
+    expect(ridejob?.fields.対応履歴メモ).toContain('[submission_id:submission-1]');
   });
   it('担当者が追記したメモを保持して通知済み印を追加する', () => {
     expect(appendLarkNotificationMarker('[submission_id:submission-1]\n電話済み', 'submission-1'))
