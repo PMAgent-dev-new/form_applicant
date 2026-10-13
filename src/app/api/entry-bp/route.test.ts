@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// 受付台帳は route.ledger.test.ts で確かめる。ここでは fetch の数や宛先に影響させない。
+vi.mock('@/lib/submissionLedger', () => ({ recordSubmissionAfterResponse: vi.fn() }));
+
 // 2026-09-24: このルートは Base 未設定かつ Webhook 未設定のとき、何も残さずに
 // `{ ok: true }` を返していた。申込が無音で消える形（2026-09-17〜24 の障害と同じ型）。
 // Base 登録失敗時も通知の手前で 502 を返しており、そこでも申込は残らなかった。

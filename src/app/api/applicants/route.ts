@@ -37,6 +37,8 @@ import { markSubmissionVaultNotified, saveToSubmissionVault } from '@/lib/submis
 import { neutralizeLarkTags } from '@/lib/lark-text';
 import { isLarkWebhookAccepted, type LarkWebhookResult } from '@/lib/larkWebhookResult';
 import { createSubmissionObservability } from '@/lib/submission-observability';
+import { normalizeApplicationContext } from '@/lib/application-context';
+import { recordSubmissionAfterResponse, type SubmissionRecord } from '@/lib/submissionLedger';
 
 // 外部送信ライブラリの個別タイムアウトに加え、保存→通知→後続処理の実行枠を明示する。
 // 全段が上限まで遅延した場合の完了保証ではない。実測時間はサマリで監視する。
@@ -487,6 +489,17 @@ function calculateAge(birthDate?: string): string | null {
 
 export async function POST(request: NextRequest) {
   const observation = createSubmissionObservability('applicants');
+  // 受付台帳。受け入れた時点で作り、応答を返したあとに finally で1回だけ記録する。
+  let ledger: SubmissionRecord | null = null;
+  // 再送で同じ受付IDが来る戻り口（この試行では何も進めていない）は記録しない。
+  let recordLedger = true;
+  const ledgerOutcome = (patch: Record<string, unknown>) => {
+    if (ledger) ledger.outcome = { ...ledger.outcome, ...patch };
+  };
+  const respond = <T extends Response>(res: T): T => {
+    if (ledger) ledger.outcome = { ...ledger.outcome, http_status: res.status };
+    return res;
+  };
   try {
     const submissionData = (await request.json()) as ApplicantSubmission;
     const { utmParams, formOrigin, ...formData } = submissionData;
@@ -494,6 +507,66 @@ export async function POST(request: NextRequest) {
     if (!submissionId) {
       return NextResponse.json({ message: 'submissionId is required' }, { status: 400 });
     }
+    // 受け入れ（検証を通過）。以降の戻り口は respond() で http_status を残し、finally で記録する。
+    ledger = {
+      source: 'form_applicant/applicants',
+      kind: 'application',
+      submissionId,
+      applicant: {
+        birth_date: formData.birthDate,
+        full_name: formData.fullName,
+        full_name_kana: formData.fullNameKana,
+        postal_code: formData.postalCode,
+        prefecture_id: formData.prefectureId,
+        prefecture_name: formData.prefectureName,
+        municipality_id: formData.municipalityId,
+        municipality_name: formData.municipalityName,
+        town_name: formData.townName,
+        phone_number: formData.phoneNumber,
+        email: formData.email,
+        job_intent: formData.jobIntent,
+        job_timing: formData.jobTiming,
+        mechanic_qualification: formData.mechanicQualification,
+        desired_income: formData.desiredIncome,
+        truck_licenses: formData.truckLicenses,
+        applied_job_id: submissionData.appliedJobId,
+        form_origin: formOrigin,
+      },
+      context: {
+        application_context: normalizeApplicationContext(submissionData.applicationContext),
+        utm: {
+          utm_source: utmParams?.utm_source,
+          utm_medium: utmParams?.utm_medium,
+          utm_campaign: utmParams?.utm_campaign,
+          utm_term: utmParams?.utm_term,
+          utm_creative: utmParams?.utm_creative,
+          utm_content: utmParams?.utm_content,
+          utm_id: utmParams?.utm_id,
+        },
+        oppref: submissionData.oppref,
+        catalog: {
+          job_id: submissionData.catalogJobId,
+          clicked_at: submissionData.catalogClickedAt,
+          landing_path: submissionData.catalogLandingPath,
+          source: submissionData.catalogSource,
+          medium: submissionData.catalogMedium,
+          evidence: submissionData.catalogEvidence,
+        },
+        fbclid: submissionData.fbclid,
+        attribution_last_touch_at: submissionData.attributionLastTouchAt,
+        experiment: submissionData.experiment,
+        // IP アドレスと Cookie の値は台帳に入れない（使い道が無く、漏れたときの害だけが増える）。
+        request: {
+          referer: request.headers.get('referer') || '',
+          user_agent: request.headers.get('user-agent') || '',
+          host: request.headers.get('x-forwarded-host') || request.headers.get('host') || '',
+        },
+        environment: process.env.NODE_ENV,
+      },
+      ad: {},
+      notification: {},
+      outcome: { notified: false, vaulted: false, email: 'skipped', sms: 'skipped', meta_capi: 'skipped', openai_capi: 'skipped' },
+    };
     const catalog = assessCatalogTouch({
       catalogJobId: submissionData.catalogJobId,
       catalogClickedAt: submissionData.catalogClickedAt,
@@ -516,6 +589,8 @@ export async function POST(request: NextRequest) {
       } catch (error) {
         // 一時障害をinvalidとして永久保存せず、Base作成前に再送可能な失敗にする。
         console.warn('カタログ求人名の取得に失敗:', describeError(error));
+        // Base 作成前の失敗。この試行では何も進めていないので記録しない。
+        recordLedger = false;
         return NextResponse.json({ message: 'Catalog job source is temporarily unavailable' }, { status: 503 });
       }
     }
@@ -523,6 +598,7 @@ export async function POST(request: NextRequest) {
     // Determine env and feature flags
     const isProduction = process.env.NODE_ENV === 'production';
     const sendBaseOnly = process.env.LARK_SEND_BASE_ONLY === 'true';
+    ledgerOutcome({ base_only: sendBaseOnly });
 
     // Determine form origin type
     const referer = request.headers.get('referer') || '';
@@ -586,6 +662,7 @@ export async function POST(request: NextRequest) {
     // 誰も気づけない（2026-09-17〜24 の障害と同じ型）。
     // 退避に残せたなら応募は記録されているので、応募者には再送させない（再送は重複を増やすだけ）。
     const vaultProfile = isMechanic ? 'mechanic' : isCoupang ? 'liftjob' : 'ridejob';
+    ledger.profile = vaultProfile;
     const bailWithVault = async (reason: string) => {
       console.error(reason);
       const saved = await saveToSubmissionVault({
@@ -597,9 +674,11 @@ export async function POST(request: NextRequest) {
         notified: false,
         payload: submissionData as unknown as Record<string, unknown>,
       });
+      // 台帳: Base は試していない（保存先が無い）
+      ledgerOutcome({ base: { ok: false, via: 'none', error: 'not_configured' }, vaulted: saved });
       return saved
-        ? NextResponse.json({ message: 'Application submitted successfully!' })
-        : NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
+        ? respond(NextResponse.json({ message: 'Application submitted successfully!' }))
+        : respond(NextResponse.json({ message: 'Internal Server Error' }, { status: 500 }));
     };
 
     // 通知先が無いことと、応募を保存できないことは別。
@@ -620,7 +699,7 @@ export async function POST(request: NextRequest) {
     if (missingTargetReason) {
       if (canPersistWithoutNotification) {
         console.error(`${missingTargetReason} / Base への保存は続行する`);
-        await saveToSubmissionVault({
+        const missingTargetVaulted = await saveToSubmissionVault({
           source: 'form_applicant/applicants',
           kind: 'application',
           submissionId,
@@ -629,8 +708,10 @@ export async function POST(request: NextRequest) {
           notified: false,
           payload: submissionData as unknown as Record<string, unknown>,
         });
+        if (missingTargetVaulted) ledgerOutcome({ vaulted: true });
       } else {
-        return bailWithVault(missingTargetReason);
+        // await する: しないと finally の記録が、退避の結果と返した status より先に走る。
+        return await bailWithVault(missingTargetReason);
       }
     }
 
@@ -661,6 +742,22 @@ export async function POST(request: NextRequest) {
     }, Date.now(), resolveApplicationCatalogCreative);
     const { adId, creativeId: adCreativeId, imageUrl: adImageUrl } = enrichment;
     const notificationLines = applicationNotificationLines(enrichment, submissionData);
+    ledger.ad = {
+      enrichment: {
+        creative_text: enrichment.creativeText,
+        summary_lines: enrichment.summaryLines,
+        reference_status: enrichment.referenceStatus,
+        dynamic: enrichment.dynamic,
+      },
+      ad_id: adId,
+      ad_creative_id: adCreativeId,
+      ad_image_url: adImageUrl,
+      catalog: {
+        status: catalog.status,
+        job_id: catalog.jobId,
+        clicked_at: catalog.clickedAtMillis ? new Date(catalog.clickedAtMillis).toISOString() : undefined,
+      },
+    };
 
     // Base 保存用コンテキスト（直書き／Webhook 両方で共有）
     const baseWriteCtx: BaseWriteContext = {
@@ -769,7 +866,16 @@ export async function POST(request: NextRequest) {
         notified: false,
         payload: basePayload,
       });
+      if (vaultSaved) ledgerOutcome({ vaulted: true });
     }
+    ledgerOutcome({
+      base: {
+        ok: !baseSave.baseSaveFailed,
+        via: baseSave.savedVia ?? 'none',
+        record_id: baseSave.recordId,
+        error: baseSave.baseSaveFailed?.slice(0, 200),
+      },
+    });
 
     // 不変条件: 直書き・Base Webhook・Lark通知のいずれか1つに応募内容が残ったときだけ 200 を返す。
     // どこにも残せないなら 200 にしてはいけない。応募者が「送信できた」と思って離脱し、
@@ -779,24 +885,28 @@ export async function POST(request: NextRequest) {
         '応募をどこにも記録できない（Base保存が失敗し、通知先も退避先も無い）:',
         `submission=${submissionId} ${baseSave.baseSaveFailed}`,
       );
-      return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
+      return respond(NextResponse.json({ message: 'Internal Server Error' }, { status: 500 }));
     }
 
     // Base 保存が全滅したときは LARK_SEND_BASE_ONLY を無視して通知へ進む。
     // base-only のまま 200 を返すと、記録も通知も無いまま応募が消える。
     let larkNotified = false;
     if (sendBaseOnly && !baseSave.baseSaveFailed) {
-      return NextResponse.json({
+      return respond(NextResponse.json({
         message: 'Application submitted successfully!',
         recordId: baseSave.recordId,
-      }, { status: 200 });
+      }, { status: 200 }));
     }
     if (baseSave.notificationAlreadySent) {
       console.log('Duplicate submission already notified; skipping side effects', { submissionId });
+      // 重複の再送。先着の試行が記録しているので記録しない（この試行の中身は通知なしに見えて紛らわしい）。
+      recordLedger = false;
       return NextResponse.json({ message: 'Application submitted successfully!', duplicate: true }, { status: 200 });
     }
     if (baseSave.notificationInProgress) {
       console.warn('Duplicate submission is still being processed', { submissionId });
+      // 別のリクエストが処理中。この試行では何もしていないので記録しない。
+      recordLedger = false;
       return NextResponse.json(
         { message: 'Application is still being processed; retry shortly' },
         { status: 503 },
@@ -807,6 +917,8 @@ export async function POST(request: NextRequest) {
         submissionId,
         recordId: baseSave.recordId,
       });
+      // この試行では何も進めていないので記録しない。
+      recordLedger = false;
       return NextResponse.json(
         { message: 'Notification recovery requires manual confirmation' },
         { status: 503 },
@@ -895,6 +1007,9 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
           msg_type: 'text',
           content: { text: neutralizeLarkTags(messageContent) },
         } as const;
+        // 台帳に残す通知（実際に送る本文）。送れたか・経路は下で更新する。
+        const ledgerNotification = { text: larkPayload.content.text, sent: false, via: larkChatId ? 'im' : 'webhook' };
+        ledger.notification = ledgerNotification;
 
         let notificationSent = false;
         if (larkChatId) {
@@ -935,6 +1050,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
           }
         }
         if (!notificationSent && larkWebhookUrl) {
+          ledgerNotification.via = 'webhook';
           try {
             const resp = await fetch(larkWebhookUrl, {
               method: 'POST',
@@ -963,6 +1079,8 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
             console.error('Lark webhook notification threw:', describeError(error));
           }
         }
+        ledgerNotification.sent = notificationSent;
+        ledgerOutcome({ notified: larkNotified });
         if (!notificationSent) {
           observation.markFailed('lark-notification');
           // 通知が1つも出せなかった。応募は Base に残っているので 200 で返すが、
@@ -977,6 +1095,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
             notified: false,
             payload: basePayload,
           }) || vaultSaved;
+          if (vaultSaved) ledgerOutcome({ vaulted: true });
         }
         // ⚠️ 重複として既存レコードを指しているときは書き戻さない。
         // putRecord は PUT で列を**置換**するため、他人／別応募の対応履歴メモ
@@ -1008,7 +1127,8 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
           if (!notificationStatePersisted) {
             observation.markFailed('lark-notification-state');
             console.error('Lark通知送信済みの書き戻しが3回失敗:', describeError(lastPersistError));
-            return NextResponse.json({ message: 'Internal Server Error' }, { status: 503 });
+            // この試行では Base 保存・通知まで進んでいるので記録する（recordLedger は変えない）。
+            return respond(NextResponse.json({ message: 'Internal Server Error' }, { status: 503 }));
           }
         }
       }
@@ -1040,6 +1160,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
               formOrigin: origin,
             });
             if (result.sent) {
+              ledgerOutcome({ email: 'sent' });
               console.log('Confirmation email sent:', {
                 submissionId,
                 messageId: result.messageId,
@@ -1081,6 +1202,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
               media,
             });
             if (r.sent) {
+              ledgerOutcome({ sms: 'sent' });
               console.log('Application SMS sent:', { order: r.deliveryOrderId, ref: r.ref, channel, media });
             } else {
               if (r.reason === 'error' || /^http_[45]/.test(r.reason || '') || r.error) observation.markFailed('application-sms');
@@ -1111,6 +1233,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
             clientUserAgent: capiUserAgent || undefined,
             contentIds: submissionData.appliedJobId ? [submissionData.appliedJobId] : undefined,
             });
+            if (result.ok) ledgerOutcome({ meta_capi: 'sent' });
             if (!result.ok && !result.skipped) observation.markFailed('meta-capi');
           })
         );
@@ -1131,6 +1254,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
             clientIpAddress: capiClientIp || undefined,
             clientUserAgent: capiUserAgent || undefined,
             });
+            if (result.ok) ledgerOutcome({ openai_capi: 'sent' });
             if (!result.ok && !result.skipped) observation.markFailed('openai-capi');
           })
         );
@@ -1138,6 +1262,11 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
 
       // 応募者メール/SMS/CAPIは非致命。BaseとLark通知は上で確定済み。
       await Promise.allSettled(tasks);
+      // 台帳: 失敗した後続処理は（例外も含め）observation が持つ。
+      if (observation.failed.includes('confirmation-email')) ledgerOutcome({ email: 'failed' });
+      if (observation.failed.includes('application-sms')) ledgerOutcome({ sms: 'failed' });
+      if (observation.failed.includes('meta-capi')) ledgerOutcome({ meta_capi: 'failed' });
+      if (observation.failed.includes('openai-capi')) ledgerOutcome({ openai_capi: 'failed' });
 
       // Base に入らず退避した応募でも、通知が出せていれば人は気づける。
       // 退避テーブルの notified を立てて、監視が「誰も気づいていない行」だけを拾えるようにする。
@@ -1152,19 +1281,22 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
         '応募をどこにも記録できなかった（Base保存・Lark通知・退避のすべてが失敗）:',
         `submission=${submissionId} ${baseSave.baseSaveFailed}`,
       );
-      return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
+      return respond(NextResponse.json({ message: 'Internal Server Error' }, { status: 500 }));
     }
 
     // クライアントには成功したことを返す
     // (Larkへの通知成否に関わらず、データを受け付けた時点で成功とすることも多い)
-    return NextResponse.json({ message: 'Application submitted successfully!' }, { status: 200 });
+    return respond(NextResponse.json({ message: 'Application submitted successfully!' }, { status: 200 }));
 
   } catch (error) {
     observation.markFailed('request');
     console.error('Error processing application in API route:', describeError(error));
+    // 台帳: 受け入れ後の想定外の例外（受け入れ前なら ledger は null で何もしない）
+    if (ledger) ledger.outcome = { ...ledger.outcome, http_status: 500, error: error instanceof Error ? error.name : 'unknown' };
     // 予期せぬエラー
     return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
   } finally {
     observation.settled();
+    if (ledger && recordLedger) recordSubmissionAfterResponse(ledger);
   }
-} 
+}

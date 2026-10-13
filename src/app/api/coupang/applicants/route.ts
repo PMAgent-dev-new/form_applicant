@@ -24,6 +24,7 @@ import {
   type LarkFieldValue,
 } from '@/lib/larkBase';
 import { neutralizeLarkTags } from '@/lib/lark-text';
+import { recordSubmissionAfterResponse, type SubmissionRecord } from '@/lib/submissionLedger';
 
 /**
  * referer が取れないときに CAPI へ渡す既定の event_source_url。
@@ -409,6 +410,17 @@ export function buildLiftJobDirectBaseFields(
 
 export async function POST(request: NextRequest) {
   const observation = createSubmissionObservability('coupang');
+  // 受付台帳。受け入れた時点で作り、応答を返したあとに finally で1回だけ記録する。
+  let ledger: SubmissionRecord | null = null;
+  // 再送で同じ受付IDが来る戻り口（この試行では何も進めていない）は記録しない。
+  let recordLedger = true;
+  const ledgerOutcome = (patch: Record<string, unknown>) => {
+    if (ledger) ledger.outcome = { ...ledger.outcome, ...patch };
+  };
+  const respond = <T extends Response>(res: T): T => {
+    if (ledger) ledger.outcome = { ...ledger.outcome, http_status: res.status };
+    return res;
+  };
   try {
     const submissionData = (await request.json()) as CoupangSubmission;
     const {
@@ -445,9 +457,47 @@ export async function POST(request: NextRequest) {
     const landingPath = firstText(submittedLandingPath, pathnameFromUrl(pageUrl), BASE_PATH ? '/entry/coupang' : '/coupang');
     const initialReferrer = firstText(submittedInitialReferrer);
 
+    // 受け入れ（検証を通過）。以降の戻り口は respond() で http_status を残し、finally で記録する。
+    ledger = {
+      source: 'form_applicant/coupang',
+      kind: 'application',
+      submissionId,
+      profile: 'liftjob',
+      applicant: {
+        full_name: formData.fullName,
+        full_name_kana: formData.fullNameKana,
+        phone_number: formData.phoneNumber,
+        email: formData.email,
+        birth_date: formatLiftJobBirthDate(formData.birthDate),
+        age: formData.age,
+        job_position: formData.jobPosition,
+        desired_location: formData.desiredLocation,
+      },
+      context: {
+        utm: utmParams,
+        oppref,
+        page_url: pageUrl,
+        landing_path: landingPath,
+        initial_referrer: initialReferrer,
+        attribution_source: attributionSource,
+        test_mode: isTestMode,
+        // IP アドレスと Cookie の値は台帳に入れない（使い道が無く、漏れたときの害だけが増える）。
+        request: {
+          referer: requestReferer,
+          user_agent: request.headers.get('user-agent') || '',
+          host: request.headers.get('x-forwarded-host') || request.headers.get('host') || '',
+        },
+        environment: process.env.NODE_ENV,
+      },
+      ad: {},
+      notification: {},
+      outcome: { notified: false, vaulted: false, email: 'skipped', sms: 'skipped', meta_capi: 'skipped', openai_capi: 'skipped' },
+    };
+
     // 環境判定
     const isProduction = process.env.NODE_ENV === 'production';
     const sendBaseOnly = process.env.LARK_SEND_BASE_ONLY === 'true';
+    ledgerOutcome({ base_only: sendBaseOnly });
 
     // Webhook URL取得（既存のCoupang用URL使用）
     const larkWebhookUrl = isProduction
@@ -486,12 +536,15 @@ export async function POST(request: NextRequest) {
         notified: false,
         payload: submissionData as unknown as Record<string, unknown>,
       });
+      // 台帳: Base は試していない（保存先が無い）
+      ledgerOutcome({ base: { ok: false, via: 'none', error: 'not_configured' }, vaulted: saved });
       return saved
-        ? NextResponse.json({ message: 'Application submitted successfully!' })
-        : NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
+        ? respond(NextResponse.json({ message: 'Application submitted successfully!' }))
+        : respond(NextResponse.json({ message: 'Internal Server Error' }, { status: 500 }));
     };
     if (!directBaseConfigured && (!baseWebhookUrl || !isAllowedLarkWebhookUrl(baseWebhookUrl, 'base'))) {
-      return bailWithVault('Lark Base Webhook URL is missing or invalid for Coupang.');
+      // await する: しないと finally の記録が、退避の結果と返した status より先に走る。
+      return await bailWithVault('Lark Base Webhook URL is missing or invalid for Coupang.');
     }
     // 通知先が無いことと、応募を保存できないことは別。Base が生きているなら
     // 通知の設定漏れだけで Base への保存まで捨てない
@@ -510,6 +563,7 @@ export async function POST(request: NextRequest) {
         notified: false,
         payload: submissionData as unknown as Record<string, unknown>,
       });
+      if (vaultSaved) ledgerOutcome({ vaulted: true });
     }
     // base-only モードでは上の検証を通らないが、Base 保存が全滅したときはこの URL へ
     // フォールバック通知を出す。allowlist を通らない URL へ応募者情報を送らないよう、
@@ -562,6 +616,7 @@ export async function POST(request: NextRequest) {
       }
       console.log('Resolved Meta ad image (coupang):', { adId, adImageUrl: adImageUrl ? '(取得済)' : '(なし)', adCreativeId });
     }
+    ledger.ad = { ad_id: adId, ad_creative_id: adCreativeId, ad_image_url: adImageUrl };
 
     const userAgent = request.headers.get('user-agent') || '';
     const clientIp = (request.headers.get('x-forwarded-for') || '').split(',')[0]?.trim() || '';
@@ -629,6 +684,7 @@ export async function POST(request: NextRequest) {
           recordId: saved.recordId,
           created: saved.created,
         });
+        ledgerOutcome({ base: { ok: true, via: 'direct', record_id: baseRecordId } });
       } else if (baseWebhookUrl) {
         const resp = await fetch(baseWebhookUrl, {
           method: 'POST',
@@ -643,6 +699,7 @@ export async function POST(request: NextRequest) {
           );
         }
         console.log('[coupang] Lark Base webhook triggered successfully');
+        ledgerOutcome({ base: { ok: true, via: 'webhook' } });
       }
     } catch (error) {
       // ⚠️ 500 を返さない。この行より後ろに Lark通知・確認メール・SMS・CAPI が全部ある。
@@ -651,6 +708,7 @@ export async function POST(request: NextRequest) {
       baseSaveFailed = describeError(error);
       observation.markFailed('base-save');
       console.error('[coupang] Lark Base save failed; 通知は継続する:', `submission=${submissionId} ${baseSaveFailed}`);
+      ledgerOutcome({ base: { ok: false, via: 'none', error: baseSaveFailed.slice(0, 200) } });
       // Lark に入らなかった応募を構造化して退避する（応募の成否には影響させない）。
       vaultSaved = await saveToSubmissionVault({
         source: 'form_applicant/coupang',
@@ -661,6 +719,7 @@ export async function POST(request: NextRequest) {
         notified: false,
         payload: basePayload,
       });
+      if (vaultSaved) ledgerOutcome({ vaulted: true });
     } finally {
       // Includes the existing vault fallback, even when critical storage throws.
       finishBaseSave();
@@ -668,10 +727,10 @@ export async function POST(request: NextRequest) {
 
     if (sendBaseOnly && !baseSaveFailed) {
       observation.setMode('base-only');
-      return NextResponse.json(
+      return respond(NextResponse.json(
         { message: 'Application submitted successfully!', ...(isTestMode ? { baseRecordId } : {}) },
         { status: 200 },
-      );
+      ));
     }
     observation.setMode('full');
 
@@ -682,11 +741,13 @@ export async function POST(request: NextRequest) {
         '[coupang] 応募をどこにも記録できない（Base保存が失敗し、通知先も退避先も無い）:',
         `submission=${submissionId} ${baseSaveFailed}`,
       );
-      return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
+      return respond(NextResponse.json({ message: 'Internal Server Error' }, { status: 500 }));
     }
 
     if (notificationInProgress) {
       console.warn('[coupang] Duplicate submission is still being processed', { submissionId });
+      // 別のリクエストが処理中。この試行では何もしていないので記録しない。
+      recordLedger = false;
       return NextResponse.json(
         { message: 'Application is still being processed; retry shortly' },
         { status: 503 },
@@ -718,6 +779,9 @@ export async function POST(request: NextRequest) {
       const notificationText = baseSaveFailed
         ? `⚠️Base未登録（${vaultSaved ? '退避済み・要取り込み' : '退避も失敗・この通知が唯一の記録'}）\n${messageContent}`
         : messageContent;
+      // 台帳に残す通知（実際に送る本文）。送れたかは下で更新する。
+      const ledgerNotification = { text: neutralizeLarkTags(notificationText), sent: false, via: 'webhook' };
+      ledger.notification = ledgerNotification;
       try {
         const resp = await fetch(notifyWebhookUrl, {
           method: 'POST',
@@ -747,6 +811,7 @@ export async function POST(request: NextRequest) {
           }
         }
         notified = true;
+        ledgerNotification.sent = true;
       } catch (error) {
         // ⚠️ 500 を返さない。応募者に「エラーが発生しました」が出て再送し、
         // 冪等性の無い Webhook 経路で重複が増える（RIDE JOB 側で実際に起きた）。
@@ -762,10 +827,12 @@ export async function POST(request: NextRequest) {
           notified: false,
           payload: basePayload,
         }) || vaultSaved;
+        if (vaultSaved) ledgerOutcome({ vaulted: true });
       }
     } else if (notificationAlreadySent) {
       console.log('[coupang] Lark notification already sent; skipping duplicate', { submissionId });
     }
+    ledgerOutcome({ notified });
 
       // 自動返信メール — 非致命。クーパン専用の文面(COUPANG_CONTENT)を使う。
       // 共通ルートの実行時リスト SUPPORTED_ORIGINS は経由しない（専用ルートからの直接呼び出し）。
@@ -788,6 +855,7 @@ export async function POST(request: NextRequest) {
               formOrigin: 'coupang',
             });
             if (result.sent) {
+              ledgerOutcome({ email: 'sent' });
               console.log('Confirmation email sent:', { messageId: result.messageId, formOrigin: 'coupang' });
             } else if (result.reason === 'error') {
               markFailed('confirmation-email');
@@ -818,6 +886,7 @@ export async function POST(request: NextRequest) {
               media,
             });
             if (r.sent) {
+              ledgerOutcome({ sms: 'sent' });
               console.log('Application SMS sent:', { order: r.deliveryOrderId, ref: r.ref, channel: 'coupang', media });
             } else if (r.reason === 'disabled' || r.reason === 'dry_run' || r.reason === 'no_phone') {
               // 意図的にスキップした場合だけ info。それ以外は無言不達になりうるので error。
@@ -853,6 +922,7 @@ export async function POST(request: NextRequest) {
               clientIpAddress: capiClientIp || undefined,
               clientUserAgent: capiUserAgent || undefined,
             });
+            if (result.ok) ledgerOutcome({ meta_capi: 'sent' });
             if (!result.ok && !result.skipped) throw new Error(`status=${result.status ?? 'unknown'}`);
           })
         );
@@ -868,6 +938,7 @@ export async function POST(request: NextRequest) {
               sourceUrl: pageUrl || COUPANG_EVENT_SOURCE_URL,
               validateOnly: isTestMode,
             });
+            if (result.ok) ledgerOutcome({ openai_capi: 'sent' });
             if (!result.ok) {
               throw new Error(`status=${result.status ?? 'unknown'} skipped=${result.skipped ?? 'none'}`);
             }
@@ -876,6 +947,11 @@ export async function POST(request: NextRequest) {
       }
 
       await Promise.allSettled(tasks);
+      // 台帳: 失敗した後続処理は（例外も含め）observation が持つ。
+      if (observation.failed.includes('confirmation-email')) ledgerOutcome({ email: 'failed' });
+      if (observation.failed.includes('application-sms')) ledgerOutcome({ sms: 'failed' });
+      if (observation.failed.includes('meta-capi')) ledgerOutcome({ meta_capi: 'failed' });
+      if (observation.failed.includes('openai-capi')) ledgerOutcome({ openai_capi: 'failed' });
 
     if (vaultSaved && notified) {
       await markSubmissionVaultNotified('form_applicant/coupang', submissionId);
@@ -888,28 +964,31 @@ export async function POST(request: NextRequest) {
         '[coupang] 応募をどこにも記録できなかった（Base保存・Lark通知・退避のすべてが失敗）:',
         `submission=${submissionId} ${baseSaveFailed}`,
       );
-      return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
+      return respond(NextResponse.json({ message: 'Internal Server Error' }, { status: 500 }));
     }
 
       if (isTestMode && oppref && taskFailures.includes('openai-capi')) {
-        return NextResponse.json(
+        return respond(NextResponse.json(
           { message: 'OpenAI validation failed', baseRecordId, failed: taskFailures },
           { status: 502 },
-        );
+        ));
       }
 
-    return NextResponse.json(
+    return respond(NextResponse.json(
       {
         message: 'Application submitted successfully!',
         ...(isTestMode ? { baseRecordId, failed: taskFailures } : {}),
       },
       { status: 200 },
-    );
+    ));
   } catch (error) {
     observation.markFailed('request');
     console.error('Error processing Coupang application:', describeError(error));
+    // 台帳: 受け入れ後の想定外の例外（受け入れ前なら ledger は null で何もしない）
+    if (ledger) ledger.outcome = { ...ledger.outcome, http_status: 500, error: error instanceof Error ? error.name : 'unknown' };
     return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
   } finally {
     observation.settled();
+    if (ledger && recordLedger) recordSubmissionAfterResponse(ledger);
   }
 }

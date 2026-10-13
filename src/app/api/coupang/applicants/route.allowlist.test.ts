@@ -2,6 +2,9 @@ import { NextRequest } from 'next/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CoupangFormData } from '@/app/components/coupang-form/types';
 
+// 受付台帳は route.ledger.test.ts で確かめる。ここでは fetch の数や宛先に影響させない。
+vi.mock('@/lib/submissionLedger', () => ({ recordSubmissionAfterResponse: vi.fn() }));
+
 /**
  * クーパン専用ルートの送信先ホスト許可リストガード。
  *
