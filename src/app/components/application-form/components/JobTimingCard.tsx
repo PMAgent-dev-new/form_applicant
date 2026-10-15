@@ -35,7 +35,7 @@ export default function JobTimingCard({ selectedTiming, errors, onSelect, isActi
     onSelect(value);
   };
 
-  const isNextEncouraged = Boolean(selectedTiming);
+  // 選ぶと自動で次の質問へ進むので、選んだあとの「次へ」を指すヒントは置かない
   const shouldShowInitialHint = !selectedTiming;
 
   return (
@@ -51,20 +51,22 @@ export default function JobTimingCard({ selectedTiming, errors, onSelect, isActi
             <button
               key={option.value}
               type="button"
-              className={`relative w-full rounded-2xl px-5 py-8 text-center transition-transform duration-150 ease-out focus:outline-none focus:ring-4 focus:ring-orange-200 ${
+              className={`relative w-full rounded-2xl px-9 py-8 text-center max-[375px]:px-10 transition-transform duration-150 ease-out focus:outline-none focus:ring-4 focus:ring-orange-200 ${
                 option.className
               } ${isSelected ? 'ring-4 ring-[#ffb48a]' : ''}`}
               onClick={() => handleClick(option.value)}
             >
-              <span className="block text-xl font-bold">{option.label}</span>
+              {/* 左右の px-9 は、右端の ✓ と指（どちらも幅 32px 以内）を文字に重ねないための余白。左右同じにして文字を中央に保つ。
+                  スマホ幅は text-lg にする。幅 375px 未満は text-base・px-10 にして、360px では1行に収め、2行に折り返す 320px でも指と重ならないようにする */}
+              <span className="block text-lg font-bold max-[375px]:text-base sm:text-xl">{option.label}</span>
               {option.description && <span className="mt-1 block text-sm opacity-90">{option.description}</span>}
               {isSelected && (
-                <span className="absolute right-4 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full bg-white/80 text-[#ff702a]">
+                <span className="absolute right-1 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full bg-white/80 text-[#ff702a]">
                   ✓
                 </span>
               )}
               {index === 0 && (
-                <FingerHint isVisible={shouldShowInitialHint} size={40} className="absolute right-2 top-1/2 -translate-y-1/2 sm:-right-10 sm:size-[56px]" />
+                <FingerHint isVisible={shouldShowInitialHint} size={32} className="absolute right-0.5 top-1/2 -translate-y-1/2" />
               )}
             </button>
           );
@@ -72,10 +74,6 @@ export default function JobTimingCard({ selectedTiming, errors, onSelect, isActi
       </div>
 
       {(errorMessage ?? errors.jobTiming) && <p className="mt-4 text-xs text-red-500">{errorMessage ?? errors.jobTiming}</p>}
-
-      <div className="mt-6 flex items-center justify-end">
-        <FingerHint isVisible={isNextEncouraged} size={44} className="sm:size-[60px]" />
-      </div>
     </FormCard>
   );
 }

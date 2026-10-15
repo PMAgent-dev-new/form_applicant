@@ -51,3 +51,25 @@ body::before {
     background-image: var(--app-bg-pc, url('/images/pc-bg.webp'));
   }
 }
+
+/* 指差しのヒント（FingerHint）: 指す向き（左）へ小さく動かす。
+   上下に跳ねると、対象の縦中央からずれて見えるため横に動かす。 */
+@keyframes finger-hint-nudge {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  50% {
+    transform: translateX(-6px);
+  }
+}
+
+.finger-hint-nudge {
+  animation: finger-hint-nudge 1s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .finger-hint-nudge {
+    animation: none;
+  }
+}

@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from 'react';
 import Image from '@/app/components/AppImage';
 
 import FormCard from './FormCard';
-import FingerHint from './FingerHint';
+import FingerHint, { FINGER_HINT_RIGHT_OF_TARGET } from './FingerHint';
 import StepProgressBar from './StepProgressBar';
 import type { FormErrors } from '../types';
 type PrefectureOption = {
@@ -164,12 +164,12 @@ export default function NameCard({ stepImageSrc, postalCode, prefectureId, munic
                 id="postalCode"
                 name="postalCode"
                 placeholder="例: 1234567"
-                className={`flex-1 rounded-lg border p-3 text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent ${errors.postalCode ? 'border-red-500' : 'border-gray-300'}`}
+                className={`flex-1 rounded-lg border p-3 pr-10 text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent ${errors.postalCode ? 'border-red-500' : 'border-gray-300'}`}
                 value={postalCode}
                 onChange={onChange}
                 maxLength={7}
               />
-              <FingerHint isVisible={!isPostalCodeFilled} size={40} className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-6 sm:size-[52px]" />
+              <FingerHint isVisible={!isPostalCodeFilled} size={40} className={FINGER_HINT_RIGHT_OF_TARGET} />
             </div>
             {errors.postalCode && <p className="mt-2 text-xs text-red-500">{errors.postalCode}</p>}
           </>
@@ -197,7 +197,7 @@ export default function NameCard({ stepImageSrc, postalCode, prefectureId, munic
                     </option>
                   ))}
                 </select>
-                <FingerHint isVisible={!isPrefectureSelected} size={40} className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-6 sm:size-[52px]" />
+                <FingerHint isVisible={!isPrefectureSelected} size={40} className={FINGER_HINT_RIGHT_OF_TARGET} />
               </div>
               {errors.prefectureId && <p className="mt-2 text-xs text-red-500">{errors.prefectureId}</p>}
             </div>
@@ -222,7 +222,7 @@ export default function NameCard({ stepImageSrc, postalCode, prefectureId, munic
                     </option>
                   ))}
                 </select>
-                <FingerHint isVisible={!isMunicipalitySelected && Boolean(prefectureId)} size={40} className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-6 sm:size-[52px]" />
+                <FingerHint isVisible={!isMunicipalitySelected && Boolean(prefectureId)} size={40} className={FINGER_HINT_RIGHT_OF_TARGET} />
               </div>
               {errors.municipalityId && <p className="mt-2 text-xs text-red-500">{errors.municipalityId}</p>}
             </div>
@@ -246,7 +246,7 @@ export default function NameCard({ stepImageSrc, postalCode, prefectureId, munic
           <button type="button" className="flex-1 rounded-md bg-[#ff702a] py-2.5 px-5 font-bold text-white" onClick={onNext}>
             次へ
           </button>
-          <FingerHint isVisible={isNextEnabled} size={44} className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-6 sm:size-[56px]" />
+          <FingerHint isVisible={isNextEnabled} size={44} className={FINGER_HINT_RIGHT_OF_TARGET} />
         </div>
       </div>
     </FormCard>

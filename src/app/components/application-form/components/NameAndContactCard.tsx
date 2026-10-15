@@ -3,7 +3,7 @@
 import Image from '@/app/components/AppImage';
 
 import FormCard from './FormCard';
-import FingerHint from './FingerHint';
+import FingerHint, { FINGER_HINT_RIGHT_OF_TARGET } from './FingerHint';
 import type { FormData, FormErrors, JobCountResult } from '../types';
 
 type NameAndContactCardProps = {
@@ -113,7 +113,7 @@ export default function NameAndContactCard({
             name="fullName"
             maxLength={100}
             placeholder="例: 田中 太郎"
-            className={`flex-1 rounded border p-3 text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent ${errors.fullName ? 'border-red-500' : 'border-gray-300'}`}
+            className={`flex-1 rounded border p-3 pr-10 text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent ${errors.fullName ? 'border-red-500' : 'border-gray-300'}`}
             value={formData.fullName}
             onChange={onChange}
             onBlur={onBlur}
@@ -121,7 +121,7 @@ export default function NameAndContactCard({
           <FingerHint
             isVisible={firstIncompleteField === 'fullName'}
             size={40}
-            className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-6 sm:size-[52px]"
+            className={FINGER_HINT_RIGHT_OF_TARGET}
           />
         </div>
         {errors.fullName && <p className="text-red-500 text-xs mt-1">{errors.fullName}</p>}
@@ -135,14 +135,14 @@ export default function NameAndContactCard({
             id="fullNameKana"
             name="fullNameKana"
             placeholder="例: たなか たろう"
-            className={`flex-1 rounded border p-3 text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent ${errors.fullNameKana ? 'border-red-500' : 'border-gray-300'} ${formData.fullNameKana && !errors.fullNameKana ? 'text-gray-900' : ''}`}
+            className={`flex-1 rounded border p-3 pr-10 text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent ${errors.fullNameKana ? 'border-red-500' : 'border-gray-300'} ${formData.fullNameKana && !errors.fullNameKana ? 'text-gray-900' : ''}`}
             value={formData.fullNameKana}
             onChange={onChange}
           />
           <FingerHint
             isVisible={firstIncompleteField === 'fullNameKana'}
             size={40}
-            className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-6 sm:size-[52px]"
+            className={FINGER_HINT_RIGHT_OF_TARGET}
           />
         </div>
         {errors.fullNameKana && <p className="text-red-500 text-xs mt-1">{errors.fullNameKana}</p>}
@@ -158,14 +158,14 @@ export default function NameAndContactCard({
             id="email"
             name="email"
             placeholder="例: example@ridejob.jp"
-            className={`flex-1 rounded border p-2 text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent ${(errors.email || emailError) ? 'border-red-500' : 'border-gray-300'}`}
+            className={`flex-1 rounded border p-2 pr-10 text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent ${(errors.email || emailError) ? 'border-red-500' : 'border-gray-300'}`}
             value={formData.email}
             onChange={onChange}
           />
           <FingerHint
             isVisible={firstIncompleteField === 'email'}
             size={40}
-            className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-6 sm:size-[52px]"
+            className={FINGER_HINT_RIGHT_OF_TARGET}
           />
         </div>
         {(errors.email || emailError) && <p className="text-red-500 text-xs mt-1">{errors.email || emailError}</p>}
@@ -183,7 +183,7 @@ export default function NameAndContactCard({
             id="phoneNumber"
             name="phoneNumber"
             placeholder="例: 09012345678"
-            className={`flex-1 rounded border p-2 text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent ${errors.phoneNumber || phoneError ? 'border-red-500' : 'border-gray-300'}`}
+            className={`flex-1 rounded border p-2 pr-10 text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent ${errors.phoneNumber || phoneError ? 'border-red-500' : 'border-gray-300'}`}
             value={formData.phoneNumber}
             onChange={onChange}
             maxLength={11}
@@ -191,7 +191,7 @@ export default function NameAndContactCard({
           <FingerHint
             isVisible={firstIncompleteField === 'phoneNumber'}
             size={40}
-            className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-6 sm:size-[52px]"
+            className={FINGER_HINT_RIGHT_OF_TARGET}
           />
         </div>
         {(errors.phoneNumber || phoneError) && <p className="text-red-500 text-xs mt-1">{errors.phoneNumber || phoneError}</p>}
@@ -209,7 +209,7 @@ export default function NameAndContactCard({
           >
             <span style={{ whiteSpace: 'nowrap' }}>{isSubmitting ? '送信中...' : submitButtonText}</span>
           </button>
-          <FingerHint isVisible={isSubmitEncouraged} size={44} className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-6 sm:size-[60px]" />
+          <FingerHint isVisible={isSubmitEncouraged} size={44} className={FINGER_HINT_RIGHT_OF_TARGET} />
         </div>
       </div>
     </FormCard>

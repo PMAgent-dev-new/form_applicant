@@ -3,7 +3,7 @@
 import Image from '@/app/components/AppImage';
 
 import FormCard from './FormCard';
-import FingerHint from './FingerHint';
+import FingerHint, { FINGER_HINT_RIGHT_OF_TARGET } from './FingerHint';
 import StepProgressBar from './StepProgressBar';
 import type { FormData, FormErrors, JobCountResult } from '../types';
 
@@ -128,7 +128,7 @@ export default function PhoneNumberCard({
             id="phoneNumber"
             name="phoneNumber"
             placeholder="例: 09012345678"
-            className={`flex-1 rounded border p-2 text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent ${errors.phoneNumber || phoneError ? 'border-red-500' : 'border-gray-300'}`}
+            className={`flex-1 rounded border p-2 pr-10 text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent ${errors.phoneNumber || phoneError ? 'border-red-500' : 'border-gray-300'}`}
             value={phoneNumber}
             onChange={onChange}
             maxLength={11}
@@ -136,7 +136,7 @@ export default function PhoneNumberCard({
           <FingerHint
             isVisible={firstIncompleteField === 'phoneNumber'}
             size={40}
-            className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-6 sm:size-[52px]"
+            className={FINGER_HINT_RIGHT_OF_TARGET}
           />
         </div>
         {(errors.phoneNumber || phoneError) && <p className="text-red-500 text-xs mt-1">{errors.phoneNumber || phoneError}</p>}
@@ -154,14 +154,14 @@ export default function PhoneNumberCard({
               id="email"
               name="email"
               placeholder="例: example@ridejob.jp"
-              className={`flex-1 rounded border p-2 text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent ${(errors.email || emailError) ? 'border-red-500' : 'border-gray-300'}`}
+              className={`flex-1 rounded border p-2 pr-10 text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent ${(errors.email || emailError) ? 'border-red-500' : 'border-gray-300'}`}
               value={formData.email}
               onChange={onChange}
             />
             <FingerHint
               isVisible={firstIncompleteField === 'email'}
               size={40}
-              className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-6 sm:size-[52px]"
+              className={FINGER_HINT_RIGHT_OF_TARGET}
             />
           </div>
           {(errors.email || emailError) && <p className="text-red-500 text-xs mt-1">{errors.email || emailError}</p>}
@@ -172,15 +172,16 @@ export default function PhoneNumberCard({
         <button type="button" className="py-2 text-sm font-bold cursor-pointer text-gray-800 mb-0" onClick={onPrevious}>
           ＜ 戻る
         </button>
-        <div className="relative ml-auto flex w-[70%] max-w-[320px] items-center justify-end">
+        {/* 送信ボタンの右の余白（pr-10）は指の置き場所。「求人情報を受け取る」は折り返さないので、幅を「戻る」の残りいっぱい（flex-1）にして、幅 360px の端末でも指が文字に重ならないようにする。それより狭い端末は、左の余白を詰めて文字を 13px にし、ボタンの中に収める */}
+        <div className="relative ml-4 flex min-w-0 max-w-[320px] flex-1 items-center justify-end">
           <button
             type="submit"
-            className={`w-full rounded-md py-3 px-12 text-base font-bold text-white ${isSubmitButtonDisabled ? 'bg-gray-400 cursor-not-allowed' : 'bg-[#ff702a] cursor-pointer'}`}
+            className={`w-full rounded-md py-3 pl-4 pr-10 text-base font-bold max-[360px]:pl-2 max-[360px]:text-[13px] text-white ${isSubmitButtonDisabled ? 'bg-gray-400 cursor-not-allowed' : 'bg-[#ff702a] cursor-pointer'}`}
             disabled={isSubmitButtonDisabled}
           >
             <span style={{ whiteSpace: 'nowrap' }}>{isSubmitting ? '送信中...' : submitButtonText}</span>
           </button>
-          <FingerHint isVisible={isSubmitEncouraged} size={44} className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-6 sm:size-[60px]" />
+          <FingerHint isVisible={isSubmitEncouraged} size={44} className={FINGER_HINT_RIGHT_OF_TARGET} />
         </div>
       </div>
     </FormCard>

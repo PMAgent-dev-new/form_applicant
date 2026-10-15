@@ -3,6 +3,8 @@
 import Image from '@/app/components/AppImage';
 import type { ReactNode } from 'react';
 
+import FingerHint, { FINGER_HINT_RIGHT_OF_TARGET } from './FingerHint';
+
 type FormExitModalProps = {
   isOpen: boolean;
   onConfirm: () => void;
@@ -59,9 +61,7 @@ function DefaultExitContent({ onClose, onConfirm }: { onClose: () => void; onCon
           className="relative inline-flex w-full items-center justify-center gap-2 overflow-visible rounded-full border-2 border-[#FF7500] bg-white px-6 py-3 text-base font-semibold text-[#FF7500] shadow-[0_6px_0_rgba(255,117,0,0.18)] transition hover:bg-[#FFF4EB] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#FF7500]"
         >
           入力に戻る
-          <span className="pointer-events-none absolute -right-5 top-1/2 -translate-y-1/2">
-            <Image src="/images/finger.webp" alt="指アイコン" width={48} height={48} className="h-12 w-12" priority />
-          </span>
+          <FingerHint isVisible size={44} className={FINGER_HINT_RIGHT_OF_TARGET} />
         </button>
         <button
           type="button"
