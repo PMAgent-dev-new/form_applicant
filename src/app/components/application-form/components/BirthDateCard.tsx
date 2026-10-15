@@ -3,7 +3,7 @@
 import Image from '@/app/components/AppImage';
 
 import FormCard from './FormCard';
-import FingerHint from './FingerHint';
+import FingerHint, { FINGER_HINT_RIGHT_OF_TARGET } from './FingerHint';
 import StepProgressBar from './StepProgressBar';
 import type { BirthDate, FormErrors } from '../types';
 
@@ -42,14 +42,14 @@ export default function BirthDateCard({ stepImageSrc, birthDate, errors, onChang
             id="birthDate"
             name="birthDate"
             placeholder="例: 19900101"
-            className={`flex-1 p-3 border rounded-lg text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent ${
+            className={`flex-1 p-3 pr-10 border rounded-lg text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent ${
               errors.birthDate ? 'border-red-500' : 'border-gray-300'
             } ${birthDate ? 'text-gray-900' : 'text-gray-500'}`}
             value={birthDate}
             onChange={onChange}
             maxLength={8}
           />
-          <FingerHint isVisible={!isFilled} size={40} className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-6 sm:size-[52px]" />
+          <FingerHint isVisible={!isFilled} size={40} className={FINGER_HINT_RIGHT_OF_TARGET} />
         </div>
         {errors.birthDate && <p className="text-red-500 text-xs mt-1">{errors.birthDate}</p>}
       </div>
@@ -65,7 +65,7 @@ export default function BirthDateCard({ stepImageSrc, birthDate, errors, onChang
           <button type="button" className="flex-1 py-2.5 px-5 rounded-md bg-[#ff702a] text-white font-bold cursor-pointer" onClick={onNext}>
             次へ
           </button>
-          <FingerHint isVisible={isFilled} size={44} className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-6 sm:size-[56px]" />
+          <FingerHint isVisible={isFilled} size={44} className={FINGER_HINT_RIGHT_OF_TARGET} />
         </div>
       </div>
     </FormCard>
