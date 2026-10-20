@@ -178,8 +178,10 @@ function ApplicationFormInner({
     </footer>
   ) : null;
 
+  // 隠れているカード（absolute）は表示中のカードの下に置かれる。overflow-hidden で切らないと、
+  // モーダルの中で何も無い所までスクロールできてしまう
   const formContent = (
-    <form onSubmit={handleSubmit} id="form" noValidate className="relative pb-4">
+    <form onSubmit={handleSubmit} id="form" noValidate className="relative overflow-hidden pb-4">
       {showPeopleImage && peopleImageSrc && (
         <div className="mb-6 flex justify-center">
           <Image src={peopleImageSrc} alt={peopleImageAlt} width={320} height={180} className="h-auto w-full max-w-[320px]" priority={resolvedFormOrigin === 'coupang'} />

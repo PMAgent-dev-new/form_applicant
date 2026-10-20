@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { mapJobTimingLabel } from '@/app/components/application-form/utils/mapJobTimingLabel';
 import { appendLarkNotificationMarker, resolveDirectBaseWrite, type BaseWriteContext } from './route';
 
 function mechanicContext(): BaseWriteContext {
@@ -307,5 +308,30 @@ describe('resolveDirectBaseWrite (応募経由マスタ)', () => {
 
     expect(target?.profile).toBe('mechanic');
     expect(target?.fields['応募経由(マスタ連動)']).toEqual({ linkedRecordName: 'fb(ad)' });
+  });
+});
+
+// 転職時期の3つ目の選択肢「求人だけ見たい」（2026-10-20 追加）。値は browse_only、Lark には表示名で残す。
+describe('resolveDirectBaseWrite (求人だけ見たい)', () => {
+  it('タクシー・トラック・バスは対応履歴メモに「転職時期: 求人だけ見たい」を残す', () => {
+    const target = resolveDirectBaseWrite({
+      ...truckContext(),
+      jobTimingLabel: mapJobTimingLabel('browse_only', 'truck'),
+    });
+
+    expect(target?.profile).toBe('ridejob');
+    expect(target?.fields.対応履歴メモ).toBe('転職時期: 求人だけ見たい');
+  });
+
+  // 整備士（経験者）の1問目は jobIntent。Base の選択肢型「転職時期」は2問目（MechanicJobTimingCard）の値だけを入れる。
+  it('整備士の1問目で選んでも、Baseの「転職時期」には入らない', () => {
+    const base = mechanicContext();
+    const target = resolveDirectBaseWrite({
+      ...base,
+      jobIntentLabel: mapJobTimingLabel('browse_only', 'default'),
+    });
+
+    expect(target?.fields.転職時期).toBe(resolveDirectBaseWrite(base)?.fields.転職時期);
+    expect(JSON.stringify(target?.fields)).not.toContain('求人だけ見たい');
   });
 });

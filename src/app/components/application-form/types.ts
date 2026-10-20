@@ -4,7 +4,7 @@ export type FormOrigin = 'coupang' | 'default' | 'bus' | 'mechanic' | 'mechanic_
 
 export type BirthDate = string;
 
-export type JobTimingOption = 'asap' | 'no_plan' | 'within_3_months' | 'within_6_months' | 'within_1_year';
+export type JobTimingOption = 'asap' | 'no_plan' | 'browse_only' | 'within_3_months' | 'within_6_months' | 'within_1_year';
 
 export type MechanicQualification =
   | 'level3'
