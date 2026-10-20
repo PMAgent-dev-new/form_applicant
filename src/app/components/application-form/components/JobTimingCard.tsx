@@ -28,6 +28,11 @@ const options: Array<{
     label: 'すぐに転職する気はない',
     className: 'bg-[#9be5ff] text-gray-900 shadow-[0_6px_0_0_rgba(155,229,255,0.5)]',
   },
+  {
+    value: 'browse_only',
+    label: '求人だけ見たい',
+    className: 'bg-[#d1d5db] text-gray-900 shadow-[0_6px_0_0_rgba(209,213,219,0.6)]',
+  },
 ];
 
 export default function JobTimingCard({ selectedTiming, errors, onSelect, isActive, errorMessage }: JobTimingCardProps) {
@@ -39,19 +44,23 @@ export default function JobTimingCard({ selectedTiming, errors, onSelect, isActi
   const shouldShowInitialHint = !selectedTiming;
 
   return (
-    <FormCard isActive={isActive} className="min-h-[280px]">
-      <div className="mb-6 text-center">
-        <h2 className="mb-2 text-lg font-bold text-gray-900">転職時期は決まっていますか？</h2>
+    <FormCard isActive={isActive}>
+      {/* 選択肢が3つあるので、縦の余白は画面の高さで変える。高さ 740px 未満は詰めて、
+          320×568 でもモーダルの中でスクロールが出ないようにする（目安はカードの高さ 320px 以内）。
+          幅 360px 未満は上の2つが2行に折り返すので、見出しを1行に収め、高さ 740px 未満ならボタンの上下をさらに詰める
+          （max-[360px]。高さ 740px 以上ではあとに出力される py-6 が勝つ） */}
+      <div className="mb-3 text-center [@media(min-height:740px)]:mb-5">
+        <h2 className="text-lg font-bold text-gray-900 max-[360px]:text-base">転職時期は決まっていますか？</h2>
       </div>
 
-      <div className="space-y-4">
+      <div className="space-y-3 [@media(min-height:740px)]:space-y-4">
         {options.map((option, index) => {
           const isSelected = selectedTiming === option.value;
           return (
             <button
               key={option.value}
               type="button"
-              className={`relative w-full rounded-2xl px-9 py-8 text-center max-[375px]:px-10 transition-transform duration-150 ease-out focus:outline-none focus:ring-4 focus:ring-orange-200 ${
+              className={`relative w-full rounded-2xl px-9 py-4 text-center max-[375px]:px-10 max-[360px]:py-3 [@media(min-height:740px)]:py-6 transition-transform duration-150 ease-out focus:outline-none focus:ring-4 focus:ring-orange-200 ${
                 option.className
               } ${isSelected ? 'ring-4 ring-[#ffb48a]' : ''}`}
               onClick={() => handleClick(option.value)}

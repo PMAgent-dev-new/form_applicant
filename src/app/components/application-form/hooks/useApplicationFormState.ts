@@ -376,7 +376,8 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         setErrors(result.errors);
         if (result.isValid) {
           setCurrentCardIndex((prev) => {
-            trackEvent('step_complete', getStepEventPayload(prev));
+            // 選んだ値を付けて、選択肢ごとの人数と途中でやめた人数を見られるようにする
+            trackEvent('step_complete', { ...getStepEventPayload(prev), job_timing: value });
             const next = prev + 1;
             trackEvent('step_view', getStepEventPayload(next));
             return next;
@@ -473,7 +474,8 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         setIsFormDirty(true);
       }
       setCurrentCardIndex((prev) => {
-        trackEvent('step_complete', getStepEventPayload(prev));
+        // 選んだ値を付けて、選択肢ごとの人数と途中でやめた人数を見られるようにする
+        trackEvent('step_complete', { ...getStepEventPayload(prev), job_intent: value });
         const next = prev + 1;
         trackEvent('step_view', getStepEventPayload(next));
         return next;
