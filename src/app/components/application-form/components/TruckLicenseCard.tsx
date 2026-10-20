@@ -30,14 +30,14 @@ export default function TruckLicenseCard({
 
   return (
     <FormCard isActive={isActive} className="pb-6">
-      <div className="mb-6 text-left">
+      <div className="mb-6 compact:mb-3 text-left">
         {stepImageSrc && (
-          <Image className="w-full mb-4" src={stepImageSrc} alt="Step" width={300} height={50} priority />
+          <Image className="w-full mb-4 compact:mb-2 tight:mx-auto tight:h-7 tight:w-auto" src={stepImageSrc} alt="Step" width={300} height={50} priority />
         )}
-        <h1 className="text-lg text-center font-bold mb-1 text-gray-700">条件に合った求人を検索します</h1>
-        <p className="mb-4 text-center text-xs text-gray-500">お持ちの運転免許・資格（複数選択できます）</p>
+        <h1 className="text-lg tight:text-base text-center font-bold mb-1 text-gray-700">条件に合った求人を検索します</h1>
+        <p className="mb-4 tight:mb-2 text-center text-xs text-gray-500">お持ちの運転免許・資格（複数選択できます）</p>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-2 gap-3 tight:gap-2">
           {TRUCK_LICENSE_OPTIONS.map((option) => {
             const isSelected = selectedLicenses.includes(option.value);
             return (
@@ -45,7 +45,7 @@ export default function TruckLicenseCard({
                 key={option.value}
                 type="button"
                 aria-pressed={isSelected}
-                className={`w-full rounded-xl border-2 px-2 py-3 text-center text-sm font-semibold transition-all duration-150 ease-out focus:outline-none focus:ring-2 focus:ring-orange-500 ${
+                className={`w-full rounded-xl border-2 px-2 py-3 tight:py-2 text-center text-sm tight:leading-tight font-semibold transition-all duration-150 ease-out focus:outline-none focus:ring-2 focus:ring-orange-500 ${
                   isSelected
                     ? 'border-[#ff702a] bg-orange-50 text-[#ff702a]'
                     : 'border-gray-300 bg-white text-gray-900 hover:border-gray-400'

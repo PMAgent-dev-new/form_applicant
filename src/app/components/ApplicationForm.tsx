@@ -1,7 +1,7 @@
 'use client';
 
 import Image from '@/app/components/AppImage';
-import { Suspense, useEffect, useMemo, useRef } from 'react';
+import { Suspense, useEffect, useMemo, useRef, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 
 import { BirthDateCard, DesiredIncomeCard, FormExitModal, JobTimingCard, MechanicJobTimingCard, MechanicQualificationCard, NameCard, NameInputCard, PhoneNumberCard, NameAndContactCard, TruckLicenseCard } from './application-form/components';
@@ -155,13 +155,14 @@ function ApplicationFormInner({
   }, [resolvedUseModal]);
 
   const formWrapperClassName = resolvedUseModal
-    ? 'relative w-full max-w-sm px-1 py-6 overflow-y-auto no-scrollbar'
+    ? 'form-modal-scroll relative w-full max-w-sm px-1 py-6 overflow-y-auto no-scrollbar'
     : 'relative w-full max-w-sm px-1 mx-auto no-scrollbar';
 
+  // モーダルの高さの上限から引く量（globals.css の .form-modal-scroll が使う）。モーダルは画面の縦の中央に置かれ、
+  // 上下に py-6（24px）の透明な余白がある。上の帯は 62px・下の帯は 41px なので、カードと帯の間を 8px 空けるには
+  // 2×(62+8−24)=92px（帯が下だけなら 2×(41+8−24)=50px）を引けば足りる。切り上げて 6rem（96px）・3.5rem（56px）にしている。
   const formWrapperStyle = resolvedUseModal
-    ? {
-        maxHeight: `calc(100vh - ${resolvedShowHeader ? '7rem' : '3rem'} - ${showLegalFooter ? '4.5rem' : '1rem'})`,
-      }
+    ? ({ '--form-modal-reserve': resolvedShowHeader ? '6rem' : showLegalFooter ? '3.5rem' : '1rem' } as CSSProperties)
     : undefined;
 
   const legalFooter = showLegalFooter ? (
@@ -178,10 +179,11 @@ function ApplicationFormInner({
     </footer>
   ) : null;
 
-  // 隠れているカード（absolute）は表示中のカードの下に置かれる。overflow-hidden で切らないと、
-  // モーダルの中で何も無い所までスクロールできてしまう
+  // 隠れているカード（absolute）は表示中のカードの下に置かれる。切らないと、モーダルの中で何も無い所まで
+  // スクロールできてしまう。overflow-clip はスクロールの入れ物にならないので、フォーカスや scrollIntoView で
+  // フォームの中身がずれることもない（未対応のブラウザは overflow-hidden）
   const formContent = (
-    <form onSubmit={handleSubmit} id="form" noValidate className="relative overflow-hidden pb-4">
+    <form onSubmit={handleSubmit} id="form" noValidate className="relative overflow-hidden supports-[overflow:clip]:overflow-clip pb-4">
       {showPeopleImage && peopleImageSrc && (
         <div className="mb-6 flex justify-center">
           <Image src={peopleImageSrc} alt={peopleImageAlt} width={320} height={180} className="h-auto w-full max-w-[320px]" priority={resolvedFormOrigin === 'coupang'} />

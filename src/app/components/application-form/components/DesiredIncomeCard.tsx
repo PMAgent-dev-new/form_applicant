@@ -39,21 +39,21 @@ export default function DesiredIncomeCard({
   const isNextEnabled = Boolean(selectedIncome);
 
   return (
-    <FormCard isActive={isActive} className="pb-6 mt-10">
+    <FormCard isActive={isActive} className="pb-6 mt-10 compact:mt-0">
       <StepProgressBar currentStep={progress.currentStep} totalSteps={progress.totalSteps} />
 
-      <div className="mb-6 text-center">
-        <h2 className="mb-2 text-lg font-bold text-gray-900">希望年収</h2>
+      <div className="mb-6 compact:mb-3 text-center">
+        <h2 className="mb-2 tight:mb-0 text-lg font-bold text-gray-900">希望年収</h2>
       </div>
 
-      <div className="space-y-3 mb-6">
+      <div className="space-y-3 tight:space-y-2 mb-6 compact:mb-3">
         {options.map((option, index) => {
           const isSelected = selectedIncome === option.value;
           return (
             <button
               key={option.value}
               type="button"
-              className={`relative w-full rounded-lg px-4 py-4 text-left transition-all duration-150 ease-out border-2 focus:outline-none focus:ring-2 focus:ring-orange-500 ${
+              className={`relative w-full rounded-lg px-4 py-4 compact:py-3 tight:py-2.5 text-left transition-all duration-150 ease-out border-2 focus:outline-none focus:ring-2 focus:ring-orange-500 ${
                 isSelected
                   ? 'border-[#ff702a] bg-orange-50'
                   : 'border-gray-300 bg-white hover:border-gray-400'

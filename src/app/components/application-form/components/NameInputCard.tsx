@@ -58,15 +58,15 @@ export default function NameInputCard({
   const isPositiveJobCount = Boolean(jobResult.jobCount && jobResult.jobCount > 0);
 
   return (
-    <FormCard isActive={isActive} className="pb-6 mt-10">
+    <FormCard isActive={isActive} className="pb-6 mt-10 compact:mt-0">
       {progress ? (
         <StepProgressBar currentStep={progress.currentStep} totalSteps={progress.totalSteps} />
       ) : stepImageSrc ? (
-        <Image className="w-full mb-4" src={stepImageSrc} alt="Step" width={300} height={50} />
+        <Image className="w-full mb-4 compact:mb-2 tight:mx-auto tight:h-7 tight:w-auto" src={stepImageSrc} alt="Step" width={300} height={50} />
       ) : null}
 
       {showJobCount && (
-        <div className="text-center mb-6">
+        <div className="text-center mb-6 compact:mb-4 tight:mb-2">
           {jobResult.isLoading ? (
             <div className="flex items-center justify-center text-[#2C32FF]">
               <div className="mr-2 h-4 w-4 animate-bounce rounded-full bg-[#2C32FF]" />
@@ -79,13 +79,13 @@ export default function NameInputCard({
               <p className="text-base font-semibold text-gray-900">すぐにご案内できます！</p>
             </div>
           ) : isJobCountAvailable ? (
-            <div className="space-y-2 text-[#2C32FF]">
+            <div className="space-y-2 tight:space-y-0.5 text-[#2C32FF]">
               <p className="text-xs font-semibold tracking-wide text-[#7A83FF]">
                 {jobResult.searchMethod === 'postal_code' ? '郵便番号からの検索結果' : '都道府県での検索結果'}
               </p>
-              <p className="text-2xl font-bold">
+              <p className="text-2xl font-bold tight:text-xl">
                 <span>{displayAreaName}の求人</span>
-                <span className="ml-2 text-3xl leading-none">{jobResult.jobCount}</span>
+                <span className="ml-2 text-3xl leading-none tight:text-2xl">{jobResult.jobCount}</span>
                 <span className="ml-1 text-base">件</span>
               </p>
               <p className={`text-base font-semibold ${isPositiveJobCount ? 'text-gray-900' : 'text-gray-600'}`}>
@@ -98,8 +98,8 @@ export default function NameInputCard({
         </div>
       )}
 
-      <div className="mb-6 text-left">
-        <label className="font-bold mb-2.5 block text-gray-900">お名前(漢字)</label>
+      <div className="mb-6 compact:mb-4 tight:mb-2 text-left">
+        <label className="font-bold mb-2.5 tight:mb-1 block text-gray-900">お名前(漢字)</label>
         <div className="relative flex items-center gap-3">
           <input
             type="text"
@@ -107,7 +107,7 @@ export default function NameInputCard({
             name="fullName"
             maxLength={100}
             placeholder="例: 田中 太郎"
-            className={`flex-1 rounded border p-3 pr-10 text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent ${errors.fullName ? 'border-red-500' : 'border-gray-300'}`}
+            className={`flex-1 rounded border p-3 tight:py-2 pr-10 text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent ${errors.fullName ? 'border-red-500' : 'border-gray-300'}`}
             value={formData.fullName}
             onChange={onChange}
             onBlur={onBlur}
@@ -121,15 +121,15 @@ export default function NameInputCard({
         {errors.fullName && <p className="text-red-500 text-xs mt-1">{errors.fullName}</p>}
       </div>
 
-      <div className="mb-6 text-left">
-        <label className="font-bold mb-2.5 block text-gray-900">お名前(ふりがな)</label>
+      <div className="mb-6 compact:mb-4 tight:mb-2 text-left">
+        <label className="font-bold mb-2.5 tight:mb-1 block text-gray-900">お名前(ふりがな)</label>
         <div className="relative flex items-center gap-3">
           <input
             type="text"
             id="fullNameKana"
             name="fullNameKana"
             placeholder="例: たなか たろう"
-            className={`flex-1 rounded border p-3 pr-10 text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent ${errors.fullNameKana ? 'border-red-500' : 'border-gray-300'} ${formData.fullNameKana && !errors.fullNameKana ? 'text-gray-900' : ''}`}
+            className={`flex-1 rounded border p-3 tight:py-2 pr-10 text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent ${errors.fullNameKana ? 'border-red-500' : 'border-gray-300'} ${formData.fullNameKana && !errors.fullNameKana ? 'text-gray-900' : ''}`}
             value={formData.fullNameKana}
             onChange={onChange}
           />

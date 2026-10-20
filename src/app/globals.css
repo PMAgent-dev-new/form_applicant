@@ -1,4 +1,9 @@
 @import "tailwindcss";
+
+/* 応募フォームのモーダル（ApplicationForm）。画面の高さが足りないときだけ、カードの余白・文字・画像を詰める。
+   compact は高さ 740px 未満（例: 375×667・360×640）、tight は 600px 未満（例: 375×548・320×568）。 */
+@custom-variant compact (@media (max-height: 739px));
+@custom-variant tight (@media (max-height: 599px));
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -72,4 +77,11 @@ body::before {
   .finger-hint-nudge {
     animation: none;
   }
+}
+
+/* 応募フォームのモーダルの高さの上限。引く量（--form-modal-reserve）は ApplicationForm.tsx が決める。
+   iOS などでツールバーの出し入れで見える高さが変わるので dvh を使い、未対応のブラウザは vh のまま。 */
+.form-modal-scroll {
+  max-height: calc(100vh - var(--form-modal-reserve, 6rem));
+  max-height: calc(100dvh - var(--form-modal-reserve, 6rem));
 }
