@@ -10,7 +10,7 @@ export default function StepProgressBar({ currentStep, totalSteps }: StepProgres
   const percent = Math.min(100, Math.max(0, Math.round((currentStep / safeTotal) * 100)));
 
   return (
-    <div className="mb-4">
+    <div className="mb-4 compact:mb-3 tight:mb-2">
       <div className="flex items-center justify-between text-xs font-semibold text-gray-600">
         <span>STEP {currentStep}/{safeTotal}</span>
         <span>{percent}%</span>

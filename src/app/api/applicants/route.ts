@@ -131,9 +131,10 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
     : undefined;
 
   if (ctx.isMechanic) {
-    // 経験者フォームの転職時期／資格は Base の専用 Select に保存する。
+    // 経験者フォームの転職時期／資格は Base の専用 Select に保存する。1問目（転職意向）は専用の欄が無いので対応履歴メモに残す。
     // 新卒フォームの資格回答（通学コース）は従来どおり対応履歴メモに残す。
     const memo = [
+      !ctx.isMechanicNewgrad && ctx.jobIntentLabel ? `転職意向: ${ctx.jobIntentLabel}` : '',
       ctx.isMechanicNewgrad && ctx.jobTimingLabel ? `転職時期: ${ctx.jobTimingLabel}` : '',
       ctx.isMechanicNewgrad && ctx.mechanicQualificationsLabel
         ? `${ctx.qualificationFieldLabel}: ${ctx.mechanicQualificationsLabel}`

@@ -55,22 +55,22 @@ export default function MechanicQualificationCard({
   const noneOption = isNewgrad ? null : qualificationOptions.find((option) => option.value === 'none');
 
   return (
-    <FormCard isActive={isActive} className="pb-6 mt-10">
+    <FormCard isActive={isActive} className="pb-6 mt-10 compact:mt-0">
       <StepProgressBar currentStep={progress.currentStep} totalSteps={progress.totalSteps} />
 
-      <div className="mb-6 text-center">
+      <div className="mb-6 compact:mb-3 text-center">
         <p className="text-xs font-semibold text-gray-500">条件に合った求人を検索します</p>
         <h2 className="mt-2 text-lg font-bold text-gray-900">{isNewgrad ? '取得見込みの資格を教えてください' : '保有資格を教えてください'}</h2>
       </div>
 
-      <div className="mb-6 grid grid-cols-2 gap-4">
+      <div className="mb-6 compact:mb-3 grid grid-cols-2 gap-4 compact:gap-3 tight:gap-2">
         {cardOptions.map((option, index) => {
           const isSelected = selectedQualification === option.value;
           return (
             <button
               key={option.value}
               type="button"
-              className={`relative flex w-full flex-col items-center justify-center gap-2 rounded-xl bg-white px-3 py-3 text-center transition-all duration-150 ease-out focus:outline-none focus:ring-2 focus:ring-orange-500 ${
+              className={`relative flex w-full flex-col items-center justify-center gap-2 rounded-xl bg-white px-3 py-3 tight:py-2 text-center transition-all duration-150 ease-out focus:outline-none focus:ring-2 focus:ring-orange-500 ${
                 isSelected
                   ? 'bg-orange-50'
                   : 'hover:bg-gray-50'
@@ -84,7 +84,7 @@ export default function MechanicQualificationCard({
                   alt={option.label}
                   width={160}
                   height={120}
-                  className="h-[110px] w-auto"
+                  className="h-[110px] w-auto compact:h-[64px] tight:h-[48px]"
                 />
               )}
             </button>
@@ -95,7 +95,7 @@ export default function MechanicQualificationCard({
       {noneOption && (
         <button
           type="button"
-          className={`mb-6 w-full rounded-xl border-2 py-3 text-center text-sm font-semibold transition-all duration-150 ease-out focus:outline-none focus:ring-2 focus:ring-orange-500 ${
+          className={`mb-6 compact:mb-3 w-full rounded-xl border-2 py-3 tight:py-2 text-center text-sm font-semibold transition-all duration-150 ease-out focus:outline-none focus:ring-2 focus:ring-orange-500 ${
             selectedQualification === noneOption.value
               ? 'border-[#ff702a] bg-orange-50 text-[#ff702a]'
               : 'border-gray-300 bg-white text-gray-900 hover:border-gray-400'

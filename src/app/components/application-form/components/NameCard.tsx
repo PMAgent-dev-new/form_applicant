@@ -145,7 +145,7 @@ export default function NameCard({ stepImageSrc, postalCode, prefectureId, munic
       {progress ? (
         <StepProgressBar currentStep={progress.currentStep} totalSteps={progress.totalSteps} />
       ) : stepImageSrc ? (
-        <Image className="w-full mb-4" src={stepImageSrc} alt="Step" width={300} height={50} />
+        <Image className="w-full mb-4 compact:mb-2 tight:mx-auto tight:h-7 tight:w-auto" src={stepImageSrc} alt="Step" width={300} height={50} />
       ) : null}
       <h1 className="text-lg text-center font-bold mb-4 text-gray-700">条件に合った求人を検索します</h1>
       <div>

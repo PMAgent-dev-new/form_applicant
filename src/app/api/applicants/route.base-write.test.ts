@@ -88,7 +88,7 @@ describe('resolveDirectBaseWrite', () => {
     // 直書きがレコードごと落ち、冪等キーの無い Webhook 経路へ落ちて重複の温床になる
     // （2026-09-24 に /entry/mechanic で実測）。配列であることをここで固定する。
     expect(target?.fields.資格).toEqual(['自動車整備士2級']);
-    expect(target?.fields.対応履歴メモ).toBeUndefined();
+    expect(target?.fields.対応履歴メモ).toBe('転職意向: 決まれば早く転職したい');
   });
 
   it('資格が未選択なら「資格」欄へ書き込まない（空の選択肢を作らない）', () => {
@@ -323,8 +323,9 @@ describe('resolveDirectBaseWrite (求人だけ見たい)', () => {
     expect(target?.fields.対応履歴メモ).toBe('転職時期: 求人だけ見たい');
   });
 
-  // 整備士（経験者）の1問目は jobIntent。Base の選択肢型「転職時期」は2問目（MechanicJobTimingCard）の値だけを入れる。
-  it('整備士の1問目で選んでも、Baseの「転職時期」には入らない', () => {
+  // 整備士（経験者）の1問目は jobIntent。Base の選択肢型「転職時期」は2問目（MechanicJobTimingCard）の値だけを入れ、
+  // 1問目は対応履歴メモに「転職意向: ○○」で残す。
+  it('整備士の1問目は対応履歴メモに残り、Baseの「転職時期」には入らない', () => {
     const base = mechanicContext();
     const target = resolveDirectBaseWrite({
       ...base,
@@ -332,6 +333,18 @@ describe('resolveDirectBaseWrite (求人だけ見たい)', () => {
     });
 
     expect(target?.fields.転職時期).toBe(resolveDirectBaseWrite(base)?.fields.転職時期);
-    expect(JSON.stringify(target?.fields)).not.toContain('求人だけ見たい');
+    expect(target?.fields.対応履歴メモ).toBe('転職意向: 求人だけ見たい');
+  });
+
+  it('整備士の新卒フォームには転職意向を書かない', () => {
+    const target = resolveDirectBaseWrite({
+      ...mechanicContext(),
+      isMechanicNewgrad: true,
+      // ラベルが入っていても、新卒なら書かないこと（isMechanicNewgrad の条件）を確かめる
+      jobIntentLabel: '決まれば早く転職したい',
+      jobTimingLabel: '',
+    });
+
+    expect(String(target?.fields.対応履歴メモ ?? '')).not.toContain('転職意向');
   });
 });
