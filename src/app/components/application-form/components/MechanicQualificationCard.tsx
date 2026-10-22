@@ -70,21 +70,22 @@ export default function MechanicQualificationCard({
             <button
               key={option.value}
               type="button"
-              className={`relative flex w-full flex-col items-center justify-center gap-2 rounded-xl bg-white px-3 py-3 tight:py-2 text-center transition-all duration-150 ease-out focus:outline-none focus:ring-2 focus:ring-orange-500 ${
+              className={`relative flex w-full flex-col items-center justify-center gap-2 rounded-xl bg-white px-3 py-3 tight:py-2 tight:border-2 text-center transition-all duration-150 ease-out focus:outline-none focus:ring-2 focus:ring-orange-500 ${
                 isSelected
-                  ? 'bg-orange-50'
-                  : 'hover:bg-gray-50'
+                  ? 'bg-orange-50 text-[#ff702a] tight:border-[#ff702a]'
+                  : 'text-gray-900 hover:bg-gray-50 tight:border-gray-300'
               }`}
               onClick={() => handleToggle(option.value)}
             >
-              <span className="sr-only">{option.label}</span>
+              {/* 高さ 600px 未満は画像を出さず、「資格なし」と同じ枠の、資格名の文字だけのボタンにする（画像の中の文字が読めないほど小さくなるため） */}
+              <span className="sr-only tight:not-sr-only tight:text-sm tight:font-semibold">{option.label}</span>
               {option.imageSrc && (
                 <Image
                   src={option.imageSrc}
                   alt={option.label}
                   width={160}
                   height={120}
-                  className="h-[110px] w-auto compact:h-[64px] tight:h-[48px]"
+                  className="h-[110px] w-auto compact:h-[64px] tight:hidden"
                 />
               )}
             </button>

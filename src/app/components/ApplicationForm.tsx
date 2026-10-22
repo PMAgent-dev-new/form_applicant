@@ -185,7 +185,8 @@ function ApplicationFormInner({
   const formContent = (
     <form onSubmit={handleSubmit} id="form" noValidate className="relative overflow-hidden supports-[overflow:clip]:overflow-clip pb-4">
       {showPeopleImage && peopleImageSrc && (
-        <div className="mb-6 flex justify-center">
+        // モーダルでは、画面の高さが 900px 未満だと人物画像とカードが入りきらずスクロールするので、画像を出さない
+        <div className={`mb-6 flex justify-center ${resolvedUseModal ? '[@media(max-height:899px)]:hidden' : ''}`.trim()}>
           <Image src={peopleImageSrc} alt={peopleImageAlt} width={320} height={180} className="h-auto w-full max-w-[320px]" priority={resolvedFormOrigin === 'coupang'} />
         </div>
       )}
