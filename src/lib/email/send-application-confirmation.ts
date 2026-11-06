@@ -35,6 +35,7 @@ const SUPPORTED_ORIGINS: readonly EmailFormOrigin[] = [
   'bus',
   'mechanic',
   'mechanic_newgrad',
+  'ud_manufacturing',
   'truck',
 ];
 

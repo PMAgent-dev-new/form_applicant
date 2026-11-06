@@ -10,6 +10,7 @@ import type { BirthDate, FormErrors } from '../types';
 type BirthDateCardProps = {
   stepImageSrc?: string;
   birthDate: BirthDate;
+  heading?: string;
   errors: FormErrors;
   onChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
   onNext: () => void;
@@ -21,7 +22,7 @@ type BirthDateCardProps = {
   };
 };
 
-export default function BirthDateCard({ stepImageSrc, birthDate, errors, onChange, onNext, isActive, onPrevious, progress }: BirthDateCardProps) {
+export default function BirthDateCard({ stepImageSrc, birthDate, heading = '条件に合った求人を検索します', errors, onChange, onNext, isActive, onPrevious, progress }: BirthDateCardProps) {
   const isFilled = birthDate.length === 8;
 
   return (
@@ -32,7 +33,7 @@ export default function BirthDateCard({ stepImageSrc, birthDate, errors, onChang
         ) : stepImageSrc ? (
           <Image className="w-full mb-4 compact:mb-2 tight:mx-auto tight:h-7 tight:w-auto" src={stepImageSrc} alt="Step" width={300} height={50} priority />
         ) : null}
-        <h1 className="text-lg text-center font-bold mb-4 text-gray-700">条件に合った求人を検索します</h1>
+        <h1 className="text-lg text-center font-bold mb-4 text-gray-700">{heading}</h1>
         <label className="font-bold mb-2.5 block text-gray-900">生年月日</label>
         <div className="relative flex items-center gap-3">
           <input

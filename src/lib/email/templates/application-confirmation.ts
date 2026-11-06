@@ -222,12 +222,27 @@ const COUPANG_CONTENT: MailContent = {
   phone: '03-6692-0477',
 };
 
+const UD_MANUFACTURING_CONTENT: MailContent = {
+  brandName: 'RIDE JOB',
+  fromName: 'RIDE JOB',
+  subject: '【RIDE JOB】UDトラックス製造・組立職へのご応募を受け付けました',
+  bookingUrl: MECHANIC_CONTENT.bookingUrl,
+  greetingLine: 'UDトラックス上尾工場の製造・組立職へご応募いただきありがとうございます。',
+  bodyParagraphs: [
+    'RIDE JOB（株式会社PM Agentの人材紹介）がご応募を受け付けました。担当者より、ご希望や応募条件を確認のうえ、選考の進め方をご案内します。',
+  ],
+  ctaHeading: '担当者との面談をご予約いただけます。',
+  ctaSubheading: '下のリンクから、ご都合の良い日時をお選びください。',
+  ctaButtonLabel: '面談の日時を選ぶ',
+};
+
 const CONTENT_BY_ORIGIN: Record<EmailFormOrigin, MailContent> = {
   default: RIDEJOB_CONTENT,
   bus: RIDEJOB_CONTENT,
   truck: TRUCK_CONTENT,
   mechanic: MECHANIC_CONTENT,
   mechanic_newgrad: MECHANIC_CONTENT,
+  ud_manufacturing: UD_MANUFACTURING_CONTENT,
   coupang: COUPANG_CONTENT,
 };
 

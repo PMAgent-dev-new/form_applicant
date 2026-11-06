@@ -22,6 +22,7 @@ type MunicipalityOption = {
 
 type NameCardProps = {
   stepImageSrc?: string;
+  heading?: string;
   postalCode: string;
   prefectureId: string;
   municipalityId: string;
@@ -36,7 +37,7 @@ type NameCardProps = {
   };
 };
 
-export default function NameCard({ stepImageSrc, postalCode, prefectureId, municipalityId, errors, onChange, onPrevious, onNext, isActive, progress }: NameCardProps) {
+export default function NameCard({ stepImageSrc, heading = '条件に合った求人を検索します', postalCode, prefectureId, municipalityId, errors, onChange, onPrevious, onNext, isActive, progress }: NameCardProps) {
   const [showFallback, setShowFallback] = useState(false);
   const [prefectures, setPrefectures] = useState<PrefectureOption[]>([]);
   const [municipalityOptions, setMunicipalityOptions] = useState<MunicipalityOption[]>([]);
@@ -147,7 +148,7 @@ export default function NameCard({ stepImageSrc, postalCode, prefectureId, munic
       ) : stepImageSrc ? (
         <Image className="w-full mb-4 compact:mb-2 tight:mx-auto tight:h-7 tight:w-auto" src={stepImageSrc} alt="Step" width={300} height={50} />
       ) : null}
-      <h1 className="text-lg text-center font-bold mb-4 text-gray-700">条件に合った求人を検索します</h1>
+      <h1 className="text-lg text-center font-bold mb-4 text-gray-700">{heading}</h1>
       <div>
         <h3 className="mb-2 text-base font-semibold text-gray-900">お住まいの郵便番号</h3>
 

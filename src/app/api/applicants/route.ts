@@ -39,6 +39,8 @@ import { isLarkWebhookAccepted, type LarkWebhookResult } from '@/lib/larkWebhook
 import { createSubmissionObservability } from '@/lib/submission-observability';
 import { normalizeApplicationContext } from '@/lib/application-context';
 import { recordSubmissionAfterResponse, type SubmissionRecord } from '@/lib/submissionLedger';
+import { getUdLaunchConfig, UD_JOB_LABEL, validateUdSubmission } from '@/lib/ud-manufacturing';
+import { assessUdLaunchTest, UD_TEST_MARKER } from '@/lib/ud-launch-test';
 
 // 外部送信ライブラリの個別タイムアウトに加え、保存→通知→後続処理の実行枠を明示する。
 // 全段が上限まで遅延した場合の完了保証ではない。実測時間はサマリで監視する。
@@ -65,6 +67,8 @@ const DUPLICATE_WINDOW_MS = 60 * 60 * 1000;
 export type BaseWriteContext = {
   isMechanic: boolean;
   isMechanicNewgrad: boolean;
+  isUdManufacturing?: boolean;
+  isLaunchTest?: boolean;
   isCoupang: boolean;
   isTruck: boolean;
   isBus: boolean;
@@ -125,7 +129,8 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
   if (ctx.isCoupang) return null;
 
   const address = [ctx.form.municipalityName, ctx.form.townName].filter(Boolean).join('') || undefined;
-  const applicationSourceName = resolveApplicationSourceMasterName(ctx.utm);
+  // テストは広告実応募集計の応募経由マスタへ接続しない。UTM原文は専用列に保持する。
+  const applicationSourceName = ctx.isLaunchTest ? undefined : resolveApplicationSourceMasterName(ctx.utm);
   const applicationSourceLink = applicationSourceName
     ? { linkedRecordName: applicationSourceName }
     : undefined;
@@ -134,6 +139,8 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
     // 経験者フォームの転職時期／資格は Base の専用 Select に保存する。1問目（転職意向）は専用の欄が無いので対応履歴メモに残す。
     // 新卒フォームの資格回答（通学コース）は従来どおり対応履歴メモに残す。
     const memo = [
+      ctx.isLaunchTest ? `${UD_TEST_MARKER}\n動作確認専用・実応募/広告成果の集計対象外・連絡禁止` : '',
+      ctx.isUdManufacturing ? `[form_origin:ud_manufacturing]\n応募職種: 製造・組立\n応募求人: ${UD_JOB_LABEL}` : '',
       !ctx.isMechanicNewgrad && ctx.jobIntentLabel ? `転職意向: ${ctx.jobIntentLabel}` : '',
       ctx.isMechanicNewgrad && ctx.jobTimingLabel ? `転職時期: ${ctx.jobTimingLabel}` : '',
       ctx.isMechanicNewgrad && ctx.mechanicQualificationsLabel
@@ -161,13 +168,14 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
         '居住地/都道府県': ctx.form.prefectureName,
         '居住地/市区町村以下': address,
         応募日: ctx.submittedAtMs,
-        ステータス: 'リード',
-        登録職種: '自動車整備士',
+        ステータス: ctx.isLaunchTest ? 'リード対象外' : 'リード',
+        ...(ctx.isLaunchTest ? { SMS配信停止フラグ: true } : {}),
+        登録職種: ctx.isUdManufacturing ? 'その他' : '自動車整備士',
         転職時期: ctx.isMechanicNewgrad ? undefined : ctx.jobTimingLabel || undefined,
-        資格: ctx.isMechanicNewgrad || !ctx.form.mechanicQualification
+        資格: ctx.isUdManufacturing || ctx.isMechanicNewgrad || !ctx.form.mechanicQualification
           ? undefined
           : mapMechanicQualificationToBaseOptions(ctx.mechanicQualificationsLabel),
-        '履歴書（添付なし）': desiredIncomeText,
+        '履歴書（添付なし）': ctx.isUdManufacturing ? undefined : desiredIncomeText,
         対応履歴メモ: memo,
         utm_source: ctx.utm.utm_source,
         utm_medium: ctx.utm.utm_medium,
@@ -452,7 +460,7 @@ type ApplicantSubmission = ApplicantFormData & {
   applicationContext?: unknown;
   utmParams?: UTMParams;
   experiment?: ExperimentInfo;
-  formOrigin?: 'coupang' | 'default' | 'bus' | 'mechanic' | 'mechanic_newgrad' | 'truck';
+  formOrigin?: 'coupang' | 'default' | 'bus' | 'mechanic' | 'mechanic_newgrad' | 'truck' | 'ud_manufacturing';
   metaEventId?: string;
   /** ChatGPT広告のクリック識別子。OpenAI Conversions API の突合キー。 */
   oppref?: string;
@@ -503,6 +511,26 @@ export async function POST(request: NextRequest) {
   };
   try {
     const submissionData = (await request.json()) as ApplicantSubmission;
+    const launchTest = assessUdLaunchTest(request.headers, submissionData as unknown as Record<string, unknown>);
+    if (launchTest === 'denied') return NextResponse.json({ message: 'Invalid launch test' }, { status: 403 });
+    const isLaunchTest = launchTest === 'authorized';
+    const isUdManufacturing = submissionData.formOrigin === 'ud_manufacturing';
+    // 非公開中も管理者の1件だけ通し、連絡先/求人/SMSの準備条件は通常と同じにする。
+    const udConfig = isUdManufacturing ? getUdLaunchConfig(isLaunchTest
+      ? { ...process.env, UD_MANUFACTURING_ENABLED: 'true' } : process.env) : null;
+    if (isUdManufacturing) {
+      if (!udConfig || !isLarkBaseConfigured('mechanic')) {
+        return NextResponse.json({ message: 'この求人の応募受付は現在準備中です。' }, { status: 503 });
+      }
+      if (submissionData.appliedJobId !== udConfig.jobId || !validateUdSubmission(submissionData, isLaunchTest)) {
+        return NextResponse.json({ message: '応募内容を確認し、もう一度お試しください。' }, { status: 400 });
+      }
+      // 資格・希望年収はこのフォームの設問ではない。外部入力を混ぜない。
+      submissionData.mechanicQualification = '';
+      submissionData.desiredIncome = '';
+      submissionData.jobIntent = '';
+      submissionData.truckLicenses = [];
+    }
     const { utmParams, formOrigin, ...formData } = submissionData;
     const submissionId = String(submissionData.submissionId || submissionData.metaEventId || '').trim().slice(0, 128);
     if (!submissionId) {
@@ -532,6 +560,7 @@ export async function POST(request: NextRequest) {
         truck_licenses: formData.truckLicenses,
         applied_job_id: submissionData.appliedJobId,
         form_origin: formOrigin,
+        ...(isLaunchTest ? { is_test: true } : {}),
       },
       context: {
         application_context: normalizeApplicationContext(submissionData.applicationContext),
@@ -566,7 +595,8 @@ export async function POST(request: NextRequest) {
       },
       ad: {},
       notification: {},
-      outcome: { notified: false, vaulted: false, email: 'skipped', sms: 'skipped', meta_capi: 'skipped', openai_capi: 'skipped' },
+      outcome: { notified: false, vaulted: false, email: 'skipped', sms: 'skipped', meta_capi: 'skipped', openai_capi: 'skipped',
+        ...(isLaunchTest ? { excluded_from_applications: true, excluded_from_ad_conversions: true } : {}) },
     };
     const catalog = assessCatalogTouch({
       catalogJobId: submissionData.catalogJobId,
@@ -603,9 +633,9 @@ export async function POST(request: NextRequest) {
 
     // Determine form origin type
     const referer = request.headers.get('referer') || '';
-    const isCoupang = formOrigin === 'coupang' || /\/coupang(\?|$|\/)?.*/.test(referer);
-    const isMechanicNewgrad = formOrigin === 'mechanic_newgrad' || /\/mechanic-newgrad(\?|$|\/)?.*/.test(referer);
-    const isMechanic = formOrigin === 'mechanic' || /\/mechanic(\?|$|\/)?.*/.test(referer) || isMechanicNewgrad;
+    const isCoupang = !isUdManufacturing && (formOrigin === 'coupang' || /\/coupang(\?|$|\/)?.*/.test(referer));
+    const isMechanicNewgrad = !isUdManufacturing && (formOrigin === 'mechanic_newgrad' || /\/mechanic-newgrad(\?|$|\/)?.*/.test(referer));
+    const isMechanic = isUdManufacturing || formOrigin === 'mechanic' || /\/mechanic(\?|$|\/)?.*/.test(referer) || isMechanicNewgrad;
     const isTruck = formOrigin === 'truck';
     const isBus = formOrigin === 'bus';
     // 'default' が明示的に送られてきたときだけタクシーLPと見なす。referer からは推測しない
@@ -636,6 +666,12 @@ export async function POST(request: NextRequest) {
         ? process.env.LARK_SUBMIT_CHAT_ID_MECHANIC
         : process.env.LARK_SUBMIT_CHAT_ID_RIDEJOB;
 
+    // 許可された管理者テストは「通知あり」が前提。保存前に設定不備を拒否する。
+    if (isLaunchTest && (sendBaseOnly || !larkChatId)) {
+      recordLedger = false;
+      return NextResponse.json({ message: 'Launch test notification is not configured', test: true, notified: false }, { status: 503 });
+    }
+
     const baseWebhookUrlCommon = isProduction
       ? process.env.LARK_BASE_WEBHOOK_URL_PROD
           || process.env.LARK_BASE_WEBHOOK_URL
@@ -652,7 +688,8 @@ export async function POST(request: NextRequest) {
       ? process.env.LARK_BASE_WEBHOOK_URL_MECHANIC_PROD || process.env.LARK_BASE_WEBHOOK_URL_MECHANIC
       : process.env.LARK_BASE_WEBHOOK_URL_MECHANIC_TEST || process.env.LARK_BASE_WEBHOOK_URL_MECHANIC;
 
-    const baseWebhookUrl = isMechanic && baseWebhookUrlMechanic
+    // 既存の整備士Webhookには職種の上書きがあり得るため、UDは直書き＋既存退避だけを使う。
+    const baseWebhookUrl = isUdManufacturing ? undefined : isMechanic && baseWebhookUrlMechanic
       ? baseWebhookUrlMechanic
       : (isCoupang && baseWebhookUrlCoupang) ? baseWebhookUrlCoupang : baseWebhookUrlCommon;
 
@@ -764,6 +801,8 @@ export async function POST(request: NextRequest) {
     const baseWriteCtx: BaseWriteContext = {
       isMechanic,
       isMechanicNewgrad,
+      isUdManufacturing,
+      isLaunchTest,
       isCoupang,
       isTruck,
       isBus,
@@ -828,6 +867,7 @@ export async function POST(request: NextRequest) {
       user_agent: userAgent,
       client_ip: clientIp,
       form_origin: formOrigin || '',
+      ...(isLaunchTest ? { is_test: true, test_marker: UD_TEST_MARKER } : {}),
       is_coupang: isCoupang,
       page_url: referer,
       submission_id: submissionId,
@@ -932,7 +972,7 @@ export async function POST(request: NextRequest) {
 
       // Lark 送信タスク
       if (larkChatId || larkWebhookUrl) {
-        const baseTitle = isMechanic
+        const baseTitle = isLaunchTest ? `【テスト応募・集計対象外・連絡不要】\n${UD_JOB_LABEL}` : isUdManufacturing ? `製造・組立の応募がありました！\n${UD_JOB_LABEL}` : isMechanic
           ? '整備士の応募がありました！'
           : isCoupang ? 'クーパンの応募がありました！'
           : isTruck ? 'トラックドライバーの応募がありました！' : '新しい応募がありました！';
@@ -957,16 +997,16 @@ export async function POST(request: NextRequest) {
         const locationDisplay = formData.prefectureName || formData.municipalityName || formData.townName
           ? `${formData.prefectureName || ''} ${formData.municipalityName || ''} ${formData.townName || ''}`.replace(/\s+/g, ' ').trim()
           : '未入力';
-        const mechanicQualificationsDisplay = isMechanic && mechanicQualificationsLabel
+        const mechanicQualificationsDisplay = isMechanic && !isUdManufacturing && mechanicQualificationsLabel
           ? `${qualificationFieldLabel}: ${mechanicQualificationsLabel}`
           : '';
         const truckLicensesDisplay = isTruck && truckLicensesLabel && truckLicensesLabel !== '未選択'
           ? `保有免許: ${truckLicensesLabel}`
           : '';
-        const desiredIncomeDisplay = isMechanic && !isMechanicNewgrad && desiredIncomeLabel
+        const desiredIncomeDisplay = isMechanic && !isUdManufacturing && !isMechanicNewgrad && desiredIncomeLabel
           ? `希望年収: ${desiredIncomeLabel}`
           : '';
-        const jobIntentDisplay = isMechanic && !isMechanicNewgrad && jobIntentLabel
+        const jobIntentDisplay = isMechanic && !isUdManufacturing && !isMechanicNewgrad && jobIntentLabel
           ? `転職意向: ${jobIntentLabel}`
           : '';
         const transferTimingDisplay = isMechanicNewgrad ? '' : `転職時期: ${jobTimingLabel || '未選択'}`;
@@ -1041,7 +1081,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
               // Lark 側だけ成功した可能性がある通信例外。Webhook へ落とすと二重通知になる。
               // 同じ uuid の再送（1時間重複排除）に任せる。応募は記録済みなので 200 で返す。
               notificationSent = true;
-              larkNotified = true;
+              larkNotified = !isLaunchTest;
             }
             // ⚠️ ここで 502 を返してはいけない。
             // 応募者には「エラーが発生しました」と出て、送信を繰り返す。
@@ -1080,8 +1120,12 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
             console.error('Lark webhook notification threw:', describeError(error));
           }
         }
-        ledgerNotification.sent = notificationSent;
+        ledgerNotification.sent = isLaunchTest ? larkNotified : notificationSent;
         ledgerOutcome({ notified: larkNotified });
+        // 通常応募の成功基準は変えない。管理者テストだけは通知受理を確認できなければ未完了。
+        if (isLaunchTest && !larkNotified) {
+          return respond(NextResponse.json({ message: 'Launch test notification was not confirmed', test: true, recordId: baseSave.recordId, notified: false }, { status: 503 }));
+        }
         if (!notificationSent) {
           observation.markFailed('lark-notification');
           // 通知が1つも出せなかった。応募は Base に残っているので 200 で返すが、
@@ -1147,7 +1191,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
           : isMechanic ? 'mechanic'
           : isCoupang ? 'coupang'
           : 'default');
-      if (isSupportedEmailOrigin(emailOriginCandidate) && formData.email) {
+      if (!isLaunchTest && isSupportedEmailOrigin(emailOriginCandidate) && formData.email) {
         const recipientEmail = formData.email;
         const origin = emailOriginCandidate;
         tasks.push(
@@ -1190,8 +1234,9 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
       // (=面談予約リンクも共通)。送信本体は eeasy の共通エンドポイントに委譲。
       // media には実際の流入元(utm_source)を渡す。無ければ 'form'。
       const smsChannel: 'ridejob' | 'mechanic' | null =
-        isCoupang || formOrigin === 'bus' ? null : isMechanic ? 'mechanic' : 'ridejob';
-      if (smsChannel && formData.phoneNumber) {
+        isCoupang || formOrigin === 'bus'
+          ? null : isMechanic ? 'mechanic' : 'ridejob';
+      if (!isLaunchTest && smsChannel && formData.phoneNumber) {
         const channel = smsChannel;
         const media = (utmParams?.utm_source || 'form').toLowerCase().slice(0, 32);
         tasks.push(
@@ -1201,6 +1246,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
               phone: formData.phoneNumber,
               applicantName: formData.fullName,
               media,
+              ...(isUdManufacturing ? { jobKind: 'ud-manufacturing' as const, submissionId, appliedJobId: udConfig!.jobId } : {}),
             });
             if (r.sent) {
               ledgerOutcome({ sms: 'sent' });
@@ -1214,7 +1260,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
       }
 
       // Meta Conversions API（Lead）— 非致命。eventId が無ければスキップ
-      if (typeof submissionData.metaEventId === 'string' && submissionData.metaEventId) {
+      if (!isLaunchTest && typeof submissionData.metaEventId === 'string' && submissionData.metaEventId) {
         const capiUserAgent = request.headers.get('user-agent') || '';
         const capiClientIp = (request.headers.get('x-forwarded-for') || '').split(',')[0]?.trim() || '';
         const capiHost = request.headers.get('x-forwarded-host') || request.headers.get('host') || '';
@@ -1287,7 +1333,9 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
 
     // クライアントには成功したことを返す
     // (Larkへの通知成否に関わらず、データを受け付けた時点で成功とすることも多い)
-    return respond(NextResponse.json({ message: 'Application submitted successfully!' }, { status: 200 }));
+    return respond(NextResponse.json({ message: 'Application submitted successfully!',
+      ...(isLaunchTest ? { test: true, recordId: baseSave.recordId, notified: larkNotified, excludedFromConversions: true } : {}),
+    }, { status: 200 }));
 
   } catch (error) {
     observation.markFailed('request');

@@ -20,6 +20,6 @@ const MECHANIC_LABEL_MAP: Record<Exclude<FormData['jobTiming'], ''>, string> = {
 
 export function mapJobTimingLabel(jobTiming: FormData['jobTiming'], formOrigin?: FormOrigin) {
   if (!jobTiming) return '';
-  const labelMap = formOrigin === 'mechanic' || formOrigin === 'mechanic_newgrad' ? MECHANIC_LABEL_MAP : DEFAULT_LABEL_MAP;
+  const labelMap = formOrigin === 'mechanic' || formOrigin === 'mechanic_newgrad' || formOrigin === 'ud_manufacturing' ? MECHANIC_LABEL_MAP : DEFAULT_LABEL_MAP;
   return labelMap[jobTiming] ?? '';
 }

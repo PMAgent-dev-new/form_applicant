@@ -14,6 +14,7 @@ import { isValidEmail, isValidPhoneNumber, validateBirthDateCard, validateCard2,
 import { fetchJobCount, type JobCountParams } from '../utils/fetchJobCount';
 import { EMPTY_UTM_PARAMS, readAttribution, resolveUtmParams, type UtmParams } from '@/lib/attribution';
 import { readApplicationContext } from '@/lib/application-context';
+import { UD_RECEIPT_KEY, validateUdBirthDate } from '@/lib/ud-manufacturing';
 
 type UseApplicationFormStateParams = {
   showLoadingScreen: boolean;
@@ -21,6 +22,7 @@ type UseApplicationFormStateParams = {
   variant: PeopleImageVariant;
   formOrigin: FormOrigin;
   enableJobTimingStep: boolean;
+  fixedJobId?: string;
 };
 
 const initialFormData: FormData = {
@@ -39,11 +41,14 @@ const initialFormData: FormData = {
   truckLicenses: [],
 };
 
-export function useApplicationFormState({ showLoadingScreen, imagesToPreload, variant, formOrigin, enableJobTimingStep }: UseApplicationFormStateParams) {
+export function useApplicationFormState({ showLoadingScreen, imagesToPreload, variant, formOrigin, enableJobTimingStep, fixedJobId }: UseApplicationFormStateParams) {
   const router = useRouter();
   const isMechanic = formOrigin === 'mechanic';
   const isMechanicNewgrad = formOrigin === 'mechanic_newgrad';
   const isMechanicLike = isMechanic || isMechanicNewgrad;
+  const isUdManufacturing = formOrigin === 'ud_manufacturing';
+  const requiresEmail = formOrigin === 'coupang' || isMechanicLike || isUdManufacturing;
+  const validateBirth = isUdManufacturing ? validateUdBirthDate : validateBirthDateCard;
   const isTruck = formOrigin === 'truck';
   const [loading, setLoading] = useState(showLoadingScreen);
   const [currentCardIndex, setCurrentCardIndex] = useState(1);
@@ -131,6 +136,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
   }, [isFormDirty, warmUpHiragana]);
 
   const loadJobCount = useCallback(async (params: Partial<JobCountParams>) => {
+    if (isUdManufacturing) return;
     const hasPostal = typeof params.postalCode === 'string' && params.postalCode.trim().length > 0;
     const hasPref = typeof params.prefectureId === 'string' && params.prefectureId.trim().length > 0;
     const jobCategoryIds = isMechanicLike ? ['3', '10'] : undefined;
@@ -160,7 +166,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
       console.error('Error fetching job count:', error);
       setJobResult({ jobCount: null, message: '', isLoading: false, error: '求人件数の取得中にエラーが発生しました' });
     }
-  }, [isMechanicLike]);
+  }, [isMechanicLike, isUdManufacturing]);
 
   const isSubmitReady = useCallback(
     (phoneNumber: string, email: string) => {
@@ -169,7 +175,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         return false;
       }
       // coupangとmechanic系はメールアドレス必須
-      if (formOrigin === 'coupang' || isMechanicLike) {
+      if (requiresEmail) {
         const trimmedEmail = email.trim();
         if (!trimmedEmail) {
           return false;
@@ -178,7 +184,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
       }
       return true;
     },
-    [formOrigin, isMechanicLike]
+    [requiresEmail]
   );
 
   const validatePhoneNumberInput = useCallback(
@@ -203,7 +209,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
 
   const validateEmailInput = useCallback(
     (email: string) => {
-      if (formOrigin !== 'coupang' && !isMechanicLike) {
+      if (!requiresEmail) {
         return;
       }
       const trimmed = email.trim();
@@ -221,7 +227,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
       const submitReady = isSubmitReady(formData.phoneNumber, trimmed);
       setIsSubmitDisabled(!submitReady);
     },
-    [formData.phoneNumber, formOrigin, isMechanicLike, isSubmitReady]
+    [formData.phoneNumber, requiresEmail, isSubmitReady]
   );
 
   const handleInputChange = useCallback(
@@ -301,7 +307,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         const next = { ...prev };
         if (name === 'birthDate') {
           // 8桁そろった時点で実在日・年齢(18〜84歳)を即時判定する（携帯番号の即時判定と同じUX）
-          next.birthDate = value.length === 8 ? validateBirthDateCard(value).errors.birthDate ?? '' : '';
+          next.birthDate = value.length === 8 ? validateBirth(value).errors.birthDate ?? '' : '';
         } else if (name === 'jobTiming') {
           next.jobTiming = '';
         } else if (name === 'email') {
@@ -352,7 +358,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         }
       }
     },
-    [formOrigin, isFormDirty, loadJobCount, validateEmailInput, validatePhoneNumberInput, warmUpHiragana]
+    [formOrigin, isFormDirty, loadJobCount, validateEmailInput, validatePhoneNumberInput, warmUpHiragana, validateBirth]
   );
 
   const handleNameBlur = useCallback(
@@ -565,7 +571,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
   }, [formData.desiredIncome, getStepEventPayload]);
 
   const handleNextCard2 = useCallback(() => {
-    const result = validateBirthDateCard(formData.birthDate);
+    const result = validateBirth(formData.birthDate);
     setErrors(result.errors);
     if (result.isValid) {
       setCurrentCardIndex((prev) => {
@@ -575,7 +581,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         return next;
       });
     }
-  }, [formData.birthDate, getStepEventPayload]);
+  }, [formData.birthDate, getStepEventPayload, validateBirth]);
 
   const handleNextCard3 = useCallback(() => {
     const result = validateCard2(formData);
@@ -632,7 +638,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         setIsSubmitDisabled(true);
         return;
       }
-      const finalValidation = validateFinalStep(formData, formOrigin === 'coupang' || isMechanicLike);
+      const finalValidation = validateFinalStep(formData, requiresEmail);
       if (!finalValidation.isValid) {
         setErrors((prev) => ({ ...prev, ...finalValidation.errors }));
         setIsSubmitDisabled(true);
@@ -708,7 +714,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         const metaEventId = submissionIdRef.current || genEventId();
         submissionIdRef.current = metaEventId;
         const query = new URLSearchParams(window.location.search);
-        const appliedJobId = query.get('job_id')?.trim() || undefined;
+        const appliedJobId = isUdManufacturing ? fixedJobId : query.get('job_id')?.trim() || undefined;
         const catalog = attribution.catalogTouch;
         const body = {
           applicationContext: readApplicationContext(),
@@ -761,13 +767,13 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         // （従来は step_view / form_submit しか無く、CV が別プロパティ側にしか無かった）
         trackEvent('generate_lead', {
           form_name: 'ridejob_application',
-          job_category: isMechanicLike ? 'mechanic' : isTruck ? 'truck' : 'taxi',
+          job_category: isUdManufacturing ? 'manufacturing' : isMechanicLike ? 'mechanic' : isTruck ? 'truck' : 'taxi',
           currency: 'JPY',
           value: 0,
         });
 
         // 都道府県IDとお名前をlocalStorageに保存（サンクスページで求人表示・パーソナライズ用）
-        if (typeof window !== 'undefined') {
+        if (typeof window !== 'undefined' && !isUdManufacturing) {
           // 都道府県IDを保存（formDataまたはjobResultから取得）
           const prefectureIdToSave = formData.prefectureId || jobResult.prefectureId;
 
@@ -780,7 +786,11 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
           }
         }
         
-        const targetPath = isMechanicLike
+        if (isUdManufacturing) {
+          try { sessionStorage.setItem(UD_RECEIPT_KEY, JSON.stringify({ id: metaEventId, at: Date.now() })); }
+          catch { /* 計測用ストレージが使えなくても応募完了を妨げない。 */ }
+        }
+        const targetPath = isUdManufacturing ? '/ud-manufacturing/applicants/new' : isMechanicLike
           ? '/mechanic/applicants/new'
           : formOrigin === 'coupang'
             ? '/coupang/applicants/new'
@@ -796,7 +806,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         setIsSubmitting(false);
       }
     },
-    [formData, formOrigin, isMechanicLike, isTruck, router, variant, isSubmitting, jobResult.prefectureId]
+    [formData, formOrigin, isMechanicLike, isTruck, router, variant, isSubmitting, jobResult.prefectureId, isUdManufacturing, requiresEmail, fixedJobId]
   );
 
   const cardStates = useMemo(
