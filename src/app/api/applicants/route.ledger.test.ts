@@ -368,6 +368,24 @@ describe('applicants POST — 受付台帳', () => {
     expect(body.applicant.form_origin).toBe('mechanic');
   });
 
+  it('講師向けの登録を台帳とLarkの両方に残す', async () => {
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest({ ...applicantBody, formOrigin: 'mechanic', mechanicRole: 'instructor', submissionId: 'ledger-instructor' }));
+    expect(res.status).toBe(200);
+    const body = await recordedLedger();
+    expect(body.applicant.mechanic_role).toBe('instructor');
+    const write = fetchSpy.mock.calls.find(([url, init]) => String(url).includes('/records') && init?.method === 'POST'
+      && JSON.parse(String(init.body)).fields?.登録職種 === '整備士教員');
+    expect(write).toBeDefined();
+  });
+
+  it.each(['default', 'mechanic_newgrad'])('%s から講師区分が来ても採用しない', async (formOrigin) => {
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest({ ...applicantBody, formOrigin, mechanicRole: 'instructor', submissionId: `ledger-role-${formOrigin}` }));
+    expect(res.status).toBe(200);
+    expect((await recordedLedger()).applicant.mechanic_role).toBeUndefined();
+  });
+
   it('Base に保存できず退避に残した応募は、vaulted と Base の失敗理由を台帳に残す', async () => {
     fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
       const url = String(input);

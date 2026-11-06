@@ -52,6 +52,21 @@ describe('resolveDirectBaseWrite', () => {
     expect(result?.fields['履歴書（添付なし）']).toBeUndefined();
     expect(resolveDirectBaseWrite(mechanicContext())?.fields.登録職種).toBe('自動車整備士');
   });
+
+  it('講師向けフォームは希望職種を保存し、転職意向と資格は別に保持する', () => {
+    const target = resolveDirectBaseWrite({ ...mechanicContext(), mechanicRole: 'instructor' });
+    expect(target?.fields.登録職種).toBe('整備士教員');
+    expect(target?.fields.対応履歴メモ).toContain('希望職種: 整備士教員');
+    expect(target?.fields.対応履歴メモ).toContain('転職意向: 決まれば早く転職したい');
+    expect(target?.fields.資格).toEqual(['自動車整備士2級']);
+  });
+
+  it('通常の整備士と新卒フォームに講師区分を混入させない', () => {
+    expect(resolveDirectBaseWrite(mechanicContext())?.fields.登録職種).toBe('自動車整備士');
+    const target = resolveDirectBaseWrite({ ...mechanicContext(), isMechanicNewgrad: true, mechanicRole: 'instructor' });
+    expect(target?.fields.登録職種).toBe('自動車整備士');
+    expect(target?.fields.対応履歴メモ).not.toContain('希望職種: 整備士教員');
+  });
   it('CR台帳参照・本文はクリエイティブ欄にだけ保存し、対応履歴メモには書かず、新しい添付欄を要求しない', () => {
     const creativeText = 'CR台帳リンク: https://example.com/cr\n本文: 年休150日';
     for (const ctx of [mechanicContext(), { ...mechanicContext(), isMechanic: false, isTruck: true, submissionId: 'submission-1' }]) {

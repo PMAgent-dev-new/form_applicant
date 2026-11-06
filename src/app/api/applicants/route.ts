@@ -41,6 +41,7 @@ import { normalizeApplicationContext } from '@/lib/application-context';
 import { recordSubmissionAfterResponse, type SubmissionRecord } from '@/lib/submissionLedger';
 import { getUdLaunchConfig, UD_JOB_LABEL, validateUdSubmission } from '@/lib/ud-manufacturing';
 import { assessUdLaunchTest, UD_TEST_MARKER } from '@/lib/ud-launch-test';
+import { resolveMechanicRole, type MechanicRole } from '@/lib/mechanic-role';
 
 // 外部送信ライブラリの個別タイムアウトに加え、保存→通知→後続処理の実行枠を明示する。
 // 全段が上限まで遅延した場合の完了保証ではない。実測時間はサマリで監視する。
@@ -65,6 +66,7 @@ const DUPLICATE_WINDOW_MS = 60 * 60 * 1000;
 
 // Bitable 直書きに必要な、リクエスト内で算出済みの値をまとめたもの。
 export type BaseWriteContext = {
+  mechanicRole?: MechanicRole;
   isMechanic: boolean;
   isMechanicNewgrad: boolean;
   isUdManufacturing?: boolean;
@@ -136,11 +138,13 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
     : undefined;
 
   if (ctx.isMechanic) {
+    const isInstructor = !ctx.isMechanicNewgrad && !ctx.isUdManufacturing && ctx.mechanicRole === 'instructor';
     // 経験者フォームの転職時期／資格は Base の専用 Select に保存する。1問目（転職意向）は専用の欄が無いので対応履歴メモに残す。
     // 新卒フォームの資格回答（通学コース）は従来どおり対応履歴メモに残す。
     const memo = [
       ctx.isLaunchTest ? `${UD_TEST_MARKER}\n動作確認専用・実応募/広告成果の集計対象外・連絡禁止` : '',
       ctx.isUdManufacturing ? `[form_origin:ud_manufacturing]\n応募職種: 製造・組立\n応募求人: ${UD_JOB_LABEL}` : '',
+      isInstructor ? '希望職種: 整備士教員' : '',
       !ctx.isMechanicNewgrad && ctx.jobIntentLabel ? `転職意向: ${ctx.jobIntentLabel}` : '',
       ctx.isMechanicNewgrad && ctx.jobTimingLabel ? `転職時期: ${ctx.jobTimingLabel}` : '',
       ctx.isMechanicNewgrad && ctx.mechanicQualificationsLabel
@@ -170,7 +174,7 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
         応募日: ctx.submittedAtMs,
         ステータス: ctx.isLaunchTest ? 'リード対象外' : 'リード',
         ...(ctx.isLaunchTest ? { SMS配信停止フラグ: true } : {}),
-        登録職種: ctx.isUdManufacturing ? 'その他' : '自動車整備士',
+        登録職種: ctx.isUdManufacturing ? 'その他' : isInstructor ? '整備士教員' : '自動車整備士',
         転職時期: ctx.isMechanicNewgrad ? undefined : ctx.jobTimingLabel || undefined,
         資格: ctx.isUdManufacturing || ctx.isMechanicNewgrad || !ctx.form.mechanicQualification
           ? undefined
@@ -457,6 +461,7 @@ type ApplicantFormData = {
 };
 
 type ApplicantSubmission = ApplicantFormData & {
+  mechanicRole?: unknown;
   applicationContext?: unknown;
   utmParams?: UTMParams;
   experiment?: ExperimentInfo;
@@ -532,6 +537,7 @@ export async function POST(request: NextRequest) {
       submissionData.truckLicenses = [];
     }
     const { utmParams, formOrigin, ...formData } = submissionData;
+    const mechanicRole = resolveMechanicRole(formOrigin, submissionData.mechanicRole);
     const submissionId = String(submissionData.submissionId || submissionData.metaEventId || '').trim().slice(0, 128);
     if (!submissionId) {
       return NextResponse.json({ message: 'submissionId is required' }, { status: 400 });
@@ -561,6 +567,7 @@ export async function POST(request: NextRequest) {
         applied_job_id: submissionData.appliedJobId,
         form_origin: formOrigin,
         ...(isLaunchTest ? { is_test: true } : {}),
+        mechanic_role: mechanicRole,
       },
       context: {
         application_context: normalizeApplicationContext(submissionData.applicationContext),
@@ -799,6 +806,7 @@ export async function POST(request: NextRequest) {
 
     // Base 保存用コンテキスト（直書き／Webhook 両方で共有）
     const baseWriteCtx: BaseWriteContext = {
+      mechanicRole,
       isMechanic,
       isMechanicNewgrad,
       isUdManufacturing,
@@ -857,6 +865,8 @@ export async function POST(request: NextRequest) {
       email: formData.email || '',
       job_timing: baseJobTimingLabel,
       job_intent: baseJobIntentLabel,
+      mechanic_role: mechanicRole || '',
+      registration_job: mechanicRole === 'instructor' ? '整備士教員' : '',
       desired_income: baseDesiredIncomeLabel,
       mechanic_qualifications: mechanicQualificationsLabel,
       truck_licenses: truckLicensesLabel,
@@ -915,6 +925,9 @@ export async function POST(request: NextRequest) {
         via: baseSave.savedVia ?? 'none',
         record_id: baseSave.recordId,
         error: baseSave.baseSaveFailed?.slice(0, 200),
+        ...(mechanicRole === 'instructor' && baseSave.savedVia === 'webhook'
+          ? { registration_job_verification: 'pending_webhook_mapping' }
+          : {}),
       },
     });
 
@@ -1010,7 +1023,7 @@ export async function POST(request: NextRequest) {
           ? `転職意向: ${jobIntentLabel}`
           : '';
         const transferTimingDisplay = isMechanicNewgrad ? '' : `転職時期: ${jobTimingLabel || '未選択'}`;
-        const additionalFields = [transferTimingDisplay, desiredIncomeDisplay, mechanicQualificationsDisplay, truckLicensesDisplay, jobIntentDisplay]
+        const additionalFields = [mechanicRole === 'instructor' ? '希望職種: 整備士教員' : '', transferTimingDisplay, desiredIncomeDisplay, mechanicQualificationsDisplay, truckLicensesDisplay, jobIntentDisplay]
           .filter(Boolean)
           .join('\n');
         const ageDisplay = calculateAge(formData.birthDate) ?? '未入力';

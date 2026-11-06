@@ -8,6 +8,7 @@ import { BirthDateCard, DesiredIncomeCard, FormExitModal, JobTimingCard, Mechani
 import { useApplicationFormState } from './application-form/hooks/useApplicationFormState';
 import type { FormOrigin, PeopleImageVariant } from './application-form/types';
 import { FORM_PRESETS, type FormPreset } from './application-form/presets';
+import { INSTRUCTOR_FORM_TITLE, type MechanicRole } from '@/lib/mechanic-role';
 
 declare global {
   interface Window {
@@ -18,6 +19,7 @@ declare global {
 interface ApplicationFormProps {
   // プリセット使用時（推奨）
   preset?: FormPreset;
+  mechanicRole?: MechanicRole;
 
   // 個別カスタマイズ（必須）
   peopleImageSrc: string;
@@ -50,6 +52,7 @@ interface ApplicationFormProps {
 
 function ApplicationFormInner({
   preset,
+  mechanicRole,
   peopleImageSrc,
   variant,
   formOrigin,
@@ -134,12 +137,14 @@ function ApplicationFormInner({
     imagesToPreload,
     variant,
     formOrigin: resolvedFormOrigin,
+    mechanicRole,
     enableJobTimingStep: resolvedEnableJobTimingStep,
   });
 
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const modalContentRef = useRef<HTMLDivElement | null>(null);
   const isMechanic = resolvedFormOrigin === 'mechanic';
+  const isInstructor = isMechanic && mechanicRole === 'instructor';
   const isMechanicNewgrad = resolvedFormOrigin === 'mechanic_newgrad';
   const isTruck = resolvedFormOrigin === 'truck';
   const showLegalFooter = resolvedFormOrigin === 'default' || resolvedFormOrigin === 'bus' || isMechanic || isMechanicNewgrad || isTruck;
@@ -184,6 +189,12 @@ function ApplicationFormInner({
   // フォームの中身がずれることもない（未対応のブラウザは overflow-hidden）
   const formContent = (
     <form onSubmit={handleSubmit} id="form" noValidate className="relative overflow-hidden supports-[overflow:clip]:overflow-clip pb-4">
+      {isInstructor && (
+        <div className="mb-3 rounded-2xl bg-white px-4 py-4 text-center text-gray-900">
+          <h1 id="application-form-title" className="text-lg font-bold">{INSTRUCTOR_FORM_TITLE}</h1>
+          <p className="mt-1 text-sm">整備士教員の仕事を希望する方向けの登録フォームです。</p>
+        </div>
+      )}
       {showPeopleImage && peopleImageSrc && (
         // モーダルでは、画面の高さが 900px 未満だと人物画像とカードが入りきらずスクロールするので、画像を出さない
         <div className={`mb-6 flex justify-center ${resolvedUseModal ? '[@media(max-height:899px)]:hidden' : ''}`.trim()}>
@@ -269,7 +280,7 @@ function ApplicationFormInner({
             formData={formData}
             errors={errors}
             jobResult={jobResult}
-            showJobCount={true}
+            showJobCount={!isInstructor}
             onChange={handleInputChange}
             onBlur={handleNameBlur}
             onPrevious={handlePreviousCard}
@@ -280,7 +291,7 @@ function ApplicationFormInner({
 
           <PhoneNumberCard
             jobResult={jobResult}
-            showJobCount={true}
+            showJobCount={!isInstructor}
             formData={formData}
             errors={errors}
             phoneError={phoneError}
@@ -293,7 +304,7 @@ function ApplicationFormInner({
             isActive={cardStates.isCard8Active}
             showEmailField={true}
             preferPhoneFirst={true}
-            submitButtonText="求人情報を受け取る"
+            submitButtonText={isInstructor ? '応募・相談を申し込む' : '求人情報を受け取る'}
             progress={{ currentStep: 7, totalSteps: 7 }}
           />
         </>
@@ -530,7 +541,7 @@ function ApplicationFormInner({
   const modal = (
     <div
       ref={overlayRef}
-      className={`fixed inset-0 z-[10000] flex items-center justify-center bg-black/60 px-4 ${resolvedContainerClassName}`}
+      className={`fixed inset-0 z-[10000] flex items-center justify-center ${isInstructor ? 'bg-slate-100' : 'bg-black/60'} px-4 ${resolvedContainerClassName}`}
       role="dialog"
       aria-modal="true"
       aria-labelledby="application-form-title"
@@ -540,7 +551,7 @@ function ApplicationFormInner({
           <div className="flex w-full max-w-md items-center justify-between bg-white px-4 py-4">
             <Image src={resolvedHeaderLogoSrc} alt="Ride Job Logo" width={120} height={30} className="h-[30px] w-auto" priority loading="eager" />
             <div className="text-right">
-              <p className="text-[11px] text-gray-700 leading-tight">{resolvedHeaderUpperText}</p>
+              <p className="text-[11px] text-gray-700 leading-tight">{isInstructor ? '整備士教員のお仕事をお探しの方へ' : resolvedHeaderUpperText}</p>
               <p className="text-xs font-bold text-gray-900 leading-tight">{resolvedHeaderLowerText}</p>
             </div>
           </div>
