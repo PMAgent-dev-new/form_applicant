@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import Image from '@/app/components/AppImage';
 import { assetPath } from '@/lib/basePath';
+import { getUdJobDetailsUrl } from '@/lib/ud-manufacturing';
 import { useApplicationFormState } from '@/app/components/application-form/hooks/useApplicationFormState';
 import { BirthDateCard, NameCard, NameInputCard, PhoneNumberCard, MechanicJobTimingCard } from '@/app/components/application-form/components';
 import { mapJobTimingLabel } from '@/app/components/application-form/utils/mapJobTimingLabel';
@@ -29,9 +30,11 @@ export default function UdApplicationForm({ jobId }: { jobId: string }) {
         <section className="ud-context" aria-label="今回の応募対象">
           <h1>未経験から、UDトラックスで。</h1>
           <p className="ud-tags"><strong>未経験OK</strong><span>正社員</span><span>埼玉県上尾市</span></p>
+          <p className="ud-location"><strong>勤務地は埼玉県上尾市の工場です。</strong><br />車・バイク通勤可。上尾駅から無料送迎バスがあります。</p>
+          <p className="ud-location"><strong>遠方で通勤が難しい方は、転居を伴う勤務です。</strong><br />寮・社宅あり（持ち家がなく、通勤に1時間30分以上かかる方が対象）。住居の種類・費用などの適用条件は、担当者がご案内します。</p>
           <p>対象：35歳以下<br />（長期勤続によるキャリア形成のため）</p>
           <details><summary>応募先・受付について</summary><p>勤務先：UDトラックス株式会社 上尾工場<br />職種：製造・組立スタッフ<br />応募受付：RIDE JOB（株式会社PM Agentの人材紹介）</p>
-            <a href={`https://ridejob.jp/jobs/${encodeURIComponent(jobId)}`} target="_blank" rel="noopener noreferrer">求人詳細を確認する</a></details>
+            <a href={getUdJobDetailsUrl(jobId)} target="_blank" rel="noopener noreferrer">求人詳細を確認する</a></details>
         </section>
         <div ref={formArea} tabIndex={-1} className="ud-form-area" aria-label={confirming ? '入力内容の確認' : `入力ステップ${step}`}>
           <form onSubmit={event => {

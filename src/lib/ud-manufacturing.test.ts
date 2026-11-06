@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { getUdLaunchConfig, validateUdBirthDate, validateUdSubmission } from './ud-manufacturing';
+import { getUdJobDetailsUrl, getUdLaunchConfig, validateUdBirthDate, validateUdSubmission } from './ud-manufacturing';
 import { buildApplicationConfirmationText } from './email/templates/application-confirmation';
 
 const config = { UD_MANUFACTURING_ENABLED: 'true', UD_MANUFACTURING_CONTACT_READY: 'true', UD_MANUFACTURING_JOB_ID: 'ud-job-test', UD_MANUFACTURING_SMS_MODE: 'verified-manufacturing', META_SMS_ENABLED: 'true', EEASY_SMS_SEND_URL: 'https://sms.example.invalid/api/sms/send', SMS_SEND_SECRET: 'test-secret' };
 const valid = { jobTiming: 'asap' as const, fullName: '動作 確認', fullNameKana: 'どうさ かくにん', birthDate: '20000101', postalCode: '3620046', prefectureId: '', municipalityId: '', phoneNumber: '07031415926', email: 'test@example.invalid' };
 
 describe('UD公開ゲートと入力検証', () => {
+  it('求人詳細は実在する単数形のjobルートを使う', () => {
+    expect(getUdJobDetailsUrl('sn5cucgprv')).toBe('https://ridejob.jp/job/sn5cucgprv');
+    expect(getUdJobDetailsUrl('x/y?z')).toBe('https://ridejob.jp/job/x%2Fy%3Fz');
+  });
   it('未設定では公開しない', () => expect(getUdLaunchConfig({})).toBeNull());
   it('連絡文面・求人・SMS方針のどれかが未確認なら閉じる', () => {
     for (const key of Object.keys(config)) expect(getUdLaunchConfig({ ...config, [key]: '' })).toBeNull();

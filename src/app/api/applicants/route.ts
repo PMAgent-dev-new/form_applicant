@@ -139,7 +139,7 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
     // 経験者フォームの転職時期／資格は Base の専用 Select に保存する。1問目（転職意向）は専用の欄が無いので対応履歴メモに残す。
     // 新卒フォームの資格回答（通学コース）は従来どおり対応履歴メモに残す。
     const memo = [
-      ctx.isLaunchTest ? `${UD_TEST_MARKER}\n動作確認専用・実応募/広告成果の集計対象外・連絡禁止` : '',
+      ctx.isLaunchTest ? `${UD_TEST_MARKER}\n動作確認専用・実応募/広告成果の集計対象外・連絡禁止\nテスト実行日時: ${new Date(ctx.submittedAtMs).toISOString()}` : '',
       ctx.isUdManufacturing ? `[form_origin:ud_manufacturing]\n応募職種: 製造・組立\n応募求人: ${UD_JOB_LABEL}` : '',
       !ctx.isMechanicNewgrad && ctx.jobIntentLabel ? `転職意向: ${ctx.jobIntentLabel}` : '',
       ctx.isMechanicNewgrad && ctx.jobTimingLabel ? `転職時期: ${ctx.jobTimingLabel}` : '',
@@ -167,7 +167,9 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
         郵便番号: ctx.form.postalCode,
         '居住地/都道府県': ctx.form.prefectureName,
         '居住地/市区町村以下': address,
-        応募日: ctx.submittedAtMs,
+        // 合成テストは実応募ではない。既存の日次・週次・経営集計が使う応募日を付けない。
+        // 実行日時はメモと受付台帳に残す（本番DateTime列は auto_fill=false を実測済み）。
+        応募日: ctx.isLaunchTest ? undefined : ctx.submittedAtMs,
         ステータス: ctx.isLaunchTest ? 'リード対象外' : 'リード',
         ...(ctx.isLaunchTest ? { SMS配信停止フラグ: true } : {}),
         登録職種: ctx.isUdManufacturing ? 'その他' : '自動車整備士',
@@ -324,7 +326,15 @@ async function saveToBase(
             notificationAlreadySent = hasNotificationMarker(saved.previousFields);
           }
         }
-        const submittedAt = Number(saved.previousFields['応募日']);
+        // 合成テストの応募日は集計除外のため空。保存済み実行日時で通知再送の経過を判定する。
+        // 通常応募の日時判定は変えず、テスト印のないメモや壊れた日時からは再送しない。
+        const rawMemo = saved.previousFields['対応履歴メモ'];
+        const savedMemo = typeof rawMemo === 'string' ? rawMemo : Array.isArray(rawMemo)
+          ? rawMemo.map(part => part && typeof part === 'object' && typeof part.text === 'string' ? part.text : '').join('') : '';
+        const testAt = savedMemo.includes(UD_TEST_MARKER)
+          ? savedMemo.match(/^テスト実行日時: (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)$/m)?.[1] : undefined;
+        const submittedAt = ctx.isLaunchTest
+          ? Date.parse(testAt || '') : Number(saved.previousFields['応募日']);
         const notificationAge = Number.isFinite(submittedAt) ? Date.now() - submittedAt : undefined;
         const notificationInProgress = !saved.created
           && !notificationAlreadySent
@@ -885,8 +895,14 @@ export async function POST(request: NextRequest) {
     /** Base に入らなかった応募を Supabase の退避先に残せたか */
     let vaultSaved = false;
     try {
-      baseSave = await observation.timed('base-save', () => saveToBase(baseWriteCtx, baseWebhookUrl, basePayload));
+      baseSave = await observation.timed('base-save', () => saveToBase(baseWriteCtx, isLaunchTest ? undefined : baseWebhookUrl, basePayload));
     } catch (error) {
+      // テスト印や応募日なしを保持できない予備経路へ合成データを流さない。
+      if (isLaunchTest) {
+        observation.markFailed('base-save');
+        ledgerOutcome({ base: { ok: false, via: 'none' } });
+        return respond(NextResponse.json({ message: 'Launch test Base write failed', test: true, notified: false }, { status: 503 }));
+      }
       // ⚠️ ここで 500 を返してはいけない。この行より後ろに Lark通知・確認メール・SMS・
       // Meta CAPI・OpenAI CAPI が全部ある。500 で抜けると応募者の氏名・電話・メールが
       // どこにも残らない（2026-09-17〜09-23 の障害。自社LP経由の応募が5日間ゼロ）。

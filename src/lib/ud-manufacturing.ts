@@ -4,6 +4,7 @@ import { validateCard2, validateFinalStep, validateNameFields } from '@/app/comp
 export const UD_FORM_ORIGIN = 'ud_manufacturing' as const;
 export const UD_JOB_LABEL = 'UDトラックス上尾工場・未経験可の製造／組立（正社員）';
 export const UD_RECEIPT_KEY = 'ridejob_ud_submission_receipt';
+export const getUdJobDetailsUrl = (jobId: string) => `https://ridejob.jp/job/${encodeURIComponent(jobId)}`;
 const experiencedJobIds = new Set(['sfoe98-z9', 'lt_7sto9xj4p', 'dgzs6xw6b', 'ztl0-zg0r']);
 
 // 新導線だけを停止できる公開ゲート。未設定・経験者求人・連絡文面未確認では開かない。

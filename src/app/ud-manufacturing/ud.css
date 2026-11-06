@@ -8,6 +8,7 @@
 .ud-context h1 { font-size: 19px; font-weight: 800; margin-bottom: 8px; }
 .ud-tags { display: flex; gap: 16px; font-weight: 700; margin-bottom: 8px; }
 .ud-tags strong { color: #9d2632; }
+.ud-location { font-size: 14px; margin-bottom: 12px; }
 .ud-context summary { font-weight: 700; cursor: pointer; margin-top: 8px; }
 .ud-page a { text-decoration: underline; text-underline-offset: 3px; }
 .ud-form-area { outline: none; }
