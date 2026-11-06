@@ -4,6 +4,7 @@ import { checkLarkAuth, checkBaseColumns, type LarkProfile } from '@/lib/larkBas
 import { resolveDirectBaseWrite, type BaseWriteContext } from '@/app/api/applicants/route';
 import { buildLiftJobDirectBaseFields, LIFTJOB_TABLE_ID } from '@/app/api/coupang/applicants/route';
 import { getUdLaunchConfig } from '@/lib/ud-manufacturing';
+import { udManufacturingSmsIsReady } from '@/lib/sms/send-application-sms';
 
 /**
  * デプロイ後の合成チェック用ヘルスエンドポイント。
@@ -250,9 +251,10 @@ export async function GET(request: NextRequest) {
   let unreachable: string[] = [];
   let mismatched: string[] = [];
   if (deep) {
-    const [results, metaReady] = await Promise.all([
+    const [results, metaReady, udSmsReady] = await Promise.all([
       Promise.all(DEEP_CHECK_PROFILES.map(async (p) => ({ profile: p, result: await checkLarkAuth(p) }))),
       metaReferenceIsReady(),
+      process.env.UD_MANUFACTURING_ENABLED === 'true' ? udManufacturingSmsIsReady() : Promise.resolve(true),
     ]);
     // not_configured は載せない。APP_* の欠落は REQUIRED_ENV_GROUPS が同じ9変数を持つので
     // missing で必ず名指しされている。unreachable に載せると監視側で「資格情報が通らない」
@@ -261,6 +263,7 @@ export async function GET(request: NextRequest) {
       .filter((r) => !r.result.ok && (r.result as { reason: string }).reason !== 'not_configured')
       .map((r) => `lark_auth_${r.profile}:${(r.result as { reason: string }).reason}`);
     if (!metaReady) unreachable.push('meta_reference:unavailable');
+    if (!udSmsReady) unreachable.push('ud_manufacturing_sms:unavailable');
 
     // 認証が通らない・未設定のプロファイルは、列を調べても意味が無いので重ねて呼ばない。
     const okProfiles = new Set(results.filter((r) => r.result.ok).map((r) => r.profile));

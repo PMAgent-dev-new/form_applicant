@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { getUdLaunchConfig, validateUdBirthDate, validateUdSubmission } from './ud-manufacturing';
 import { buildApplicationConfirmationText } from './email/templates/application-confirmation';
 
-const config = { UD_MANUFACTURING_ENABLED: 'true', UD_MANUFACTURING_CONTACT_READY: 'true', UD_MANUFACTURING_JOB_ID: 'ud-job-test', UD_MANUFACTURING_SMS_MODE: 'disabled-approved' };
+const config = { UD_MANUFACTURING_ENABLED: 'true', UD_MANUFACTURING_CONTACT_READY: 'true', UD_MANUFACTURING_JOB_ID: 'ud-job-test', UD_MANUFACTURING_SMS_MODE: 'verified-manufacturing', META_SMS_ENABLED: 'true', EEASY_SMS_SEND_URL: 'https://sms.example.invalid/api/sms/send', SMS_SEND_SECRET: 'test-secret' };
 const valid = { jobTiming: 'asap' as const, fullName: '動作 確認', fullNameKana: 'どうさ かくにん', birthDate: '20000101', postalCode: '3620046', prefectureId: '', municipalityId: '', phoneNumber: '07031415926', email: 'test@example.invalid' };
 
 describe('UD公開ゲートと入力検証', () => {
@@ -13,7 +13,9 @@ describe('UD公開ゲートと入力検証', () => {
   it.each(['sfoe98-z9', 'lt_7sto9xj4p', 'dgzs6xw6b', 'ztl0-zg0r'])('経験必須求人%sを流用しない', jobId => {
     expect(getUdLaunchConfig({ ...config, UD_MANUFACTURING_JOB_ID: jobId })).toBeNull();
   });
-  it('確認済みの構成だけを返す', () => expect(getUdLaunchConfig(config)).toEqual({ jobId: 'ud-job-test', smsMode: 'disabled-approved' }));
+  it('確認済みの構成だけを返す', () => expect(getUdLaunchConfig(config)).toEqual({ jobId: 'ud-job-test', smsMode: 'verified-manufacturing' }));
+  it.each(['disabled-approved', 'verified-mechanic'])('旧SMS方針%sでは公開しない', mode => expect(getUdLaunchConfig({ ...config, UD_MANUFACTURING_SMS_MODE: mode })).toBeNull());
+  it('SMS dry-runでは公開しない', () => expect(getUdLaunchConfig({ ...config, META_SMS_DRY_RUN: 'true' })).toBeNull());
   it.each(['20260230', '21000101', '123', 'abcd0101', '18990101'])('不正日付%sを拒否', birth => expect(validateUdBirthDate(birth).isValid).toBe(false));
   it('35歳超を自動不合格にしない', () => expect(validateUdBirthDate('19800101').isValid).toBe(true));
   it('APIにも全5ステップの検証を適用', () => {

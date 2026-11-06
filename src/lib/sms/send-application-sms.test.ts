@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { hangingFetch, shortenAbortSignalTimeout, stalledBodyFetch } from '../testing/fetch-timeout';
-import { sendApplicationSms } from './send-application-sms';
+import { sendApplicationSms, udManufacturingSmsIsReady } from './send-application-sms';
 
 /**
  * eeasy（/api/sms/send）が応答しないときの振る舞い。
@@ -68,5 +68,36 @@ describe('sendApplicationSms', () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: true, deliveryOrderId: 42, ref: 'r-1' })));
 
     await expect(sendApplicationSms(SMS_INPUT)).resolves.toEqual({ sent: true, deliveryOrderId: 42, ref: 'r-1' });
+  });
+
+  it('UDは専用URLと同じ応募の安定したrefを使い、旧URLへフォールバックしない', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ error: 'NOT_FOUND' }, { status: 404 }));
+    vi.stubGlobal('fetch', fetch);
+    const input = { ...SMS_INPUT, channel: 'mechanic' as const, jobKind: 'ud-manufacturing' as const, submissionId: 'ud-application-1', appliedJobId: 'ud-job-test' };
+    await expect(sendApplicationSms(input)).resolves.toMatchObject({ sent: false });
+    await sendApplicationSms(input);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls.map(call => String(call[0]))).toEqual(Array(2).fill('https://leomeet.pmagent.jp/api/sms/send/ud-manufacturing'));
+    const bodies = fetch.mock.calls.map(call => JSON.parse(String((call[1] as RequestInit).body)));
+    expect(bodies[0].ref).toMatch(/^ud-[a-f0-9]{32}$/);
+    expect(bodies[0].ref).toBe(bodies[1].ref);
+    expect(bodies[0].channel).toBe('mechanic');
+  });
+
+  it('UDの求人区分・応募IDが不正なら外部送信しない', async () => {
+    const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
+    await expect(sendApplicationSms({ ...SMS_INPUT, jobKind: 'ud-manufacturing', submissionId: 'x' })).resolves.toMatchObject({ sent: false });
+    await expect(sendApplicationSms({ ...SMS_INPUT, channel: 'mechanic', jobKind: 'ud-manufacturing' })).resolves.toMatchObject({ sent: false });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('UDの死活確認は認証付きGETのみで、専用版の一致を必須とする', async () => {
+    vi.stubEnv('UD_MANUFACTURING_JOB_ID', 'ud-job-test');
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ status: 'ready', template: 'ud-manufacturing-v1', jobId: 'ud-job-test' }));
+    vi.stubGlobal('fetch', fetch);
+    expect(await udManufacturingSmsIsReady()).toBe(true);
+    expect(fetch.mock.calls[0]?.[1]).toMatchObject({ headers: { Authorization: 'Bearer test-secret' } });
+    fetch.mockImplementation(async () => Response.json({ status: 'ready' }));
+    expect(await udManufacturingSmsIsReady()).toBe(false);
   });
 });

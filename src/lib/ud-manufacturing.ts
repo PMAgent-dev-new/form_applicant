@@ -14,8 +14,10 @@ export function getUdLaunchConfig(env: Record<string, string | undefined> = proc
     || env.UD_MANUFACTURING_CONTACT_READY !== 'true'
     || !/^[a-zA-Z0-9_-]{3,100}$/.test(jobId)
     || experiencedJobIds.has(jobId)
-    || !['verified-mechanic', 'disabled-approved'].includes(smsMode || '')) return null;
-  return { jobId, smsMode: smsMode as 'verified-mechanic' | 'disabled-approved' };
+    || smsMode !== 'verified-manufacturing'
+    || env.META_SMS_ENABLED !== 'true' || env.META_SMS_DRY_RUN === 'true'
+    || !env.EEASY_SMS_SEND_URL || !env.SMS_SEND_SECRET) return null;
+  return { jobId, smsMode: 'verified-manufacturing' as const };
 }
 
 // 求人の35歳以下は画面に明示するが、年齢による自動の合否判定はしない。

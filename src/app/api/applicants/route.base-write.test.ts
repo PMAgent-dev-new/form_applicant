@@ -46,6 +46,7 @@ describe('resolveDirectBaseWrite', () => {
     expect(result?.profile).toBe('mechanic');
     expect(result?.fields.登録職種).toBe('その他');
     expect(result?.fields.対応履歴メモ).toContain('応募職種: 製造・組立');
+    expect(result?.fields.対応履歴メモ).toContain('[form_origin:ud_manufacturing]');
     expect(result?.fields.応募求人ID).toBe('ud-job-test');
     expect(result?.fields.資格).toBeUndefined();
     expect(result?.fields['履歴書（添付なし）']).toBeUndefined();

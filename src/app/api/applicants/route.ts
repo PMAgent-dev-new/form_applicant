@@ -136,7 +136,7 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
     // 経験者フォームの転職時期／資格は Base の専用 Select に保存する。1問目（転職意向）は専用の欄が無いので対応履歴メモに残す。
     // 新卒フォームの資格回答（通学コース）は従来どおり対応履歴メモに残す。
     const memo = [
-      ctx.isUdManufacturing ? `応募職種: 製造・組立\n応募求人: ${UD_JOB_LABEL}` : '',
+      ctx.isUdManufacturing ? `[form_origin:ud_manufacturing]\n応募職種: 製造・組立\n応募求人: ${UD_JOB_LABEL}` : '',
       !ctx.isMechanicNewgrad && ctx.jobIntentLabel ? `転職意向: ${ctx.jobIntentLabel}` : '',
       ctx.isMechanicNewgrad && ctx.jobTimingLabel ? `転職時期: ${ctx.jobTimingLabel}` : '',
       ctx.isMechanicNewgrad && ctx.mechanicQualificationsLabel
@@ -1210,7 +1210,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
       // (=面談予約リンクも共通)。送信本体は eeasy の共通エンドポイントに委譲。
       // media には実際の流入元(utm_source)を渡す。無ければ 'form'。
       const smsChannel: 'ridejob' | 'mechanic' | null =
-        isCoupang || formOrigin === 'bus' || (isUdManufacturing && udConfig?.smsMode === 'disabled-approved')
+        isCoupang || formOrigin === 'bus'
           ? null : isMechanic ? 'mechanic' : 'ridejob';
       if (smsChannel && formData.phoneNumber) {
         const channel = smsChannel;
@@ -1222,6 +1222,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
               phone: formData.phoneNumber,
               applicantName: formData.fullName,
               media,
+              ...(isUdManufacturing ? { jobKind: 'ud-manufacturing' as const, submissionId, appliedJobId: udConfig!.jobId } : {}),
             });
             if (r.sent) {
               ledgerOutcome({ sms: 'sent' });

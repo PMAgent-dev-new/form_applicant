@@ -17,6 +17,31 @@
  */
 
 import { describeError } from '../describe-error';
+import { createHash } from 'node:crypto';
+
+export function udManufacturingSmsUrl(): string | null {
+  try {
+    const url = new URL(process.env.EEASY_SMS_SEND_URL || '');
+    if (url.protocol !== 'https:' || url.pathname.replace(/\/$/, '') !== '/api/sms/send') return null;
+    url.pathname = '/api/sms/send/ud-manufacturing';
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch { return null; }
+}
+
+// UDが公開されている場合だけ既存healthから検査。GETで送信・DB更新はしない。
+export async function udManufacturingSmsIsReady(): Promise<boolean> {
+  const url = udManufacturingSmsUrl();
+  const secret = process.env.SMS_SEND_SECRET;
+  if (!url || !secret || process.env.META_SMS_ENABLED !== 'true' || process.env.META_SMS_DRY_RUN === 'true') return false;
+  try {
+    const response = await fetch(url, { headers: { Authorization: `Bearer ${secret}` }, signal: AbortSignal.timeout(2500), cache: 'no-store' });
+    const data = await response.json();
+    return response.ok && data.status === 'ready' && data.template === 'ud-manufacturing-v1'
+      && Boolean(process.env.UD_MANUFACTURING_JOB_ID) && data.jobId === process.env.UD_MANUFACTURING_JOB_ID;
+  } catch { return false; }
+}
 
 /**
  * eeasy(leomeet) 側に登録されたチャネル名。文面と予約リンク先は eeasy 側が持つ。
@@ -39,14 +64,22 @@ export async function sendApplicationSms(input: {
   applicantName?: string;
   /** 流入元ラベル(eeasy の sms_messages.media に記録)。未指定は 'form'。 */
   media?: string;
+  /** UDは旧エンドポイントへ送らず、承認済み専用文面のURLを使用する。 */
+  jobKind?: 'ud-manufacturing';
+  submissionId?: string;
+  appliedJobId?: string;
 }): Promise<SmsSendResult> {
   if (process.env.META_SMS_ENABLED !== 'true') {
     return { sent: false, reason: 'disabled' };
   }
-  const url = process.env.EEASY_SMS_SEND_URL;
+  const isUd = input.jobKind === 'ud-manufacturing';
+  const url = isUd ? udManufacturingSmsUrl() : process.env.EEASY_SMS_SEND_URL;
   const secret = process.env.SMS_SEND_SECRET;
   if (!url || !secret) {
     return { sent: false, reason: 'not_configured' };
+  }
+  if (isUd && (input.channel !== 'mechanic' || !input.submissionId || !input.appliedJobId)) {
+    return { sent: false, reason: 'invalid_ud_context' };
   }
   if (!input.phone) {
     return { sent: false, reason: 'no_phone' };
@@ -68,6 +101,7 @@ export async function sendApplicationSms(input: {
         channel: input.channel,
         media: input.media || 'form',
         applicantName: input.applicantName || undefined,
+        ...(isUd ? { ref: `ud-${createHash('sha256').update(input.submissionId!).digest('hex').slice(0, 32)}`, jobId: input.appliedJobId } : {}),
       }),
       // タイムアウト必須。応募APIは全タスクを await してからレスポンスを返すため、eeasy が応答しないと
       // Promise.allSettled が張り付き、サマリ行も出ないまま実行上限で打ち切られる。

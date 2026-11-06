@@ -44,6 +44,7 @@ function stubFetch({
   missingColumns,
   fieldsError,
   meta,
+  udSms,
 }: {
   /** 一様に指定するか、プロファイル別に指定する（一部だけ壊れた状態を作れる） */
   larkAuth?: LarkAuthMode | Partial<Record<'ridejob' | 'mechanic' | 'liftjob', LarkAuthMode>>;
@@ -53,11 +54,16 @@ function stubFetch({
   /** プロファイル別に、列一覧の読み取りそのものを失敗させる応答。 */
   fieldsError?: Partial<Record<'ridejob' | 'mechanic' | 'liftjob', { status: number; body: unknown }>>;
   meta?: { status: number; body: unknown; throws?: boolean };
+  udSms?: { status: number; body: unknown };
 } = {}) {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (url.includes('/api/sms/send/ud-manufacturing')) {
+        const r = udSms ?? { status: 200, body: { status: 'ready', template: 'ud-manufacturing-v1', jobId: 'ud-job-test' } };
+        return Response.json(r.body, { status: r.status });
+      }
       if (url.includes('graph.facebook.com/')) {
         if (meta?.throws) throw new Error('reference lookup unavailable');
         const result = meta ?? { status: 200, body: { id: 'act_1435983094817075' } };
@@ -126,6 +132,18 @@ function stubFetch({
 }
 
 describe('GET /api/health', () => {
+  it.each([
+    { status: 404, body: {} },
+    { status: 200, body: { status: 'ready', template: 'ud-manufacturing-v1', jobId: 'other-job' } },
+  ])('UD専用SMSの未反映・求人不一致を既存の監視で検出する', async upstream => {
+    for (const [key, value] of Object.entries({ ...LARK_ENV, HEALTH_CHECK_TOKEN: 'health-secret', UD_MANUFACTURING_ENABLED: 'true', UD_MANUFACTURING_CONTACT_READY: 'true', UD_MANUFACTURING_JOB_ID: 'ud-job-test', UD_MANUFACTURING_SMS_MODE: 'verified-manufacturing', META_SMS_ENABLED: 'true', EEASY_SMS_SEND_URL: 'https://sms.example.invalid/api/sms/send', SMS_SEND_SECRET: 'sms-secret' })) vi.stubEnv(key, value);
+    stubFetch({ udSms: upstream });
+    const res = await GET(makeRequest({ 'x-health-token': 'health-secret' }));
+    expect(res.status).toBe(503);
+    expect((await res.json()).unreachable).toContain('ud_manufacturing_sms:unavailable');
+    stubFetch();
+    expect((await GET(makeRequest({ 'x-health-token': 'health-secret' }))).status).toBe(200);
+  });
   it('UD有効化後の設定不足は既存ガードで検出する', () => {
     vi.stubEnv('UD_MANUFACTURING_ENABLED', 'true');
     vi.stubEnv('UD_MANUFACTURING_JOB_ID', '');

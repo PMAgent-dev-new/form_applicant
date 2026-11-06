@@ -173,8 +173,8 @@ describe('applicants POST — 受付台帳', () => {
     vi.unstubAllGlobals();
   });
 
-  it('UD製造の通常応募は整備士受付に保存し、求人ID・経路を台帳に残し、SMS停止時は呼ばない', async () => {
-    for (const [key, value] of Object.entries({ UD_MANUFACTURING_ENABLED: 'true', UD_MANUFACTURING_CONTACT_READY: 'true', UD_MANUFACTURING_JOB_ID: 'ud-job-test', UD_MANUFACTURING_SMS_MODE: 'disabled-approved' })) vi.stubEnv(key, value);
+  it('UD製造は整備士受付に保存し、求人ID・経路を残してSMS専用経路を呼ぶ', async () => {
+    for (const [key, value] of Object.entries({ UD_MANUFACTURING_ENABLED: 'true', UD_MANUFACTURING_CONTACT_READY: 'true', UD_MANUFACTURING_JOB_ID: 'ud-job-test', UD_MANUFACTURING_SMS_MODE: 'verified-manufacturing' })) vi.stubEnv(key, value);
     const { POST } = await import('./route');
     const res = await POST(makeRequest({ ...applicantBody, formOrigin: 'ud_manufacturing', appliedJobId: 'ud-job-test', prefectureId: '', municipalityId: '', jobTiming: 'asap', submissionId: 'ud-test' }));
     expect(res.status).toBe(200);
@@ -184,7 +184,10 @@ describe('applicants POST — 受付台帳', () => {
     expect(record.applicant.applied_job_id).toBe('ud-job-test');
     expect(record.notification.text).toContain('製造・組立');
     expect(record.notification.text).not.toContain('整備士の応募');
-    expect(fetchSpy.mock.calls.some(([url]) => String(url).includes('/api/sms/send'))).toBe(false);
+    const smsCalls = fetchSpy.mock.calls.filter(([url]) => String(url).includes('/api/sms/send'));
+    expect(smsCalls).toHaveLength(1);
+    expect(String(smsCalls[0][0])).toBe('https://leomeet.pmagent.jp/api/sms/send/ud-manufacturing');
+    expect(JSON.parse(String(smsCalls[0][1]?.body))).toMatchObject({ channel: 'mechanic', media: 'google', ref: expect.stringMatching(/^ud-[a-f0-9]{32}$/) });
     expect(fetchSpy.mock.calls.some(([url]) => String(url).includes('/anycross/'))).toBe(false);
   });
 
