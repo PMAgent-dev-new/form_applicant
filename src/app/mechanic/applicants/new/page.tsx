@@ -3,10 +3,12 @@
 import { apiPath } from '@/lib/basePath';
 import Image from "@/app/components/AppImage";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
+import { useSearchParams } from 'next/navigation';
 import BookingEmbed from "@/app/components/BookingEmbed";
 import JobCard from "@/app/components/JobCard";
 import type { Job } from "@/lib/microcms";
+import { resolveMechanicRole } from '@/lib/mechanic-role';
 
 // Extend Window interface for GTM dataLayer
 declare global {
@@ -15,7 +17,9 @@ declare global {
   }
 }
 
-export default function MechanicApplicationComplete() {
+function MechanicApplicationCompleteContent() {
+  const searchParams = useSearchParams();
+  const isInstructor = resolveMechanicRole('mechanic', searchParams.get('role')) === 'instructor';
   const [jobs, setJobs] = useState<Job[]>([]);
   const [isLoadingJobs, setIsLoadingJobs] = useState(true);
   const [userName, setUserName] = useState<string>('');
@@ -41,6 +45,7 @@ export default function MechanicApplicationComplete() {
 
   // 求人情報を取得
   useEffect(() => {
+    if (isInstructor) return;
     const fetchJobs = async () => {
       try {
         const response = await fetch(apiPath('/api/jobs/random?categoryId=3&count=3'));
@@ -60,7 +65,7 @@ export default function MechanicApplicationComplete() {
     };
 
     fetchJobs();
-  }, []);
+  }, [isInstructor]);
 
   return (
     <div className="min-h-screen bg-white">
@@ -75,7 +80,7 @@ export default function MechanicApplicationComplete() {
               className="h-[34px] w-auto"
             />
             <div className="text-right text-[11px] leading-relaxed text-gray-700">
-              <p>ホワイト企業への整備士転職なら</p>
+              <p>{isInstructor ? '整備士教員のお仕事をお探しの方へ' : 'ホワイト企業への整備士転職なら'}</p>
               <p className="font-semibold text-gray-900">ライドジョブメカニック</p>
             </div>
           </div>
@@ -85,9 +90,9 @@ export default function MechanicApplicationComplete() {
         <section className="mt-6">
           <div className="text-center">
             <p className="mt-6 text-2xl font-bold leading-relaxed" style={{ color: '#2205D9' }}>
-              RIDE JOBに問合せいただき
+              {isInstructor ? '整備士教員の応募・転職相談を' : 'RIDE JOBに問合せいただき'}
               <br />
-              誠にありがとうございました！
+              {isInstructor ? '受け付けました' : '誠にありがとうございました！'}
             </p>
             <p className="mt-6 text-lg leading-relaxed font-bold text-gray-700">
               担当者より、お電話またはオンラインにて
@@ -113,11 +118,11 @@ export default function MechanicApplicationComplete() {
         <section className="mt-12">
           <div className="flex items-center pl-2">
             <span className="mr-2 block h-6 w-1 rounded bg-[#2205D9]"></span>
-            <h2 className="text-xl font-semibold text-gray-900">すぐに求人情報がほしい方</h2>
+            <h2 className="text-xl font-semibold text-gray-900">{isInstructor ? '面談・ご相談の日程予約' : 'すぐに求人情報がほしい方'}</h2>
           </div>
           <div className="px-4">
             <p className="mt-4 text-lg leading-relaxed text-gray-900">
-              高年収の求人から採用枠が埋まります。少しでも早く知りたい方は、こちらから面談日程のご予約ください。
+              {isInstructor ? '整備士教員のお仕事や転職について、担当者にご相談いただけます。ご希望の日時をご予約ください。' : '高年収の求人から採用枠が埋まります。少しでも早く知りたい方は、こちらから面談日程のご予約ください。'}
             </p>
           </div>
 
@@ -253,7 +258,7 @@ export default function MechanicApplicationComplete() {
         </section>
 
         {/* 求人カード表示 */}
-        {!isLoadingJobs && jobs.length > 0 && (
+        {!isInstructor && !isLoadingJobs && jobs.length > 0 && (
           <section className="mt-12 px-4">
             <div className="mb-4 flex items-center pl-2">
               <span className="mr-2 block h-6 w-1 rounded bg-[#2205D9]"></span>
@@ -301,5 +306,13 @@ export default function MechanicApplicationComplete() {
       </footer>
       </div>
     </div>
+  );
+}
+
+export default function MechanicApplicationComplete() {
+  return (
+    <Suspense fallback={<div className="p-6 text-center">読み込み中...</div>}>
+      <MechanicApplicationCompleteContent />
+    </Suspense>
   );
 }
