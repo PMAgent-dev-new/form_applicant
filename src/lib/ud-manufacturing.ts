@@ -33,12 +33,15 @@ export function validateUdBirthDate(value: string, now = new Date()) {
   return { isValid: !errors.birthDate, errors };
 }
 
-export function validateUdSubmission(form: Partial<FormData>) {
+export function validateUdSubmission(form: Partial<FormData>, authenticatedLaunchTest = false) {
   const data = form as FormData;
   if (![data.fullName, data.fullNameKana, data.birthDate, data.phoneNumber, data.email,
     data.postalCode, data.prefectureId, data.municipalityId].every(x => typeof x === 'string')) return false;
+  const contact = validateFinalStep(data, true);
+  // 認証済みテストだけダミー番号を許す。保存値は差し替えず、通常の番号検証は維持する。
+  if (authenticatedLaunchTest && data.phoneNumber === '09000000000') delete contact.errors.phoneNumber;
   return ['asap', 'within_3_months', 'within_6_months', 'within_1_year'].includes(data.jobTiming)
     && validateUdBirthDate(data.birthDate).isValid
     && validateCard2(data).isValid && validateNameFields(data).isValid
-    && validateFinalStep(data, true).isValid;
+    && Object.keys(contact.errors).length === 0;
 }

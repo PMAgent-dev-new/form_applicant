@@ -191,6 +191,61 @@ describe('applicants POST — 受付台帳', () => {
     expect(fetchSpy.mock.calls.some(([url]) => String(url).includes('/anycross/'))).toBe(false);
   });
 
+  it('非公開UDの許可済みテスト1件はBase/Larkに明記しメール・SMS・成果送信を呼ばない', async () => {
+    const testId = 'ud-launch-test-abcdefghijklmnop';
+    const secret = 'unit-only-health-secret-'.repeat(2);
+    for (const [key, value] of Object.entries({ UD_MANUFACTURING_ENABLED: 'false', UD_MANUFACTURING_CONTACT_READY: 'true', UD_MANUFACTURING_JOB_ID: 'ud-job-test', UD_MANUFACTURING_SMS_MODE: 'verified-manufacturing', HEALTH_CHECK_TOKEN: secret, UD_LAUNCH_TEST_SUBMISSION_ID: testId, UD_LAUNCH_TEST_EXPIRES_AT: new Date(Date.now() + 3600_000).toISOString() })) vi.stubEnv(key, value);
+    const email = vi.spyOn(await import('@/lib/email/send-application-confirmation'), 'sendApplicationConfirmationEmail');
+    const sms = vi.spyOn(await import('@/lib/sms/send-application-sms'), 'sendApplicationSms');
+    const meta = vi.spyOn(await import('@/lib/meta/capi'), 'sendMetaCapiLead');
+    const openai = vi.spyOn(await import('@/lib/openai/capi'), 'sendOpenAiConversion');
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest({ ...applicantBody, formOrigin: 'ud_manufacturing', appliedJobId: 'ud-job-test', prefectureId: '', municipalityId: '', jobTiming: 'asap', submissionId: testId, fullName: 'テスト UD応募確認', email: 'ud-launch-test@example.invalid', phoneNumber: '09000000000', oppref: 'synthetic-click' }, { 'x-ud-launch-test-token': secret }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ test: true, recordId: 'rec-test', notified: true, excludedFromConversions: true });
+    const record = await recordedLedger();
+    expect(record.applicant.is_test).toBe(true);
+    expect(record.outcome.excluded_from_applications).toBe(true);
+    expect(record.notification.text).toContain('【テスト応募・集計対象外・連絡不要】');
+    const baseCall = fetchSpy.mock.calls.find(([url, init]) => new URL(String(url)).pathname.endsWith('/records') && init?.method === 'POST');
+    const fields = JSON.parse(String(baseCall?.[1]?.body)).fields;
+    expect(fields).toMatchObject({ ステータス: 'リード対象外', SMS配信停止フラグ: true });
+    expect(fields['対応履歴メモ']).toContain('[application_test:ud_launch]');
+    expect(fields['応募経由(マスタ連動)']).toBeUndefined();
+    for (const spy of [email, sms, meta, openai]) expect(spy).not.toHaveBeenCalled();
+    expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes('/im/v1/messages'))).toHaveLength(1);
+  });
+
+  it.each(['base-only', 'missing-target', 'failed-notification', 'ambiguous-notification'])('UDテストは通知を確認できない %s を成功にしない', async (scenario) => {
+    const testId = 'ud-launch-test-abcdefghijklmnop';
+    const secret = 'unit-only-health-secret-'.repeat(2);
+    for (const [key, value] of Object.entries({ UD_MANUFACTURING_ENABLED: 'false', UD_MANUFACTURING_CONTACT_READY: 'true', UD_MANUFACTURING_JOB_ID: 'ud-job-test', UD_MANUFACTURING_SMS_MODE: 'verified-manufacturing', HEALTH_CHECK_TOKEN: secret, UD_LAUNCH_TEST_SUBMISSION_ID: testId, UD_LAUNCH_TEST_EXPIRES_AT: new Date(Date.now() + 3600_000).toISOString() })) vi.stubEnv(key, value);
+    if (scenario === 'base-only') vi.stubEnv('LARK_SEND_BASE_ONLY', 'true');
+    if (scenario === 'missing-target') vi.stubEnv('LARK_SUBMIT_CHAT_ID_MECHANIC', '');
+    if (scenario.endsWith('notification')) {
+      vi.stubEnv('LARK_WEBHOOK_URL', '');
+      fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+        if (String(input).includes('/im/v1/messages')) {
+          if (scenario === 'ambiguous-notification') throw new Error('response lost');
+          return Response.json({ code: 230002, msg: 'not accepted' });
+        }
+        return successResponse(input, init);
+      });
+    }
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest({ ...applicantBody, formOrigin: 'ud_manufacturing', appliedJobId: 'ud-job-test', prefectureId: '', municipalityId: '', jobTiming: 'asap', submissionId: testId, fullName: 'テスト UD応募確認', email: 'ud-launch-test@example.invalid', phoneNumber: '09000000000' }, { 'x-ud-launch-test-token': secret }));
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ test: true, notified: false });
+    if (scenario === 'base-only' || scenario === 'missing-target') {
+      await flushAfter();
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } else {
+      expect((await recordedLedger()).outcome.notified).toBe(false);
+      expect(fetchSpy.mock.calls.filter(([url, init]) => String(url).includes('/records/rec-test') && init?.method === 'PUT')).toHaveLength(0);
+      expect(fetchSpy.mock.calls.some(([url]) => String(url).includes('/api/sms/send') || String(url).includes('graph.facebook.com'))).toBe(false);
+    }
+  });
+
   it('受け入れた応募は、応答のあとに台帳へ1行だけ書き、応募者・経路・広告・通知・結果を残す', async () => {
     const at = new Date().toISOString();
     const { POST } = await import('./route');
