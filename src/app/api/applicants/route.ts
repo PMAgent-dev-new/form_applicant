@@ -39,6 +39,7 @@ import { isLarkWebhookAccepted, type LarkWebhookResult } from '@/lib/larkWebhook
 import { createSubmissionObservability } from '@/lib/submission-observability';
 import { normalizeApplicationContext } from '@/lib/application-context';
 import { recordSubmissionAfterResponse, type SubmissionRecord } from '@/lib/submissionLedger';
+import { getUdLaunchConfig, UD_JOB_LABEL, validateUdSubmission } from '@/lib/ud-manufacturing';
 
 // 外部送信ライブラリの個別タイムアウトに加え、保存→通知→後続処理の実行枠を明示する。
 // 全段が上限まで遅延した場合の完了保証ではない。実測時間はサマリで監視する。
@@ -65,6 +66,7 @@ const DUPLICATE_WINDOW_MS = 60 * 60 * 1000;
 export type BaseWriteContext = {
   isMechanic: boolean;
   isMechanicNewgrad: boolean;
+  isUdManufacturing?: boolean;
   isCoupang: boolean;
   isTruck: boolean;
   isBus: boolean;
@@ -134,6 +136,7 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
     // 経験者フォームの転職時期／資格は Base の専用 Select に保存する。1問目（転職意向）は専用の欄が無いので対応履歴メモに残す。
     // 新卒フォームの資格回答（通学コース）は従来どおり対応履歴メモに残す。
     const memo = [
+      ctx.isUdManufacturing ? `応募職種: 製造・組立\n応募求人: ${UD_JOB_LABEL}` : '',
       !ctx.isMechanicNewgrad && ctx.jobIntentLabel ? `転職意向: ${ctx.jobIntentLabel}` : '',
       ctx.isMechanicNewgrad && ctx.jobTimingLabel ? `転職時期: ${ctx.jobTimingLabel}` : '',
       ctx.isMechanicNewgrad && ctx.mechanicQualificationsLabel
@@ -162,12 +165,12 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
         '居住地/市区町村以下': address,
         応募日: ctx.submittedAtMs,
         ステータス: 'リード',
-        登録職種: '自動車整備士',
+        登録職種: ctx.isUdManufacturing ? 'その他' : '自動車整備士',
         転職時期: ctx.isMechanicNewgrad ? undefined : ctx.jobTimingLabel || undefined,
-        資格: ctx.isMechanicNewgrad || !ctx.form.mechanicQualification
+        資格: ctx.isUdManufacturing || ctx.isMechanicNewgrad || !ctx.form.mechanicQualification
           ? undefined
           : mapMechanicQualificationToBaseOptions(ctx.mechanicQualificationsLabel),
-        '履歴書（添付なし）': desiredIncomeText,
+        '履歴書（添付なし）': ctx.isUdManufacturing ? undefined : desiredIncomeText,
         対応履歴メモ: memo,
         utm_source: ctx.utm.utm_source,
         utm_medium: ctx.utm.utm_medium,
@@ -452,7 +455,7 @@ type ApplicantSubmission = ApplicantFormData & {
   applicationContext?: unknown;
   utmParams?: UTMParams;
   experiment?: ExperimentInfo;
-  formOrigin?: 'coupang' | 'default' | 'bus' | 'mechanic' | 'mechanic_newgrad' | 'truck';
+  formOrigin?: 'coupang' | 'default' | 'bus' | 'mechanic' | 'mechanic_newgrad' | 'truck' | 'ud_manufacturing';
   metaEventId?: string;
   /** ChatGPT広告のクリック識別子。OpenAI Conversions API の突合キー。 */
   oppref?: string;
@@ -503,6 +506,21 @@ export async function POST(request: NextRequest) {
   };
   try {
     const submissionData = (await request.json()) as ApplicantSubmission;
+    const isUdManufacturing = submissionData.formOrigin === 'ud_manufacturing';
+    const udConfig = isUdManufacturing ? getUdLaunchConfig() : null;
+    if (isUdManufacturing) {
+      if (!udConfig || !isLarkBaseConfigured('mechanic')) {
+        return NextResponse.json({ message: 'この求人の応募受付は現在準備中です。' }, { status: 503 });
+      }
+      if (submissionData.appliedJobId !== udConfig.jobId || !validateUdSubmission(submissionData)) {
+        return NextResponse.json({ message: '応募内容を確認し、もう一度お試しください。' }, { status: 400 });
+      }
+      // 資格・希望年収はこのフォームの設問ではない。外部入力を混ぜない。
+      submissionData.mechanicQualification = '';
+      submissionData.desiredIncome = '';
+      submissionData.jobIntent = '';
+      submissionData.truckLicenses = [];
+    }
     const { utmParams, formOrigin, ...formData } = submissionData;
     const submissionId = String(submissionData.submissionId || submissionData.metaEventId || '').trim().slice(0, 128);
     if (!submissionId) {
@@ -603,9 +621,9 @@ export async function POST(request: NextRequest) {
 
     // Determine form origin type
     const referer = request.headers.get('referer') || '';
-    const isCoupang = formOrigin === 'coupang' || /\/coupang(\?|$|\/)?.*/.test(referer);
-    const isMechanicNewgrad = formOrigin === 'mechanic_newgrad' || /\/mechanic-newgrad(\?|$|\/)?.*/.test(referer);
-    const isMechanic = formOrigin === 'mechanic' || /\/mechanic(\?|$|\/)?.*/.test(referer) || isMechanicNewgrad;
+    const isCoupang = !isUdManufacturing && (formOrigin === 'coupang' || /\/coupang(\?|$|\/)?.*/.test(referer));
+    const isMechanicNewgrad = !isUdManufacturing && (formOrigin === 'mechanic_newgrad' || /\/mechanic-newgrad(\?|$|\/)?.*/.test(referer));
+    const isMechanic = isUdManufacturing || formOrigin === 'mechanic' || /\/mechanic(\?|$|\/)?.*/.test(referer) || isMechanicNewgrad;
     const isTruck = formOrigin === 'truck';
     const isBus = formOrigin === 'bus';
     // 'default' が明示的に送られてきたときだけタクシーLPと見なす。referer からは推測しない
@@ -652,7 +670,8 @@ export async function POST(request: NextRequest) {
       ? process.env.LARK_BASE_WEBHOOK_URL_MECHANIC_PROD || process.env.LARK_BASE_WEBHOOK_URL_MECHANIC
       : process.env.LARK_BASE_WEBHOOK_URL_MECHANIC_TEST || process.env.LARK_BASE_WEBHOOK_URL_MECHANIC;
 
-    const baseWebhookUrl = isMechanic && baseWebhookUrlMechanic
+    // 既存の整備士Webhookには職種の上書きがあり得るため、UDは直書き＋既存退避だけを使う。
+    const baseWebhookUrl = isUdManufacturing ? undefined : isMechanic && baseWebhookUrlMechanic
       ? baseWebhookUrlMechanic
       : (isCoupang && baseWebhookUrlCoupang) ? baseWebhookUrlCoupang : baseWebhookUrlCommon;
 
@@ -764,6 +783,7 @@ export async function POST(request: NextRequest) {
     const baseWriteCtx: BaseWriteContext = {
       isMechanic,
       isMechanicNewgrad,
+      isUdManufacturing,
       isCoupang,
       isTruck,
       isBus,
@@ -932,7 +952,7 @@ export async function POST(request: NextRequest) {
 
       // Lark 送信タスク
       if (larkChatId || larkWebhookUrl) {
-        const baseTitle = isMechanic
+        const baseTitle = isUdManufacturing ? `製造・組立の応募がありました！\n${UD_JOB_LABEL}` : isMechanic
           ? '整備士の応募がありました！'
           : isCoupang ? 'クーパンの応募がありました！'
           : isTruck ? 'トラックドライバーの応募がありました！' : '新しい応募がありました！';
@@ -957,16 +977,16 @@ export async function POST(request: NextRequest) {
         const locationDisplay = formData.prefectureName || formData.municipalityName || formData.townName
           ? `${formData.prefectureName || ''} ${formData.municipalityName || ''} ${formData.townName || ''}`.replace(/\s+/g, ' ').trim()
           : '未入力';
-        const mechanicQualificationsDisplay = isMechanic && mechanicQualificationsLabel
+        const mechanicQualificationsDisplay = isMechanic && !isUdManufacturing && mechanicQualificationsLabel
           ? `${qualificationFieldLabel}: ${mechanicQualificationsLabel}`
           : '';
         const truckLicensesDisplay = isTruck && truckLicensesLabel && truckLicensesLabel !== '未選択'
           ? `保有免許: ${truckLicensesLabel}`
           : '';
-        const desiredIncomeDisplay = isMechanic && !isMechanicNewgrad && desiredIncomeLabel
+        const desiredIncomeDisplay = isMechanic && !isUdManufacturing && !isMechanicNewgrad && desiredIncomeLabel
           ? `希望年収: ${desiredIncomeLabel}`
           : '';
-        const jobIntentDisplay = isMechanic && !isMechanicNewgrad && jobIntentLabel
+        const jobIntentDisplay = isMechanic && !isUdManufacturing && !isMechanicNewgrad && jobIntentLabel
           ? `転職意向: ${jobIntentLabel}`
           : '';
         const transferTimingDisplay = isMechanicNewgrad ? '' : `転職時期: ${jobTimingLabel || '未選択'}`;
@@ -1190,7 +1210,8 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
       // (=面談予約リンクも共通)。送信本体は eeasy の共通エンドポイントに委譲。
       // media には実際の流入元(utm_source)を渡す。無ければ 'form'。
       const smsChannel: 'ridejob' | 'mechanic' | null =
-        isCoupang || formOrigin === 'bus' ? null : isMechanic ? 'mechanic' : 'ridejob';
+        isCoupang || formOrigin === 'bus' || (isUdManufacturing && udConfig?.smsMode === 'disabled-approved')
+          ? null : isMechanic ? 'mechanic' : 'ridejob';
       if (smsChannel && formData.phoneNumber) {
         const channel = smsChannel;
         const media = (utmParams?.utm_source || 'form').toLowerCase().slice(0, 32);

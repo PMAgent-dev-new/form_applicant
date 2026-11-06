@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { checkLarkAuth, checkBaseColumns, type LarkProfile } from '@/lib/larkBase';
 import { resolveDirectBaseWrite, type BaseWriteContext } from '@/app/api/applicants/route';
 import { buildLiftJobDirectBaseFields, LIFTJOB_TABLE_ID } from '@/app/api/coupang/applicants/route';
+import { getUdLaunchConfig } from '@/lib/ud-manufacturing';
 
 /**
  * デプロイ後の合成チェック用ヘルスエンドポイント。
@@ -171,6 +172,9 @@ export function findMissingEnvGroups(
     .filter((g) => !(baseOnly && g.notifyOnly))
     .filter((g) => !g.anyOf.some(isSet))
     .map((g) => g.name);
+
+  // UDを有効にした後の設定欠落を既存の本番ガードで検出する。未公開時は既存導線に影響しない。
+  if (process.env.UD_MANUFACTURING_ENABLED === 'true' && !getUdLaunchConfig()) missing.push('ud_manufacturing_launch_config');
 
   // ChatGPT広告は、OpenAIへ直接送れる資格情報一式、または資格情報を持つ
   // ridejob-entryへの内部relay一式のどちらかが揃っていればよい。

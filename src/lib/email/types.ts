@@ -11,6 +11,7 @@ export type EmailFormOrigin =
   | 'bus'
   | 'mechanic'
   | 'mechanic_newgrad'
+  | 'ud_manufacturing'
   | 'truck'
   | 'coupang';
 

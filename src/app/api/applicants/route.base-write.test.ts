@@ -40,6 +40,17 @@ function mechanicContext(): BaseWriteContext {
 }
 
 describe('resolveDirectBaseWrite', () => {
+  it('UDは整備士担当へ保存し、職種その他と製造求人名を区別して残す', () => {
+    const ctx = { ...mechanicContext(), isUdManufacturing: true, appliedJobId: 'ud-job-test', submissionId: 'ud-test' };
+    const result = resolveDirectBaseWrite(ctx);
+    expect(result?.profile).toBe('mechanic');
+    expect(result?.fields.登録職種).toBe('その他');
+    expect(result?.fields.対応履歴メモ).toContain('応募職種: 製造・組立');
+    expect(result?.fields.応募求人ID).toBe('ud-job-test');
+    expect(result?.fields.資格).toBeUndefined();
+    expect(result?.fields['履歴書（添付なし）']).toBeUndefined();
+    expect(resolveDirectBaseWrite(mechanicContext())?.fields.登録職種).toBe('自動車整備士');
+  });
   it('CR台帳参照・本文はクリエイティブ欄にだけ保存し、対応履歴メモには書かず、新しい添付欄を要求しない', () => {
     const creativeText = 'CR台帳リンク: https://example.com/cr\n本文: 年休150日';
     for (const ctx of [mechanicContext(), { ...mechanicContext(), isMechanic: false, isTruck: true, submissionId: 'submission-1' }]) {

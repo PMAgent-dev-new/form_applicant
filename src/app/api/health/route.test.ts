@@ -126,6 +126,13 @@ function stubFetch({
 }
 
 describe('GET /api/health', () => {
+  it('UD有効化後の設定不足は既存ガードで検出する', () => {
+    vi.stubEnv('UD_MANUFACTURING_ENABLED', 'true');
+    vi.stubEnv('UD_MANUFACTURING_JOB_ID', '');
+    expect(findMissingEnvGroups()).toContain('ud_manufacturing_launch_config');
+    vi.stubEnv('UD_MANUFACTURING_ENABLED', 'false');
+    expect(findMissingEnvGroups()).not.toContain('ud_manufacturing_launch_config');
+  });
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();

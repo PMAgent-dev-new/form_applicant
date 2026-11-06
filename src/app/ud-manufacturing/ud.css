@@ -1,0 +1,29 @@
+.ud-page { color: #202b32; background: #fff; min-height: 100vh; }
+.ud-header { max-width: 440px; margin: auto; padding: 16px 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ud-header > div { text-align: right; font-size: 12px; }
+.ud-header strong { display: block; font-size: 14px; }
+.ud-stage { background-size: cover; background-position: center; padding: 26px 12px 44px; min-height: 75vh; }
+.ud-shell { max-width: 384px; margin: auto; }
+.ud-context { background: #ffffffef; border-top: 3px solid #a93440; border-radius: 12px; padding: 16px; margin-bottom: 12px; font-size: 13px; line-height: 1.7; }
+.ud-context h1 { font-size: 19px; font-weight: 800; margin-bottom: 8px; }
+.ud-tags { display: flex; gap: 16px; font-weight: 700; margin-bottom: 8px; }
+.ud-tags strong { color: #9d2632; }
+.ud-context summary { font-weight: 700; cursor: pointer; margin-top: 8px; }
+.ud-page a { text-decoration: underline; text-underline-offset: 3px; }
+.ud-form-area { outline: none; }
+.ud-form-area .mt-10 { margin-top: 0; }
+.ud-form-area [class*="shadow-2xl"] { box-shadow: 0 8px 22px #0002; }
+.ud-form-area button[class*="bg-[#FF"], .ud-form-area button[class*="bg-[#ff"] { background-color: #b94b20; }
+.ud-confirm { background: #fff; padding: 24px; border-radius: 16px; }
+.ud-confirm h2 { font-size: 20px; font-weight: 700; margin-bottom: 16px; }
+.ud-confirm dl > div { border-bottom: 1px solid #dde1e3; padding: 10px 0; }
+.ud-confirm dt { font-size: 12px; color: #5b6268; }
+.ud-confirm dd { font-size: 16px; overflow-wrap: anywhere; }
+.ud-confirm p { font-size: 13px; line-height: 1.7; margin: 18px 0; }
+.ud-primary { display: block; width: 100%; min-height: 48px; background: #b94b20; color: #fff; border-radius: 6px; padding: 12px; font-weight: 700; }
+.ud-primary:disabled { opacity: .5; }
+.ud-back { display: block; width: 100%; padding: 14px; text-decoration: underline; }
+.ud-footer { padding: 18px 12px; text-align: center; font-size: 12px; line-height: 1.9; }
+.ud-dialog { position: fixed; inset: 0; z-index: 11000; background: #0009; display: grid; place-items: center; padding: 20px; }
+.ud-dialog > div { background: #fff; border-radius: 12px; padding: 24px; width: min(100%, 360px); }
+.ud-dialog p { margin: 18px 0; }
