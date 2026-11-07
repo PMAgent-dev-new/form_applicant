@@ -70,6 +70,7 @@ function makeRequest(body: unknown, extraHeaders: Record<string, string> = {}) {
 }
 
 const applicantBody = {
+  privacyConsent: { accepted: true, policyVersion: 'v4-2026-11-05', policyUrl: 'https://ridejob.jp/privacy' },
   formOrigin: 'default',
   birthDate: '1990-01-01',
   fullName: '田中 太郎',
@@ -97,6 +98,14 @@ type LedgerBody = {
 };
 
 describe('applicants POST — 受付台帳', () => {
+  it.each([undefined, null, { accepted: false }, { accepted: 'true' }, { ...applicantBody.privacyConsent, policyVersion: 'old' }])('未同意・旧版は保存・通知・計測の前に拒否: %j', async privacyConsent => {
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest({ ...applicantBody, privacyConsent }));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ message: expect.stringContaining('プライバシーポリシー') });
+    await flushAfter();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
   let fetchSpy: ReturnType<typeof vi.fn>;
 
   const successResponse = async (input: unknown, init?: RequestInit) => {
@@ -339,6 +348,7 @@ describe('applicants POST — 受付台帳', () => {
       form_origin: 'default',
     });
     expect(body.context).toEqual({
+      privacy_consent: { accepted: true, received_at: expect.any(String), policy_version: 'v4-2026-11-05', policy_url: 'https://ridejob.jp/privacy', method: 'checkbox', scope: 'privacy_policy' },
       application_context: { acquisition: { source: 'google', medium: 'search', at } },
       utm: { utm_source: 'google', utm_medium: 'search' },
       oppref: 'op-test',

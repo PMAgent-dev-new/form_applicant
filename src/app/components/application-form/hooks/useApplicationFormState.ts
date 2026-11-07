@@ -15,6 +15,7 @@ import { fetchJobCount, type JobCountParams } from '../utils/fetchJobCount';
 import { EMPTY_UTM_PARAMS, readAttribution, resolveUtmParams, type UtmParams } from '@/lib/attribution';
 import { readApplicationContext } from '@/lib/application-context';
 import { UD_RECEIPT_KEY, validateUdBirthDate } from '@/lib/ud-manufacturing';
+import { usePrivacyConsent } from '@/app/components/PrivacyConsent';
 
 type UseApplicationFormStateParams = {
   showLoadingScreen: boolean;
@@ -43,6 +44,7 @@ const initialFormData: FormData = {
 
 export function useApplicationFormState({ showLoadingScreen, imagesToPreload, variant, formOrigin, enableJobTimingStep, fixedJobId }: UseApplicationFormStateParams) {
   const router = useRouter();
+  const privacyConsent = usePrivacyConsent();
   const isMechanic = formOrigin === 'mechanic';
   const isMechanicNewgrad = formOrigin === 'mechanic_newgrad';
   const isMechanicLike = isMechanic || isMechanicNewgrad;
@@ -632,6 +634,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
       if (isSubmitting) {
         return;
       }
+      if (!privacyConsent.validate()) return;
       const nameValidation = validateNameFields(formData);
       if (!nameValidation.isValid) {
         setErrors((prev) => ({ ...prev, ...nameValidation.errors }));
@@ -717,6 +720,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         const appliedJobId = isUdManufacturing ? fixedJobId : query.get('job_id')?.trim() || undefined;
         const catalog = attribution.catalogTouch;
         const body = {
+          privacyConsent: privacyConsent.payload,
           applicationContext: readApplicationContext(),
           ...formData,
           birthDate: birthDateString,
@@ -806,7 +810,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         setIsSubmitting(false);
       }
     },
-    [formData, formOrigin, isMechanicLike, isTruck, router, variant, isSubmitting, jobResult.prefectureId, isUdManufacturing, requiresEmail, fixedJobId]
+    [formData, formOrigin, isMechanicLike, isTruck, router, variant, isSubmitting, jobResult.prefectureId, isUdManufacturing, requiresEmail, fixedJobId, privacyConsent]
   );
 
   const cardStates = useMemo(
@@ -895,6 +899,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
   );
 
   return {
+    privacyConsent,
     loading,
     cardStates,
     formData,

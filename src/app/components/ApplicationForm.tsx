@@ -98,6 +98,7 @@ function ApplicationFormInner({
   }, [resolvedHeaderLogoSrc, resolvedStep1ImageSrc, resolvedStep2ImageSrc, resolvedStep3ImageSrc, resolvedStep4ImageSrc, resolvedStep5ImageSrc]);
 
   const {
+    privacyConsent,
     loading,
     cardStates,
     formData,
@@ -279,6 +280,7 @@ function ApplicationFormInner({
           />
 
           <PhoneNumberCard
+            privacyConsent={privacyConsent}
             jobResult={jobResult}
             showJobCount={true}
             formData={formData}
@@ -346,6 +348,7 @@ function ApplicationFormInner({
           />
 
           <PhoneNumberCard
+            privacyConsent={privacyConsent}
             jobResult={jobResult}
             showJobCount={true}
             formData={formData}
@@ -413,6 +416,7 @@ function ApplicationFormInner({
           />
 
           <PhoneNumberCard
+            privacyConsent={privacyConsent}
             stepImageSrc={resolvedStep4ImageSrc || resolvedStep3ImageSrc}
             jobResult={jobResult}
             showJobCount={true}
@@ -453,6 +457,7 @@ function ApplicationFormInner({
           />
 
           <NameAndContactCard
+            privacyConsent={privacyConsent}
             stepImageSrc={resolvedStep3ImageSrc}
             formData={formData}
             errors={errors}
@@ -507,6 +512,7 @@ function ApplicationFormInner({
           />
 
           <PhoneNumberCard
+            privacyConsent={privacyConsent}
             stepImageSrc={resolvedStep4ImageSrc || resolvedStep3ImageSrc}
             jobResult={jobResult}
             showJobCount={true}

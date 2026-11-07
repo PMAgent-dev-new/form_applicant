@@ -84,6 +84,7 @@ function makeRequest(body: unknown) {
 }
 
 const applicantBody = {
+  privacyConsent: { accepted: true, policyVersion: 'v4-2026-11-05', policyUrl: 'https://ridejob.jp/privacy' },
   formOrigin: 'default',
   birthDate: '1990-01-01',
   fullName: '田中 太郎',

@@ -75,6 +75,7 @@ function makeRequest(body: unknown, extraHeaders: Record<string, string> = {}) {
 }
 
 const coupangBody = {
+  privacyConsent: { accepted: true, policyVersion: 'v4-2026-11-05', policyUrl: 'https://ridejob.jp/privacy' },
   email: 'applicant@example.com',
   fullName: 'テスト　太郎',
   fullNameKana: 'てすとたろう',
@@ -113,6 +114,13 @@ type LedgerBody = {
 };
 
 describe('coupang applicants POST — 受付台帳', () => {
+  it.each([undefined, null, { accepted: false }, { accepted: 'true' }, { ...coupangBody.privacyConsent, policyVersion: 'old' }])('未同意・旧版は保存・通知・計測の前に拒否: %j', async privacyConsent => {
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest({ ...coupangBody, privacyConsent }));
+    expect(res.status).toBe(400);
+    await flushAfter();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
   let fetchSpy: ReturnType<typeof vi.fn>;
 
   // 既定の応答。Lark・SMS・CAPI・退避・台帳のどれも成功扱い。
@@ -215,6 +223,7 @@ describe('coupang applicants POST — 受付台帳', () => {
       desired_location: '東京',
     });
     expect(body.context).toEqual({
+      privacy_consent: { accepted: true, received_at: expect.any(String), policy_version: 'v4-2026-11-05', policy_url: 'https://ridejob.jp/privacy', method: 'checkbox', scope: 'privacy_policy' },
       utm: coupangBody.utmParams,
       oppref: 'op-test',
       page_url: 'https://ridejob.jp/entry/coupang?utm_source=ig&utm_medium=cpc',
@@ -346,6 +355,7 @@ describe('coupang applicants POST — 受付台帳', () => {
     expect(res.status).toBe(200);
 
     const body = await recordedLedger();
+    expect(JSON.parse(String(vaultPosts()[0][1]?.body)).payload.privacy_consent).toEqual(body.context.privacy_consent);
     expect(body.notification).toEqual({});
     expect(body.outcome).toMatchObject({
       notified: false,
@@ -362,6 +372,7 @@ describe('coupang applicants POST — 受付台帳', () => {
     expect(res.status).toBe(200);
 
     const body = await recordedLedger();
+    expect(JSON.parse(String(vaultPosts()[0][1]?.body)).payload.privacy_consent).toEqual(body.context.privacy_consent);
     expect(body.profile).toBe('liftjob');
     expect(body.notification).toEqual({});
     expect(body.outcome).toEqual({
@@ -487,6 +498,13 @@ describe('coupang applicants POST — 受付台帳', () => {
       await expect(flushAfter()).resolves.toBeUndefined();
       expect(ledgerCalls()).toHaveLength(1);
       const logs = ledgerLogs();
+      const sentBodies = fetchSpy.mock.calls
+        .filter(([input]) => !String(input).includes('/rest/v1/submissions'))
+        .map(([, init]) => String(init?.body ?? '')).join('\n');
+      expect(sentBodies).toContain('プライバシーポリシー同意（チェック）');
+      expect(sentBodies).toContain('v4-2026-11-05');
+      expect(sentBodies).toContain('privacy_consent');
+      expect(sentBodies).toContain('received_at');
       expect(logs).toHaveLength(1);
       expect(logs[0].join(' ')).toContain('http=500');
       const text = logs.map((args) => args.join(' ')).join('\n');

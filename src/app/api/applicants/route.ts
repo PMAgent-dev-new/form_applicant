@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { readPrivacyConsent, PRIVACY_CONSENT_ERROR, privacyConsentMemo, type PrivacyConsentRecord } from '@/lib/privacy-consent';
 import type { FormData } from '@/app/components/application-form/types';
 import { mapJobTimingLabel } from '@/app/components/application-form/utils/mapJobTimingLabel';
 import { getMechanicQualificationFieldLabel, mapMechanicQualifications, mapMechanicQualificationToBaseOptions } from '@/app/components/application-form/utils/mapMechanicQualifications';
@@ -65,6 +66,7 @@ const DUPLICATE_WINDOW_MS = 60 * 60 * 1000;
 
 // Bitable 直書きに必要な、リクエスト内で算出済みの値をまとめたもの。
 export type BaseWriteContext = {
+  privacyConsent?: PrivacyConsentRecord;
   isMechanic: boolean;
   isMechanicNewgrad: boolean;
   isUdManufacturing?: boolean;
@@ -107,6 +109,7 @@ export const appendLarkNotificationMarker = (memo: string, submissionId: string)
 };
 
 const buildCatalogMemoLines = (ctx: BaseWriteContext): string[] => [
+  ctx.privacyConsent ? privacyConsentMemo(ctx.privacyConsent) : '',
   ctx.submissionId ? submissionMarker(ctx.submissionId) : '',
   ctx.appliedJobId ? `応募求人ID: ${ctx.appliedJobId}` : '',
   ctx.catalogJobId ? `広告クリック求人ID: ${ctx.catalogJobId}` : '',
@@ -139,6 +142,7 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
     // 経験者フォームの転職時期／資格は Base の専用 Select に保存する。1問目（転職意向）は専用の欄が無いので対応履歴メモに残す。
     // 新卒フォームの資格回答（通学コース）は従来どおり対応履歴メモに残す。
     const memo = [
+      ctx.privacyConsent ? privacyConsentMemo(ctx.privacyConsent) : '',
       ctx.isLaunchTest ? `${UD_TEST_MARKER}\n動作確認専用・実応募/広告成果の集計対象外・連絡禁止\nテスト実行日時: ${new Date(ctx.submittedAtMs).toISOString()}` : '',
       ctx.isUdManufacturing ? `[form_origin:ud_manufacturing]\n応募職種: 製造・組立\n応募求人: ${UD_JOB_LABEL}` : '',
       !ctx.isMechanicNewgrad && ctx.jobIntentLabel ? `転職意向: ${ctx.jobIntentLabel}` : '',
@@ -467,6 +471,7 @@ type ApplicantFormData = {
 };
 
 type ApplicantSubmission = ApplicantFormData & {
+  privacyConsent?: unknown;
   applicationContext?: unknown;
   utmParams?: UTMParams;
   experiment?: ExperimentInfo;
@@ -541,6 +546,8 @@ export async function POST(request: NextRequest) {
       submissionData.jobIntent = '';
       submissionData.truckLicenses = [];
     }
+    const privacyConsent = readPrivacyConsent(submissionData.privacyConsent);
+    if (!privacyConsent) return NextResponse.json({ message: `${PRIVACY_CONSENT_ERROR} 表示されない場合はページを再読み込みしてください。` }, { status: 400 });
     const { utmParams, formOrigin, ...formData } = submissionData;
     const submissionId = String(submissionData.submissionId || submissionData.metaEventId || '').trim().slice(0, 128);
     if (!submissionId) {
@@ -573,6 +580,7 @@ export async function POST(request: NextRequest) {
         ...(isLaunchTest ? { is_test: true } : {}),
       },
       context: {
+        privacy_consent: privacyConsent,
         application_context: normalizeApplicationContext(submissionData.applicationContext),
         utm: {
           utm_source: utmParams?.utm_source,
@@ -831,6 +839,7 @@ export async function POST(request: NextRequest) {
       mechanicQualificationsLabel,
       qualificationFieldLabel,
       pageUrl: referer,
+      privacyConsent,
       submittedAtMs: Date.now(),
       submissionId,
       appliedJobId: submissionData.appliedJobId,
@@ -843,6 +852,7 @@ export async function POST(request: NextRequest) {
     const userAgent = request.headers.get('user-agent') || '';
     const clientIp = (request.headers.get('x-forwarded-for') || '').split(',')[0]?.trim() || '';
     const basePayload = {
+      privacy_consent: privacyConsent,
       media_name: mediaName,
       utm_source: utmParams?.utm_source || '',
       utm_medium: utmParams?.utm_medium || '',
