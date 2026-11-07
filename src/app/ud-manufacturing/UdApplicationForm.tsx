@@ -5,6 +5,7 @@ import Image from '@/app/components/AppImage';
 import { assetPath } from '@/lib/basePath';
 import { getUdJobDetailsUrl } from '@/lib/ud-manufacturing';
 import { useApplicationFormState } from '@/app/components/application-form/hooks/useApplicationFormState';
+import PrivacyConsent from '@/app/components/PrivacyConsent';
 import { BirthDateCard, NameCard, NameInputCard, PhoneNumberCard, MechanicJobTimingCard } from '@/app/components/application-form/components';
 import { mapJobTimingLabel } from '@/app/components/application-form/utils/mapJobTimingLabel';
 import './ud.css';
@@ -51,8 +52,9 @@ export default function UdApplicationForm({ jobId }: { jobId: string }) {
                 ['氏名', `${formData.fullName}（${formData.fullNameKana}）`],
                 ['電話番号', formData.phoneNumber], ['メール', formData.email],
               ].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
-              <p>応募はRIDE JOB（人材紹介）が受け付けます。<a href="https://ridejob.jp/privacy" target="_blank" rel="noopener noreferrer">プライバシーポリシー</a>をご確認ください。</p>
-              <button className="ud-primary" type="submit" disabled={state.isSubmitting || state.isSubmitDisabled}>{state.isSubmitting ? '送信中…' : 'この内容で応募する'}</button>
+              <p>応募はRIDE JOB（人材紹介）が受け付けます。</p>
+              <PrivacyConsent consent={state.privacyConsent} disabled={state.isSubmitting} />
+              <button className="ud-primary" type="submit" disabled={state.isSubmitting || state.isSubmitDisabled || !state.privacyConsent.checked}>{state.isSubmitting ? '送信中…' : 'この内容で応募する'}</button>
               <button className="ud-back" type="button" disabled={state.isSubmitting} onClick={() => setConfirming(false)}>入力内容を修正する</button>
             </section> : <>
               {step === 1 && <MechanicJobTimingCard selectedTiming={formData.jobTiming} errors={errors} onSelect={value => state.handleMechanicJobTimingSelect(value)} onNext={state.handleNextMechanicJobTiming} isActive progress={progress} />}
