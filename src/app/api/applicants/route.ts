@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { readPrivacyConsent, PRIVACY_CONSENT_ERROR, privacyConsentMemo, type PrivacyConsentRecord } from '@/lib/privacy-consent';
+import { getMeasurementPermissions, isUdPath, readUdAdConsent, udAdConsentMemo, UD_AD_NOTICE_VERSION, type UdAdConsentRecord } from '@/lib/ud-ad-consent';
 import type { FormData } from '@/app/components/application-form/types';
 import { mapJobTimingLabel } from '@/app/components/application-form/utils/mapJobTimingLabel';
 import { getMechanicQualificationFieldLabel, mapMechanicQualifications, mapMechanicQualificationToBaseOptions } from '@/app/components/application-form/utils/mapMechanicQualifications';
@@ -67,6 +68,7 @@ const DUPLICATE_WINDOW_MS = 60 * 60 * 1000;
 // Bitable 直書きに必要な、リクエスト内で算出済みの値をまとめたもの。
 export type BaseWriteContext = {
   privacyConsent?: PrivacyConsentRecord;
+  udAdConsent?: UdAdConsentRecord;
   isMechanic: boolean;
   isMechanicNewgrad: boolean;
   isUdManufacturing?: boolean;
@@ -110,6 +112,7 @@ export const appendLarkNotificationMarker = (memo: string, submissionId: string)
 
 const buildCatalogMemoLines = (ctx: BaseWriteContext): string[] => [
   ctx.privacyConsent ? privacyConsentMemo(ctx.privacyConsent) : '',
+  ctx.udAdConsent ? udAdConsentMemo(ctx.udAdConsent) : '',
   ctx.submissionId ? submissionMarker(ctx.submissionId) : '',
   ctx.appliedJobId ? `応募求人ID: ${ctx.appliedJobId}` : '',
   ctx.catalogJobId ? `広告クリック求人ID: ${ctx.catalogJobId}` : '',
@@ -143,6 +146,7 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
     // 新卒フォームの資格回答（通学コース）は従来どおり対応履歴メモに残す。
     const memo = [
       ctx.privacyConsent ? privacyConsentMemo(ctx.privacyConsent) : '',
+      ctx.udAdConsent ? udAdConsentMemo(ctx.udAdConsent) : '',
       ctx.isLaunchTest ? `${UD_TEST_MARKER}\n動作確認専用・実応募/広告成果の集計対象外・連絡禁止\nテスト実行日時: ${new Date(ctx.submittedAtMs).toISOString()}` : '',
       ctx.isUdManufacturing ? `[form_origin:ud_manufacturing]\n応募職種: 製造・組立\n応募求人: ${UD_JOB_LABEL}` : '',
       !ctx.isMechanicNewgrad && ctx.jobIntentLabel ? `転職意向: ${ctx.jobIntentLabel}` : '',
@@ -472,6 +476,7 @@ type ApplicantFormData = {
 
 type ApplicantSubmission = ApplicantFormData & {
   privacyConsent?: unknown;
+  udAdConsent?: unknown;
   applicationContext?: unknown;
   utmParams?: UTMParams;
   experiment?: ExperimentInfo;
@@ -530,6 +535,13 @@ export async function POST(request: NextRequest) {
     if (launchTest === 'denied') return NextResponse.json({ message: 'Invalid launch test' }, { status: 403 });
     const isLaunchTest = launchTest === 'authorized';
     const isUdManufacturing = submissionData.formOrigin === 'ud_manufacturing';
+    let referredFromUd = false;
+    try { referredFromUd = isUdPath(new URL(request.headers.get('referer') || '').pathname); } catch { /* Refererなしは通常入力を検証する。 */ }
+    const matchesUdJob = Boolean(process.env.UD_MANUFACTURING_JOB_ID)
+      && submissionData.appliedJobId === process.env.UD_MANUFACTURING_JOB_ID;
+    if (!isUdManufacturing && (referredFromUd || matchesUdJob || 'udAdConsent' in submissionData)) {
+      return NextResponse.json({ message: '応募ページを再読み込みし、もう一度お試しください。' }, { status: 400 });
+    }
     // 非公開中も管理者の1件だけ通し、連絡先/求人/SMSの準備条件は通常と同じにする。
     const udConfig = isUdManufacturing ? getUdLaunchConfig(isLaunchTest
       ? { ...process.env, UD_MANUFACTURING_ENABLED: 'true' } : process.env) : null;
@@ -547,6 +559,8 @@ export async function POST(request: NextRequest) {
       submissionData.truckLicenses = [];
     }
     const privacyConsent = readPrivacyConsent(submissionData.privacyConsent);
+    const measurementPermissions = getMeasurementPermissions(isUdManufacturing, submissionData.udAdConsent);
+    const udAdConsent = isUdManufacturing ? readUdAdConsent(submissionData.udAdConsent) : undefined;
     if (!privacyConsent) return NextResponse.json({ message: `${PRIVACY_CONSENT_ERROR} 表示されない場合はページを再読み込みしてください。` }, { status: 400 });
     const { utmParams, formOrigin, ...formData } = submissionData;
     const submissionId = String(submissionData.submissionId || submissionData.metaEventId || '').trim().slice(0, 128);
@@ -581,6 +595,7 @@ export async function POST(request: NextRequest) {
       },
       context: {
         privacy_consent: privacyConsent,
+        ...(udAdConsent ? { ud_ad_consent: udAdConsent } : {}),
         application_context: normalizeApplicationContext(submissionData.applicationContext),
         utm: {
           utm_source: utmParams?.utm_source,
@@ -728,7 +743,7 @@ export async function POST(request: NextRequest) {
         profile: vaultProfile,
         reason,
         notified: false,
-        payload: submissionData as unknown as Record<string, unknown>,
+        payload: { ...submissionData, privacy_consent: privacyConsent, ...(udAdConsent ? { ud_ad_consent: udAdConsent } : {}) },
       });
       // 台帳: Base は試していない（保存先が無い）
       ledgerOutcome({ base: { ok: false, via: 'none', error: 'not_configured' }, vaulted: saved });
@@ -762,7 +777,7 @@ export async function POST(request: NextRequest) {
           profile: vaultProfile,
           reason: `${missingTargetReason} (Base への保存は続行)`,
           notified: false,
-          payload: submissionData as unknown as Record<string, unknown>,
+          payload: { ...submissionData, privacy_consent: privacyConsent, ...(udAdConsent ? { ud_ad_consent: udAdConsent } : {}) },
         });
         if (missingTargetVaulted) ledgerOutcome({ vaulted: true });
       } else {
@@ -840,6 +855,7 @@ export async function POST(request: NextRequest) {
       qualificationFieldLabel,
       pageUrl: referer,
       privacyConsent,
+      udAdConsent,
       submittedAtMs: Date.now(),
       submissionId,
       appliedJobId: submissionData.appliedJobId,
@@ -853,6 +869,7 @@ export async function POST(request: NextRequest) {
     const clientIp = (request.headers.get('x-forwarded-for') || '').split(',')[0]?.trim() || '';
     const basePayload = {
       privacy_consent: privacyConsent,
+      ...(udAdConsent ? { ud_ad_consent: udAdConsent } : {}),
       media_name: mediaName,
       utm_source: utmParams?.utm_source || '',
       utm_medium: utmParams?.utm_medium || '',
@@ -935,6 +952,10 @@ export async function POST(request: NextRequest) {
       });
       if (vaultSaved) ledgerOutcome({ vaulted: true });
     }
+    // 同意の証拠が新規Baseレコードへ保存された場合だけ広告会社へ送る。
+    // 保存障害や通知復旧では、先行応募の同意を今回の再送で上書きしたことにしない。
+    const udMeasurementAccepted = isUdManufacturing && !isLaunchTest && udAdConsent?.accepted === true
+      && baseSave.savedVia === 'direct' && baseSave.created === true;
     ledgerOutcome({
       base: {
         ok: !baseSave.baseSaveFailed,
@@ -1295,9 +1316,10 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
         const capiEventId = submissionData.metaEventId;
         tasks.push(
           observation.trackTask('meta-capi', async () => {
+          if (!measurementPermissions.meta || (isUdManufacturing && !udMeasurementAccepted)) return;
             const result = await sendMetaCapiLead({
             eventId: capiEventId,
-            eventSourceUrl: referer,
+            eventSourceUrl: isUdManufacturing ? 'https://ridejob.jp/entry/ud-manufacturing' : referer,
             email: formData.email,
             phone: formData.phoneNumber,
             fbp: request.cookies.get('_fbp')?.value,
@@ -1315,6 +1337,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
         // oppref が無い応募（＝広告クリック由来でない）は lib 側で送信をスキップする。
         tasks.push(
           observation.trackTask('openai-capi', async () => {
+            if (!measurementPermissions.openai) return;
             const result = await sendOpenAiConversion({
             eventId: capiEventId,
             oppref: typeof submissionData.oppref === 'string' ? submissionData.oppref : undefined,
@@ -1360,6 +1383,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
     // クライアントには成功したことを返す
     // (Larkへの通知成否に関わらず、データを受け付けた時点で成功とすることも多い)
     return respond(NextResponse.json({ message: 'Application submitted successfully!',
+      ...(isUdManufacturing ? { udMeasurement: { accepted: udMeasurementAccepted, noticeVersion: UD_AD_NOTICE_VERSION } } : {}),
       ...(isLaunchTest ? { test: true, recordId: baseSave.recordId, notified: larkNotified, excludedFromConversions: true } : {}),
     }, { status: 200 }));
 
