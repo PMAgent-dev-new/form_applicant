@@ -6,6 +6,7 @@ import { assetPath } from '@/lib/basePath';
 import { getUdJobDetailsUrl } from '@/lib/ud-manufacturing';
 import { useApplicationFormState } from '@/app/components/application-form/hooks/useApplicationFormState';
 import PrivacyConsent from '@/app/components/PrivacyConsent';
+import AdMeasurementConsent from './AdMeasurementConsent';
 import { BirthDateCard, NameCard, NameInputCard, PhoneNumberCard, MechanicJobTimingCard } from '@/app/components/application-form/components';
 import { mapJobTimingLabel } from '@/app/components/application-form/utils/mapJobTimingLabel';
 import './ud.css';
@@ -53,7 +54,8 @@ export default function UdApplicationForm({ jobId }: { jobId: string }) {
                 ['電話番号', formData.phoneNumber], ['メール', formData.email],
               ].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
               <p>応募はRIDE JOB（人材紹介）が受け付けます。</p>
-              <PrivacyConsent consent={state.privacyConsent} disabled={state.isSubmitting} />
+              <PrivacyConsent consent={state.privacyConsent} disabled={state.isSubmitting} policyHref={assetPath('/ud-manufacturing/policy')} />
+              <AdMeasurementConsent checked={state.udAdConsentChecked} onChange={state.setUdAdConsentChecked} disabled={state.isSubmitting} />
               <button className="ud-primary" type="submit" disabled={state.isSubmitting || state.isSubmitDisabled || !state.privacyConsent.checked}>{state.isSubmitting ? '送信中…' : 'この内容で応募する'}</button>
               <button className="ud-back" type="button" disabled={state.isSubmitting} onClick={() => setConfirming(false)}>入力内容を修正する</button>
             </section> : <>
@@ -74,7 +76,7 @@ export default function UdApplicationForm({ jobId }: { jobId: string }) {
         </div>
       </div>
     </main>
-    <footer className="ud-footer">応募受付：RIDE JOB（株式会社PM Agent／人材紹介）<br /><a href="https://www.pmagent.jp/" target="_blank" rel="noopener noreferrer">会社概要</a> ｜ <a href="https://ridejob.jp/privacy" target="_blank" rel="noopener noreferrer">プライバシーポリシー</a></footer>
+    <footer className="ud-footer">応募受付：RIDE JOB（株式会社PM Agent／人材紹介）<br /><a href="https://www.pmagent.jp/" target="_blank" rel="noopener noreferrer">会社概要</a> ｜ <a href={assetPath('/ud-manufacturing/policy')} target="_blank" rel="noopener noreferrer">プライバシーポリシー</a></footer>
     {state.showExitModal && <div className="ud-dialog" role="dialog" aria-modal="true" aria-labelledby="ud-exit-title"><div><h2 id="ud-exit-title">入力を中断しますか？</h2><p>まだ応募は送信されていません。</p><button className="ud-primary" type="button" onClick={state.hideExitModal}>入力に戻る</button><button className="ud-back" type="button" onClick={state.confirmExit}>中断する</button></div></div>}
   </div>;
 }

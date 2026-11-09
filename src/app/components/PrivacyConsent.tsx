@@ -19,9 +19,10 @@ export function usePrivacyConsent() {
 
 export type PrivacyConsentState = ReturnType<typeof usePrivacyConsent>;
 
-export default function PrivacyConsent({ consent, disabled = false }: {
+export default function PrivacyConsent({ consent, disabled = false, policyHref = PRIVACY_POLICY_URL }: {
   consent: PrivacyConsentState;
   disabled?: boolean;
+  policyHref?: string;
 }) {
   const id = useId();
   return <div className="my-4 text-left text-sm leading-6 text-gray-900">
@@ -33,7 +34,7 @@ export default function PrivacyConsent({ consent, disabled = false }: {
         aria-invalid={Boolean(consent.error)}
         className="h-5 w-5 shrink-0 cursor-pointer accent-orange-600" />
       <label htmlFor={id} className="cursor-pointer">
-        <a href={PRIVACY_POLICY_URL} target="_blank" rel="noopener noreferrer"
+        <a href={policyHref} target="_blank" rel="noopener noreferrer"
           className="text-blue-700 underline underline-offset-2">プライバシーポリシー</a>に同意しますか
       </label>
     </div>

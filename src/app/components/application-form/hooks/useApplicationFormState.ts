@@ -16,6 +16,7 @@ import { EMPTY_UTM_PARAMS, readAttribution, resolveUtmParams, type UtmParams } f
 import { readApplicationContext } from '@/lib/application-context';
 import { UD_RECEIPT_KEY, validateUdBirthDate } from '@/lib/ud-manufacturing';
 import { usePrivacyConsent } from '@/app/components/PrivacyConsent';
+import { udAdConsentPayload, udCompletionPath, UD_AD_NOTICE_VERSION } from '@/lib/ud-ad-consent';
 
 type UseApplicationFormStateParams = {
   showLoadingScreen: boolean;
@@ -45,6 +46,7 @@ const initialFormData: FormData = {
 export function useApplicationFormState({ showLoadingScreen, imagesToPreload, variant, formOrigin, enableJobTimingStep, fixedJobId }: UseApplicationFormStateParams) {
   const router = useRouter();
   const privacyConsent = usePrivacyConsent();
+  const [udAdConsentChecked, setUdAdConsentChecked] = useState(false);
   const isMechanic = formOrigin === 'mechanic';
   const isMechanicNewgrad = formOrigin === 'mechanic_newgrad';
   const isMechanicLike = isMechanic || isMechanicNewgrad;
@@ -721,6 +723,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         const catalog = attribution.catalogTouch;
         const body = {
           privacyConsent: privacyConsent.payload,
+          ...(isUdManufacturing ? { udAdConsent: udAdConsentPayload(udAdConsentChecked) } : {}),
           applicationContext: readApplicationContext(),
           ...formData,
           birthDate: birthDateString,
@@ -757,11 +760,11 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
           return;
         }
 
-        await response.json();
+        const result = await response.json();
         setIsFormDirty(false);
 
         // 送信成功時に Meta Lead を発火（サーバーCAPIと同一 eventId で重複排除）
-        trackMeta('Lead', {
+        if (!isUdManufacturing) trackMeta('Lead', {
           contentIds: appliedJobId ? [appliedJobId] : undefined,
           value: 0,
           currency: 'JPY',
@@ -769,7 +772,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         // GA4 側にも GA4 推奨イベント名で応募完了を送る。GTM で generate_lead タグを作り
         // GA4 のキーイベントに登録すると、チャネル別のCVとして集計できるようになる。
         // （従来は step_view / form_submit しか無く、CV が別プロパティ側にしか無かった）
-        trackEvent('generate_lead', {
+        if (!isUdManufacturing) trackEvent('generate_lead', {
           form_name: 'ridejob_application',
           job_category: isUdManufacturing ? 'manufacturing' : isMechanicLike ? 'mechanic' : isTruck ? 'truck' : 'taxi',
           currency: 'JPY',
@@ -791,8 +794,13 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         }
         
         if (isUdManufacturing) {
-          try { sessionStorage.setItem(UD_RECEIPT_KEY, JSON.stringify({ id: metaEventId, at: Date.now() })); }
+          const adConsentAccepted = result.udMeasurement?.accepted === true
+            && result.udMeasurement?.noticeVersion === UD_AD_NOTICE_VERSION && udAdConsentChecked;
+          try { sessionStorage.setItem(UD_RECEIPT_KEY, JSON.stringify({ id: metaEventId, at: Date.now(), adConsentAccepted, noticeVersion: UD_AD_NOTICE_VERSION })); }
           catch { /* 計測用ストレージが使えなくても応募完了を妨げない。 */ }
+          // 新しいdocumentで開き、入力済みDOMや旧タグを完了ページへ持ち越さない。
+          window.location.assign(apiPath(udCompletionPath(adConsentAccepted, window.location.search, attribution.gclid)));
+          return;
         }
         const targetPath = isUdManufacturing ? '/ud-manufacturing/applicants/new' : isMechanicLike
           ? '/mechanic/applicants/new'
@@ -810,7 +818,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         setIsSubmitting(false);
       }
     },
-    [formData, formOrigin, isMechanicLike, isTruck, router, variant, isSubmitting, jobResult.prefectureId, isUdManufacturing, requiresEmail, fixedJobId, privacyConsent]
+    [formData, formOrigin, isMechanicLike, isTruck, router, variant, isSubmitting, jobResult.prefectureId, isUdManufacturing, requiresEmail, fixedJobId, privacyConsent, udAdConsentChecked]
   );
 
   const cardStates = useMemo(
@@ -900,6 +908,8 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
 
   return {
     privacyConsent,
+    udAdConsentChecked,
+    setUdAdConsentChecked,
     loading,
     cardStates,
     formData,

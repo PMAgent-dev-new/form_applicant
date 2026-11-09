@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { udAdConsentPayload, UD_AD_NOTICE_VERSION, UD_AD_NOTICE_URL } from '@/lib/ud-ad-consent';
 
 // after() はリクエストの外では動かない。積まれた処理をテストから流して、台帳への書き込みを確かめる。
 const afterTasks = vi.hoisted(() => ({ queue: [] as (() => unknown)[] }));
@@ -182,12 +183,23 @@ describe('applicants POST — 受付台帳', () => {
     vi.unstubAllGlobals();
   });
 
-  it('UD製造は整備士受付に保存し、求人ID・経路を残してSMS専用経路を呼ぶ', async () => {
+  it.each([false, true])('UD任意同意=%sでも受付・連絡は維持し、広告送信と同意記録は選択に従う', async accepted => {
     for (const [key, value] of Object.entries({ UD_MANUFACTURING_ENABLED: 'true', UD_MANUFACTURING_CONTACT_READY: 'true', UD_MANUFACTURING_JOB_ID: 'ud-job-test', UD_MANUFACTURING_SMS_MODE: 'verified-manufacturing' })) vi.stubEnv(key, value);
+    vi.stubEnv('OPENAI_ADS_PIXEL_ID', 'test-pixel');
+    vi.stubEnv('OPENAI_ADS_CAPI_KEY', 'test-key');
     const { POST } = await import('./route');
-    const res = await POST(makeRequest({ ...applicantBody, formOrigin: 'ud_manufacturing', appliedJobId: 'ud-job-test', prefectureId: '', municipalityId: '', jobTiming: 'asap', submissionId: 'ud-test' }));
+    const res = await POST(makeRequest({ ...applicantBody, formOrigin: 'ud_manufacturing', udAdConsent: udAdConsentPayload(accepted), oppref: 'test-click', appliedJobId: 'ud-job-test', prefectureId: '', municipalityId: '', jobTiming: 'asap', submissionId: 'ud-test' }));
     expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ udMeasurement: { accepted, noticeVersion: UD_AD_NOTICE_VERSION } });
     const record = await recordedLedger();
+    expect(record.context.ud_ad_consent).toMatchObject({ accepted, notice_version: UD_AD_NOTICE_VERSION, notice_url: UD_AD_NOTICE_URL, received_at: expect.any(String) });
+    expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes('graph.facebook.com'))).toHaveLength(accepted ? 1 : 0);
+    expect(fetchSpy.mock.calls.some(([url]) => String(url).includes('openai.com'))).toBe(false);
+    expect(record.outcome.openai_capi).toBe('skipped');
+    expect(vi.mocked(console.log).mock.calls.some(([message, payload]) => message === 'Confirmation email skipped:' && (payload as { formOrigin?: string })?.formOrigin === 'ud_manufacturing')).toBe(true);
+    const baseCreates = fetchSpy.mock.calls.filter(([url, init]) => new URL(String(url)).pathname.endsWith('/records') && init?.method === 'POST');
+    expect(JSON.parse(String(baseCreates[0][1]?.body)).fields['対応履歴メモ']).toContain(`広告計測の任意同意: ${accepted ? '同意あり' : '同意なし'}`);
+    expect(JSON.parse(String(baseCreates[0][1]?.body)).fields['対応履歴メモ']).toContain(UD_AD_NOTICE_VERSION);
     expect(record.profile).toBe('mechanic');
     expect(record.applicant.form_origin).toBe('ud_manufacturing');
     expect(record.applicant.applied_job_id).toBe('ud-job-test');
@@ -198,6 +210,41 @@ describe('applicants POST — 受付台帳', () => {
     expect(String(smsCalls[0][0])).toBe('https://leomeet.pmagent.jp/api/sms/send/ud-manufacturing');
     expect(JSON.parse(String(smsCalls[0][1]?.body))).toMatchObject({ channel: 'mechanic', media: 'google', ref: expect.stringMatching(/^ud-[a-f0-9]{32}$/) });
     expect(fetchSpy.mock.calls.some(([url]) => String(url).includes('/anycross/'))).toBe(false);
+  });
+
+  it.each(['base-failure', 'recovery'])('UDは同意ありでも証跡の新規保存を確かめられなければ広告送信せず応募を受け付ける: %s', async scenario => {
+    for (const [key, value] of Object.entries({ UD_MANUFACTURING_ENABLED: 'true', UD_MANUFACTURING_CONTACT_READY: 'true', UD_MANUFACTURING_JOB_ID: 'ud-job-test', UD_MANUFACTURING_SMS_MODE: 'verified-manufacturing' })) vi.stubEnv(key, value);
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const pathname = new URL(String(input)).pathname;
+      if (scenario === 'base-failure' && pathname.endsWith('/records') && init?.method === 'POST') throw new Error('mock Base unavailable');
+      if (scenario === 'recovery' && pathname.endsWith('/records/search')) return Response.json({ code: 0, data: { items: [{ record_id: 'rec-prior', fields: { submission_id: 'ud-test', 'Lark通知送信済み': false, '応募日': Date.now() - 60_000, '対応履歴メモ': '広告計測の任意同意: 同意なし' } }] } });
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest({ ...applicantBody, formOrigin: 'ud_manufacturing', udAdConsent: udAdConsentPayload(true), appliedJobId: 'ud-job-test', prefectureId: '', municipalityId: '', jobTiming: 'asap', submissionId: 'ud-test' }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ udMeasurement: { accepted: false } });
+    expect(fetchSpy.mock.calls.some(([url]) => String(url).includes('graph.facebook.com'))).toBe(false);
+    expect(fetchSpy.mock.calls.some(([url]) => String(url).includes('/api/sms/send/ud-manufacturing'))).toBe(true);
+    const record = await recordedLedger();
+    expect(record.context.ud_ad_consent).toMatchObject({ accepted: true, notice_version: UD_AD_NOTICE_VERSION });
+    if (scenario === 'base-failure') {
+      const fallback = vaultPosts();
+      expect(fallback).toHaveLength(1);
+      expect(JSON.parse(String(fallback[0][1]?.body)).payload.ud_ad_consent).toMatchObject({ accepted: true, notice_version: UD_AD_NOTICE_VERSION });
+    }
+  });
+
+  it('UD通知設定欠落の先行退避にもサーバー側の任意同意記録を残す', async () => {
+    for (const [key, value] of Object.entries({ UD_MANUFACTURING_ENABLED: 'true', UD_MANUFACTURING_CONTACT_READY: 'true', UD_MANUFACTURING_JOB_ID: 'ud-job-test', UD_MANUFACTURING_SMS_MODE: 'verified-manufacturing', LARK_SUBMIT_CHAT_ID_MECHANIC: '', LARK_WEBHOOK_URL: '' })) vi.stubEnv(key, value);
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest({ ...applicantBody, formOrigin: 'ud_manufacturing', udAdConsent: udAdConsentPayload(false), appliedJobId: 'ud-job-test', prefectureId: '', municipalityId: '', jobTiming: 'asap', submissionId: 'ud-test' }));
+    expect(res.status).toBe(200);
+    expect(vaultPosts().length).toBeGreaterThan(0);
+    for (const call of vaultPosts()) {
+      expect(JSON.parse(String(call[1]?.body)).payload.ud_ad_consent).toMatchObject({ accepted: false, notice_version: UD_AD_NOTICE_VERSION, received_at: expect.any(String) });
+    }
+    expect(fetchSpy.mock.calls.some(([url]) => String(url).includes('graph.facebook.com'))).toBe(false);
   });
 
   it('非公開UDの許可済みテスト1件はBase/Larkに明記しメール・SMS・成果送信を呼ばない', async () => {

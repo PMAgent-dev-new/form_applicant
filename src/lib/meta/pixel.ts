@@ -4,6 +4,8 @@
  * CAPI（サーバー）と重複排除するため eventId を共有する。
  */
 
+import { isUdPath } from '@/lib/ud-ad-consent';
+
 type MetaEventName = 'ViewContent' | 'AddToCart' | 'Lead' | 'Purchase';
 
 type MetaEventParams = {
@@ -25,6 +27,7 @@ function getFbq(): FbqFn | undefined {
  * eventId を渡すと CAPI と同一イベントとして重複排除される。
  */
 export function trackMeta(event: MetaEventName, params: MetaEventParams = {}, eventId?: string): void {
+  if (typeof window !== 'undefined' && isUdPath(window.location.pathname)) return;
   const fbq = getFbq();
   if (!fbq) return;
 
