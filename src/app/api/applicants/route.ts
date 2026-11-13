@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { restoreMarketingConsent } from '@/lib/marketing-consent-server';
+import { readMarketingConsent, marketingConsentMemo, marketingConsentFields, type MarketingConsentRecord } from '@/lib/marketing-consent';
 import { readPrivacyConsent, PRIVACY_CONSENT_ERROR, privacyConsentMemo, type PrivacyConsentRecord } from '@/lib/privacy-consent';
 import { getMeasurementPermissions, isUdPath, readUdAdConsent, udAdConsentMemo, UD_AD_NOTICE_VERSION, type UdAdConsentRecord } from '@/lib/ud-ad-consent';
 import type { FormData } from '@/app/components/application-form/types';
@@ -68,6 +70,7 @@ const DUPLICATE_WINDOW_MS = 60 * 60 * 1000;
 // Bitable 直書きに必要な、リクエスト内で算出済みの値をまとめたもの。
 export type BaseWriteContext = {
   privacyConsent?: PrivacyConsentRecord;
+  marketingConsent?: MarketingConsentRecord;
   udAdConsent?: UdAdConsentRecord;
   isMechanic: boolean;
   isMechanicNewgrad: boolean;
@@ -112,6 +115,7 @@ export const appendLarkNotificationMarker = (memo: string, submissionId: string)
 
 const buildCatalogMemoLines = (ctx: BaseWriteContext): string[] => [
   ctx.privacyConsent ? privacyConsentMemo(ctx.privacyConsent) : '',
+  ctx.marketingConsent ? marketingConsentMemo(ctx.marketingConsent) : '',
   ctx.udAdConsent ? udAdConsentMemo(ctx.udAdConsent) : '',
   ctx.submissionId ? submissionMarker(ctx.submissionId) : '',
   ctx.appliedJobId ? `応募求人ID: ${ctx.appliedJobId}` : '',
@@ -146,6 +150,7 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
     // 新卒フォームの資格回答（通学コース）は従来どおり対応履歴メモに残す。
     const memo = [
       ctx.privacyConsent ? privacyConsentMemo(ctx.privacyConsent) : '',
+  ctx.marketingConsent ? marketingConsentMemo(ctx.marketingConsent) : '',
       ctx.udAdConsent ? udAdConsentMemo(ctx.udAdConsent) : '',
       ctx.isLaunchTest ? `${UD_TEST_MARKER}\n動作確認専用・実応募/広告成果の集計対象外・連絡禁止\nテスト実行日時: ${new Date(ctx.submittedAtMs).toISOString()}` : '',
       ctx.isUdManufacturing ? `[form_origin:ud_manufacturing]\n応募職種: 製造・組立\n応募求人: ${UD_JOB_LABEL}` : '',
@@ -167,6 +172,7 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
       profile: 'mechanic',
       tableId: MECHANIC_TABLE_ID,
       fields: {
+        ...marketingConsentFields(ctx.marketingConsent),
         求職者名: ctx.form.fullName,
         フリガナ: ctx.form.fullNameKana,
         電話番号: ctx.form.phoneNumber,
@@ -232,6 +238,7 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
     profile: 'ridejob',
     tableId: RIDEJOB_TABLE_ID,
     fields: {
+      ...marketingConsentFields(ctx.marketingConsent),
       求職者名: ctx.form.fullName,
       フリガナ: ctx.form.fullNameKana,
       電話番号: ctx.form.phoneNumber,
@@ -476,6 +483,7 @@ type ApplicantFormData = {
 
 type ApplicantSubmission = ApplicantFormData & {
   privacyConsent?: unknown;
+  marketingConsent?: unknown;
   udAdConsent?: unknown;
   applicationContext?: unknown;
   utmParams?: UTMParams;
@@ -558,7 +566,12 @@ export async function POST(request: NextRequest) {
       submissionData.jobIntent = '';
       submissionData.truckLicenses = [];
     }
-    const privacyConsent = readPrivacyConsent(submissionData.privacyConsent);
+    const receivedAtMs = Date.now();
+    const privacyConsent = readPrivacyConsent(submissionData.privacyConsent, new Date(receivedAtMs).toISOString());
+    let marketingConsent = submissionData.formOrigin === 'coupang' ? undefined : readMarketingConsent(submissionData.marketingConsent, {
+      receivedAt: new Date(receivedAtMs).toISOString(), pageUrl: request.headers.get('referer') || '',
+      email: submissionData.email, phone: submissionData.phoneNumber,
+    });
     const measurementPermissions = getMeasurementPermissions(isUdManufacturing, submissionData.udAdConsent);
     const udAdConsent = isUdManufacturing ? readUdAdConsent(submissionData.udAdConsent) : undefined;
     if (!privacyConsent) return NextResponse.json({ message: `${PRIVACY_CONSENT_ERROR} 表示されない場合はページを再読み込みしてください。` }, { status: 400 });
@@ -567,6 +580,7 @@ export async function POST(request: NextRequest) {
     if (!submissionId) {
       return NextResponse.json({ message: 'submissionId is required' }, { status: 400 });
     }
+    if (marketingConsent && !isLaunchTest) marketingConsent = await restoreMarketingConsent(marketingConsent, { source: 'form_applicant/applicants', submissionId, email: submissionData.email, phone: submissionData.phoneNumber });
     // 受け入れ（検証を通過）。以降の戻り口は respond() で http_status を残し、finally で記録する。
     ledger = {
       source: 'form_applicant/applicants',
@@ -595,6 +609,7 @@ export async function POST(request: NextRequest) {
       },
       context: {
         privacy_consent: privacyConsent,
+        marketing_consent: marketingConsent,
         ...(udAdConsent ? { ud_ad_consent: udAdConsent } : {}),
         application_context: normalizeApplicationContext(submissionData.applicationContext),
         utm: {
@@ -743,7 +758,7 @@ export async function POST(request: NextRequest) {
         profile: vaultProfile,
         reason,
         notified: false,
-        payload: { ...submissionData, privacy_consent: privacyConsent, ...(udAdConsent ? { ud_ad_consent: udAdConsent } : {}) },
+        payload: { ...submissionData, privacy_consent: privacyConsent, marketing_consent: marketingConsent, ...(udAdConsent ? { ud_ad_consent: udAdConsent } : {}) },
       });
       // 台帳: Base は試していない（保存先が無い）
       ledgerOutcome({ base: { ok: false, via: 'none', error: 'not_configured' }, vaulted: saved });
@@ -777,7 +792,7 @@ export async function POST(request: NextRequest) {
           profile: vaultProfile,
           reason: `${missingTargetReason} (Base への保存は続行)`,
           notified: false,
-          payload: { ...submissionData, privacy_consent: privacyConsent, ...(udAdConsent ? { ud_ad_consent: udAdConsent } : {}) },
+          payload: { ...submissionData, privacy_consent: privacyConsent, marketing_consent: marketingConsent, ...(udAdConsent ? { ud_ad_consent: udAdConsent } : {}) },
         });
         if (missingTargetVaulted) ledgerOutcome({ vaulted: true });
       } else {
@@ -855,8 +870,9 @@ export async function POST(request: NextRequest) {
       qualificationFieldLabel,
       pageUrl: referer,
       privacyConsent,
+      marketingConsent,
       udAdConsent,
-      submittedAtMs: Date.now(),
+      submittedAtMs: marketingConsent ? Date.parse(marketingConsent.received_at) : receivedAtMs,
       submissionId,
       appliedJobId: submissionData.appliedJobId,
       catalogJobId: catalog.jobId,
@@ -869,6 +885,7 @@ export async function POST(request: NextRequest) {
     const clientIp = (request.headers.get('x-forwarded-for') || '').split(',')[0]?.trim() || '';
     const basePayload = {
       privacy_consent: privacyConsent,
+      marketing_consent: marketingConsent,
       ...(udAdConsent ? { ud_ad_consent: udAdConsent } : {}),
       media_name: mediaName,
       utm_source: utmParams?.utm_source || '',

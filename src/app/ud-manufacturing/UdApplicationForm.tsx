@@ -5,6 +5,7 @@ import Image from '@/app/components/AppImage';
 import { assetPath } from '@/lib/basePath';
 import { getUdJobDetailsUrl } from '@/lib/ud-manufacturing';
 import { useApplicationFormState } from '@/app/components/application-form/hooks/useApplicationFormState';
+import MarketingConsent from '@/app/components/MarketingConsent';
 import PrivacyConsent from '@/app/components/PrivacyConsent';
 import AdMeasurementConsent from './AdMeasurementConsent';
 import { BirthDateCard, NameCard, NameInputCard, PhoneNumberCard, MechanicJobTimingCard } from '@/app/components/application-form/components';
@@ -55,6 +56,7 @@ export default function UdApplicationForm({ jobId }: { jobId: string }) {
               ].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
               <p>応募はRIDE JOB（人材紹介）が受け付けます。</p>
               <PrivacyConsent consent={state.privacyConsent} disabled={state.isSubmitting} policyHref={assetPath('/ud-manufacturing/policy')} />
+              <MarketingConsent consent={state.marketingConsent} disabled={state.isSubmitting} />
               <AdMeasurementConsent checked={state.udAdConsentChecked} onChange={state.setUdAdConsentChecked} disabled={state.isSubmitting} />
               <button className="ud-primary" type="submit" disabled={state.isSubmitting || state.isSubmitDisabled || !state.privacyConsent.checked}>{state.isSubmitting ? '送信中…' : 'この内容で応募する'}</button>
               <button className="ud-back" type="button" disabled={state.isSubmitting} onClick={() => setConfirming(false)}>入力内容を修正する</button>

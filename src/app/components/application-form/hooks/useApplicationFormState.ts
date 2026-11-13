@@ -15,6 +15,7 @@ import { fetchJobCount, type JobCountParams } from '../utils/fetchJobCount';
 import { EMPTY_UTM_PARAMS, readAttribution, resolveUtmParams, type UtmParams } from '@/lib/attribution';
 import { readApplicationContext } from '@/lib/application-context';
 import { UD_RECEIPT_KEY, validateUdBirthDate } from '@/lib/ud-manufacturing';
+import { useMarketingConsent } from '@/app/components/MarketingConsent';
 import { usePrivacyConsent } from '@/app/components/PrivacyConsent';
 import { udAdConsentPayload, udCompletionPath, UD_AD_NOTICE_VERSION } from '@/lib/ud-ad-consent';
 
@@ -46,6 +47,7 @@ const initialFormData: FormData = {
 export function useApplicationFormState({ showLoadingScreen, imagesToPreload, variant, formOrigin, enableJobTimingStep, fixedJobId }: UseApplicationFormStateParams) {
   const router = useRouter();
   const privacyConsent = usePrivacyConsent();
+  const marketingConsent = useMarketingConsent();
   const [udAdConsentChecked, setUdAdConsentChecked] = useState(false);
   const isMechanic = formOrigin === 'mechanic';
   const isMechanicNewgrad = formOrigin === 'mechanic_newgrad';
@@ -723,6 +725,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         const catalog = attribution.catalogTouch;
         const body = {
           privacyConsent: privacyConsent.payload,
+          ...(formOrigin !== 'coupang' ? { marketingConsent: marketingConsent.payload } : {}),
           ...(isUdManufacturing ? { udAdConsent: udAdConsentPayload(udAdConsentChecked) } : {}),
           applicationContext: readApplicationContext(),
           ...formData,
@@ -818,7 +821,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         setIsSubmitting(false);
       }
     },
-    [formData, formOrigin, isMechanicLike, isTruck, router, variant, isSubmitting, jobResult.prefectureId, isUdManufacturing, requiresEmail, fixedJobId, privacyConsent, udAdConsentChecked]
+    [formData, formOrigin, isMechanicLike, isTruck, router, variant, isSubmitting, jobResult.prefectureId, isUdManufacturing, requiresEmail, fixedJobId, privacyConsent, marketingConsent, udAdConsentChecked]
   );
 
   const cardStates = useMemo(
@@ -908,6 +911,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
 
   return {
     privacyConsent,
+    marketingConsent,
     udAdConsentChecked,
     setUdAdConsentChecked,
     loading,

@@ -99,6 +99,23 @@ type LedgerBody = {
 };
 
 describe('applicants POST — 受付台帳', () => {
+  it.each(['default', 'mechanic'])('退避後に再送しても初回の同意日をDBへ保存: %s', async formOrigin => {
+    const receivedAt = '2026-11-12T01:00:00.000Z';
+    const { readMarketingConsent, marketingConsentPayload } = await import('@/lib/marketing-consent');
+    const first = readMarketingConsent(marketingConsentPayload(true), { receivedAt, email: applicantBody.email, phone: applicantBody.phoneNumber });
+    fetchSpy.mockImplementation(async (url: unknown, init?: RequestInit) => {
+      if (String(url).includes('/rest/v1/submission_vault?') && !init?.method) return Response.json([{ created_at: receivedAt, payload: { ...applicantBody, marketing_consent: first } }]);
+      return successResponse(url, init);
+    });
+    const { POST } = await import('./route');
+    const result = await POST(makeRequest({ ...applicantBody, formOrigin, submissionId: 'retry-consent', marketingConsent: marketingConsentPayload(true) }));
+    expect(result.status).toBe(200);
+    const creation = fetchSpy.mock.calls.find(([url, init]) => new URL(String(url)).pathname.endsWith('/records') && init?.method === 'POST');
+    const fields = JSON.parse(String(creation![1]?.body)).fields;
+    expect(fields['メール配信同意取得日']).toBe(Date.parse(receivedAt));
+    expect(fields['応募日']).toBe(Date.parse(receivedAt));
+    expect((await recordedLedger()).context.marketing_consent).toEqual(first);
+  });
   it.each([undefined, null, { accepted: false }, { accepted: 'true' }, { ...applicantBody.privacyConsent, policyVersion: 'old' }])('未同意・旧版は保存・通知・計測の前に拒否: %j', async privacyConsent => {
     const { POST } = await import('./route');
     const res = await POST(makeRequest({ ...applicantBody, privacyConsent }));
@@ -107,10 +124,29 @@ describe('applicants POST — 受付台帳', () => {
     await flushAfter();
     expect(fetchSpy).not.toHaveBeenCalled();
   });
+  it.each(['default', 'mechanic'])('配信同意は任意、両DBの日時は応募日と一致、停止フラグは変更しない: %s', async formOrigin => {
+    const { POST } = await import('./route');
+    for (const accepted of [false, true]) {
+      fetchSpy.mockClear(); afterTasks.queue.length = 0;
+      const res = await POST(makeRequest({ ...applicantBody, formOrigin, submissionId: `consent-${formOrigin}-${accepted}`,
+        marketingConsent: { accepted, noticeVersion: 'job-updates-v1-2026-11-13' } }));
+      expect(res.status).toBe(200);
+      const row = await recordedLedger();
+      expect(row.context.marketing_consent).toMatchObject({ accepted, channels: accepted ? ['email', 'sms'] : [] });
+      const creation = fetchSpy.mock.calls.find(([url, init]) => new URL(String(url)).pathname.endsWith('/records') && init?.method === 'POST');
+      expect(creation).toBeDefined();
+      const fields = JSON.parse(String(creation![1]?.body)).fields;
+      expect(fields['メール配信同意取得日']).toBe(accepted ? fields['応募日'] : undefined);
+      expect(fields['メール配信同意取得方法']).toBe(accepted ? '応募フォーム' : undefined);
+      expect(fields).not.toHaveProperty('SMS配信停止フラグ');
+      expect(fields).not.toHaveProperty('メール配信停止フラグ');
+    }
+  });
   let fetchSpy: ReturnType<typeof vi.fn>;
 
   const successResponse = async (input: unknown, init?: RequestInit) => {
     const url = String(input);
+    if (url.includes("/rest/v1/submission") && !init?.method) return Response.json([]);
     if (url.includes('tenant_access_token')) {
       return Response.json({ code: 0, tenant_access_token: 'token', expire: 7200 });
     }
@@ -128,7 +164,7 @@ describe('applicants POST — 受付台帳', () => {
     });
   };
 
-  const ledgerCalls = () => fetchSpy.mock.calls.filter(([input]) => String(input).includes('/rest/v1/submissions'));
+  const ledgerCalls = () => fetchSpy.mock.calls.filter(([input, init]) => String(input).includes('/rest/v1/submissions') && (init as RequestInit)?.method === 'POST');
   const vaultPosts = () => fetchSpy.mock.calls.filter(
     ([input, init]) => String(input).includes('/rest/v1/submission_vault') && (init as RequestInit)?.method === 'POST',
   );
@@ -395,6 +431,7 @@ describe('applicants POST — 受付台帳', () => {
       form_origin: 'default',
     });
     expect(body.context).toEqual({
+      marketing_consent: expect.objectContaining({ accepted: false, status: 'not_present', channels: [] }),
       privacy_consent: { accepted: true, received_at: expect.any(String), policy_version: 'v4-2026-11-05', policy_url: 'https://ridejob.jp/privacy', method: 'checkbox', scope: 'privacy_policy' },
       application_context: { acquisition: { source: 'google', medium: 'search', at } },
       utm: { utm_source: 'google', utm_medium: 'search' },
