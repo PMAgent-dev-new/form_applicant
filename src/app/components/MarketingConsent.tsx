@@ -1,25 +1,30 @@
 'use client';
 
-import { useId, useState } from 'react';
-import { MARKETING_NOTICE, marketingConsentPayload } from '@/lib/marketing-consent';
+import { useId, type KeyboardEvent } from 'react';
+import { MARKETING_ACTIONS, type MarketingAction, type MarketingIntent } from '@/lib/marketing-consent';
 
-export function useMarketingConsent() {
-  const [checked, onChange] = useState(false);
-  return { checked, onChange, payload: marketingConsentPayload(checked) };
+// 入力欄のEnterでブラウザが先頭ボタンを代理クリックすることによる自動同意を防ぐ。
+// フォーカスしたボタンのEnter/Space操作は維持する。
+export function preventImplicitMarketingSubmit(event: KeyboardEvent<HTMLFormElement>) {
+  if (event.nativeEvent.isComposing) return;
+  if (event.key === 'Enter' && event.target instanceof HTMLInputElement) event.preventDefault();
 }
-export type MarketingConsentState = ReturnType<typeof useMarketingConsent>;
 
-export default function MarketingConsent({ consent, disabled = false }: {
-  consent: MarketingConsentState; disabled?: boolean;
+export default function MarketingConsent({ intent = 'registration', disabled = false, isSubmitting = false }: {
+  intent?: MarketingIntent; disabled?: boolean; isSubmitting?: boolean;
 }) {
   const id = useId();
-  return <div className="my-4 text-left text-sm leading-6 text-gray-900">
-    <label htmlFor={id} className="flex min-h-11 cursor-pointer items-start gap-2">
-      <input id={id} name="marketingConsent" type="checkbox" checked={consent.checked}
-        disabled={disabled} onChange={event => consent.onChange(event.target.checked)}
-        aria-describedby={`${id}-help`} className="mt-1 h-5 w-5 shrink-0 accent-orange-600" />
-      <span>{MARKETING_NOTICE}</span>
-    </label>
-    <p id={`${id}-help`} className="mt-1">同意しなくても応募できます。</p>
+  const actions: MarketingAction[] = intent === 'registration' ? ['register']
+    : intent === 'apply' ? ['apply_with_updates', 'apply_only'] : ['consult_with_updates', 'consult_only'];
+  return <div className="my-4 space-y-3 text-left text-sm leading-6 text-gray-900">
+    <p id={id}>{MARKETING_ACTIONS[actions[0]].notice}</p>
+    {actions.map(action => <button key={action} type="submit" data-marketing-action={action}
+      disabled={disabled} aria-describedby={id}
+      className={`w-full min-h-12 rounded-md border px-3 py-3 text-sm font-bold cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 ${MARKETING_ACTIONS[action].accepted ? 'border-transparent bg-[#c44812] text-white' : 'border-gray-400 bg-white text-gray-900'}`}>
+      {isSubmitting ? '送信中…' : MARKETING_ACTIONS[action].label}
+    </button>)}
+    {intent !== 'registration' && <p className="text-sm text-gray-700">
+      {intent === 'apply' ? 'どちらでも応募・選考の連絡をメール・SMSでお送りします。' : 'どちらでも相談の連絡をメール・SMSでお送りします。'}
+    </p>}
   </div>;
 }

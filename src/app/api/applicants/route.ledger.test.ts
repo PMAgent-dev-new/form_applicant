@@ -102,13 +102,13 @@ describe('applicants POST — 受付台帳', () => {
   it.each(['default', 'mechanic'])('退避後に再送しても初回の同意日をDBへ保存: %s', async formOrigin => {
     const receivedAt = '2026-11-12T01:00:00.000Z';
     const { readMarketingConsent, marketingConsentPayload } = await import('@/lib/marketing-consent');
-    const first = readMarketingConsent(marketingConsentPayload(true), { receivedAt, email: applicantBody.email, phone: applicantBody.phoneNumber });
+    const first = readMarketingConsent(marketingConsentPayload('register'), { receivedAt, email: applicantBody.email, phone: applicantBody.phoneNumber });
     fetchSpy.mockImplementation(async (url: unknown, init?: RequestInit) => {
       if (String(url).includes('/rest/v1/submission_vault?') && !init?.method) return Response.json([{ created_at: receivedAt, payload: { ...applicantBody, marketing_consent: first } }]);
       return successResponse(url, init);
     });
     const { POST } = await import('./route');
-    const result = await POST(makeRequest({ ...applicantBody, formOrigin, submissionId: 'retry-consent', marketingConsent: marketingConsentPayload(true) }));
+    const result = await POST(makeRequest({ ...applicantBody, formOrigin, submissionId: 'retry-consent', marketingConsent: marketingConsentPayload('register') }));
     expect(result.status).toBe(200);
     const creation = fetchSpy.mock.calls.find(([url, init]) => new URL(String(url)).pathname.endsWith('/records') && init?.method === 'POST');
     const fields = JSON.parse(String(creation![1]?.body)).fields;
@@ -133,6 +133,49 @@ describe('applicants POST — 受付台帳', () => {
       expect(res.status).toBe(200);
       const row = await recordedLedger();
       expect(row.context.marketing_consent).toMatchObject({ accepted, channels: accepted ? ['email', 'sms'] : [] });
+      const creation = fetchSpy.mock.calls.find(([url, init]) => new URL(String(url)).pathname.endsWith('/records') && init?.method === 'POST');
+      expect(creation).toBeDefined();
+      const fields = JSON.parse(String(creation![1]?.body)).fields;
+      expect(fields['メール配信同意取得日']).toBe(accepted ? fields['応募日'] : undefined);
+      expect(fields['メール配信同意取得方法']).toBe(accepted ? '応募フォーム' : undefined);
+      expect(fields).not.toHaveProperty('SMS配信停止フラグ');
+      expect(fields).not.toHaveProperty('メール配信停止フラグ');
+    }
+  });
+  it.each(['default', 'mechanic'])('退避後に再送しても初回の同意日をDBへ保存: %s', async formOrigin => {
+    const receivedAt = '2026-11-12T01:00:00.000Z';
+    const { readMarketingConsent, marketingConsentPayload } = await import('@/lib/marketing-consent');
+    const first = readMarketingConsent(marketingConsentPayload('register'), { receivedAt, email: applicantBody.email, phone: applicantBody.phoneNumber });
+    fetchSpy.mockImplementation(async (url: unknown, init?: RequestInit) => {
+      if (String(url).includes('/rest/v1/submission_vault?') && !init?.method) return Response.json([{ created_at: receivedAt, payload: { ...applicantBody, marketing_consent: first } }]);
+      return successResponse(url, init);
+    });
+    const { POST } = await import('./route');
+    const result = await POST(makeRequest({ ...applicantBody, formOrigin, submissionId: 'retry-consent', marketingConsent: marketingConsentPayload('register') }));
+    expect(result.status).toBe(200);
+    const creation = fetchSpy.mock.calls.find(([url, init]) => new URL(String(url)).pathname.endsWith('/records') && init?.method === 'POST');
+    const fields = JSON.parse(String(creation![1]?.body)).fields;
+    expect(fields['メール配信同意取得日']).toBe(Date.parse(receivedAt));
+    expect(fields['応募日']).toBe(Date.parse(receivedAt));
+    expect((await recordedLedger()).context.marketing_consent).toEqual(first);
+  });
+  it.each([undefined, null, { accepted: false }, { accepted: 'true' }, { ...applicantBody.privacyConsent, policyVersion: 'old' }])('未同意・旧版は保存・通知・計測の前に拒否: %j', async privacyConsent => {
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest({ ...applicantBody, privacyConsent }));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ message: expect.stringContaining('プライバシーポリシー') });
+    await flushAfter();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+  it.each(['default', 'mechanic'])('ボタン選択も両DBへ保存し、未同意でも受付・停止フラグを維持: %s', async formOrigin => {
+    const { POST } = await import('./route');
+    for (const accepted of [false, true]) {
+      fetchSpy.mockClear(); afterTasks.queue.length = 0;
+      const res = await POST(makeRequest({ ...applicantBody, formOrigin, submissionId: `consent-${formOrigin}-${accepted}`,
+        marketingConsent: { accepted, noticeVersion: 'job-updates-buttons-v2-2026-11-16', action: accepted ? 'apply_with_updates' : 'apply_only' } }));
+      expect(res.status).toBe(200);
+      const row = await recordedLedger();
+      expect(row.context.marketing_consent).toMatchObject({ accepted, method: 'button', action: accepted ? 'apply_with_updates' : 'apply_only', channels: accepted ? ['email', 'sms'] : [] });
       const creation = fetchSpy.mock.calls.find(([url, init]) => new URL(String(url)).pathname.endsWith('/records') && init?.method === 'POST');
       expect(creation).toBeDefined();
       const fields = JSON.parse(String(creation![1]?.body)).fields;

@@ -3,7 +3,7 @@
 import Image from '@/app/components/AppImage';
 import PrivacyConsent, { type PrivacyConsentState } from '@/app/components/PrivacyConsent';
 
-import MarketingConsent, { type MarketingConsentState } from '@/app/components/MarketingConsent';
+import MarketingConsent from '@/app/components/MarketingConsent';
 import FormCard from './FormCard';
 import FingerHint, { FINGER_HINT_RIGHT_OF_TARGET } from './FingerHint';
 import StepProgressBar from './StepProgressBar';
@@ -11,7 +11,7 @@ import type { FormData, FormErrors, JobCountResult } from '../types';
 
 type PhoneNumberCardProps = {
   privacyConsent?: PrivacyConsentState;
-  marketingConsent?: MarketingConsentState;
+  collectMarketingConsent?: boolean;
   stepImageSrc?: string;
   jobResult: JobCountResult;
   showJobCount: boolean;
@@ -36,7 +36,7 @@ type PhoneNumberCardProps = {
 
 export default function PhoneNumberCard({
   privacyConsent,
-  marketingConsent,
+  collectMarketingConsent,
   stepImageSrc,
   jobResult,
   showJobCount,
@@ -175,8 +175,10 @@ export default function PhoneNumberCard({
       )}
 
       {privacyConsent && <PrivacyConsent consent={privacyConsent} disabled={isSubmitting || !isActive} />}
-      {marketingConsent && <MarketingConsent consent={marketingConsent} disabled={isSubmitting || !isActive} />}
-      <div className="flex justify-around items-center">
+      {collectMarketingConsent ? <>
+        <MarketingConsent disabled={isSubmitButtonDisabled || !isActive} isSubmitting={isSubmitting} />
+        <button type="button" disabled={isSubmitting} className="w-full py-2 text-sm font-bold text-gray-800" onClick={onPrevious}>＜ 戻る</button>
+      </> : <div className="flex justify-around items-center">
         <button type="button" className="py-2 text-sm font-bold cursor-pointer text-gray-800 mb-0" onClick={onPrevious}>
           ＜ 戻る
         </button>
@@ -191,7 +193,7 @@ export default function PhoneNumberCard({
           </button>
           <FingerHint isVisible={isSubmitEncouraged} size={44} className={FINGER_HINT_RIGHT_OF_TARGET} />
         </div>
-      </div>
+      </div>}
     </FormCard>
   );
 }
