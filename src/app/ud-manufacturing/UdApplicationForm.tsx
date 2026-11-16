@@ -5,7 +5,7 @@ import Image from '@/app/components/AppImage';
 import { assetPath } from '@/lib/basePath';
 import { getUdJobDetailsUrl } from '@/lib/ud-manufacturing';
 import { useApplicationFormState } from '@/app/components/application-form/hooks/useApplicationFormState';
-import MarketingConsent from '@/app/components/MarketingConsent';
+import MarketingConsent, { preventImplicitMarketingSubmit } from '@/app/components/MarketingConsent';
 import PrivacyConsent from '@/app/components/PrivacyConsent';
 import AdMeasurementConsent from './AdMeasurementConsent';
 import { BirthDateCard, NameCard, NameInputCard, PhoneNumberCard, MechanicJobTimingCard } from '@/app/components/application-form/components';
@@ -40,7 +40,7 @@ export default function UdApplicationForm({ jobId }: { jobId: string }) {
             <a href={getUdJobDetailsUrl(jobId)} target="_blank" rel="noopener noreferrer">求人詳細を確認する</a></details>
         </section>
         <div ref={formArea} tabIndex={-1} className="ud-form-area" aria-label={confirming ? '入力内容の確認' : `入力ステップ${step}`}>
-          <form onSubmit={event => {
+          <form onKeyDown={preventImplicitMarketingSubmit} onSubmit={event => {
             if (step !== 5) { event.preventDefault(); return; }
             if (!confirming) { event.preventDefault(); if (!state.isSubmitDisabled) setConfirming(true); return; }
             void state.handleSubmit(event);
@@ -56,9 +56,8 @@ export default function UdApplicationForm({ jobId }: { jobId: string }) {
               ].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
               <p>応募はRIDE JOB（人材紹介）が受け付けます。</p>
               <PrivacyConsent consent={state.privacyConsent} disabled={state.isSubmitting} policyHref={assetPath('/ud-manufacturing/policy')} />
-              <MarketingConsent consent={state.marketingConsent} disabled={state.isSubmitting} />
               <AdMeasurementConsent checked={state.udAdConsentChecked} onChange={state.setUdAdConsentChecked} disabled={state.isSubmitting} />
-              <button className="ud-primary" type="submit" disabled={state.isSubmitting || state.isSubmitDisabled || !state.privacyConsent.checked}>{state.isSubmitting ? '送信中…' : 'この内容で応募する'}</button>
+              <MarketingConsent intent="apply" disabled={state.isSubmitting || state.isSubmitDisabled || !state.privacyConsent.checked} isSubmitting={state.isSubmitting} />
               <button className="ud-back" type="button" disabled={state.isSubmitting} onClick={() => setConfirming(false)}>入力内容を修正する</button>
             </section> : <>
               {step === 1 && <MechanicJobTimingCard selectedTiming={formData.jobTiming} errors={errors} onSelect={value => state.handleMechanicJobTimingSelect(value)} onNext={state.handleNextMechanicJobTiming} isActive progress={progress} />}

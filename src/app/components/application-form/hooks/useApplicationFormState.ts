@@ -15,7 +15,7 @@ import { fetchJobCount, type JobCountParams } from '../utils/fetchJobCount';
 import { EMPTY_UTM_PARAMS, readAttribution, resolveUtmParams, type UtmParams } from '@/lib/attribution';
 import { readApplicationContext } from '@/lib/application-context';
 import { UD_RECEIPT_KEY, validateUdBirthDate } from '@/lib/ud-manufacturing';
-import { useMarketingConsent } from '@/app/components/MarketingConsent';
+import { marketingConsentPayload, readMarketingAction } from '@/lib/marketing-consent';
 import { usePrivacyConsent } from '@/app/components/PrivacyConsent';
 import { udAdConsentPayload, udCompletionPath, UD_AD_NOTICE_VERSION } from '@/lib/ud-ad-consent';
 
@@ -47,7 +47,6 @@ const initialFormData: FormData = {
 export function useApplicationFormState({ showLoadingScreen, imagesToPreload, variant, formOrigin, enableJobTimingStep, fixedJobId }: UseApplicationFormStateParams) {
   const router = useRouter();
   const privacyConsent = usePrivacyConsent();
-  const marketingConsent = useMarketingConsent();
   const [udAdConsentChecked, setUdAdConsentChecked] = useState(false);
   const isMechanic = formOrigin === 'mechanic';
   const isMechanicNewgrad = formOrigin === 'mechanic_newgrad';
@@ -64,6 +63,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
   const [emailError, setEmailError] = useState<string | null>(null);
   const [isSubmitDisabled, setIsSubmitDisabled] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const submitLock = useRef(false);
   const [isFormDirty, setIsFormDirty] = useState(false);
   const [showExitModal, setShowExitModal] = useState(false);
   const [pendingNavigation, setPendingNavigation] = useState<{ type: 'history-back' } | null>(null);
@@ -635,9 +635,12 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
   const handleSubmit = useCallback(
     async (event: React.FormEvent<HTMLFormElement>) => {
       event.preventDefault();
-      if (isSubmitting) {
+      if (isSubmitting || submitLock.current) {
         return;
       }
+      const submitter = (event.nativeEvent as SubmitEvent).submitter;
+      const marketingAction = readMarketingAction(submitter?.getAttribute('data-marketing-action'), isUdManufacturing ? 'apply' : 'registration');
+      if (formOrigin !== 'coupang' && !marketingAction) return;
       if (!privacyConsent.validate()) return;
       const nameValidation = validateNameFields(formData);
       if (!nameValidation.isValid) {
@@ -651,6 +654,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         setIsSubmitDisabled(true);
         return;
       }
+      submitLock.current = true;
       setIsSubmitting(true);
       trackEvent('form_submit', { form_name: 'ridejob_application' });
 
@@ -725,7 +729,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         const catalog = attribution.catalogTouch;
         const body = {
           privacyConsent: privacyConsent.payload,
-          ...(formOrigin !== 'coupang' ? { marketingConsent: marketingConsent.payload } : {}),
+          ...(marketingAction ? { marketingConsent: marketingConsentPayload(marketingAction) } : {}),
           ...(isUdManufacturing ? { udAdConsent: udAdConsentPayload(udAdConsentChecked) } : {}),
           applicationContext: readApplicationContext(),
           ...formData,
@@ -759,6 +763,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         if (!response.ok) {
           const errorResult = await response.json();
           alert(`エラーが発生しました: ${errorResult.message || 'サーバーエラー'}`);
+          submitLock.current = false;
           setIsSubmitting(false);
           return;
         }
@@ -818,10 +823,11 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
       } catch (error) {
         console.error('Error submitting form:', error);
         alert('フォームの送信中にエラーが発生しました。ネットワーク接続を確認してください。');
+        submitLock.current = false;
         setIsSubmitting(false);
       }
     },
-    [formData, formOrigin, isMechanicLike, isTruck, router, variant, isSubmitting, jobResult.prefectureId, isUdManufacturing, requiresEmail, fixedJobId, privacyConsent, marketingConsent, udAdConsentChecked]
+    [formData, formOrigin, isMechanicLike, isTruck, router, variant, isSubmitting, jobResult.prefectureId, isUdManufacturing, requiresEmail, fixedJobId, privacyConsent, udAdConsentChecked]
   );
 
   const cardStates = useMemo(
@@ -911,7 +917,6 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
 
   return {
     privacyConsent,
-    marketingConsent,
     udAdConsentChecked,
     setUdAdConsentChecked,
     loading,
