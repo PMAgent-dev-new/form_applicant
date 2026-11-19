@@ -15,6 +15,7 @@ import { fetchJobCount, type JobCountParams } from '../utils/fetchJobCount';
 import { EMPTY_UTM_PARAMS, readAttribution, resolveUtmParams, type UtmParams } from '@/lib/attribution';
 import { readApplicationContext } from '@/lib/application-context';
 import { UD_RECEIPT_KEY, validateUdBirthDate } from '@/lib/ud-manufacturing';
+import { type MechanicRole } from '@/lib/mechanic-role';
 import { marketingConsentPayload, readMarketingAction } from '@/lib/marketing-consent';
 import { usePrivacyConsent } from '@/app/components/PrivacyConsent';
 import { udAdConsentPayload, udCompletionPath, UD_AD_NOTICE_VERSION } from '@/lib/ud-ad-consent';
@@ -24,6 +25,7 @@ type UseApplicationFormStateParams = {
   imagesToPreload: string[];
   variant: PeopleImageVariant;
   formOrigin: FormOrigin;
+  mechanicRole?: MechanicRole;
   enableJobTimingStep: boolean;
   fixedJobId?: string;
 };
@@ -44,7 +46,7 @@ const initialFormData: FormData = {
   truckLicenses: [],
 };
 
-export function useApplicationFormState({ showLoadingScreen, imagesToPreload, variant, formOrigin, enableJobTimingStep, fixedJobId }: UseApplicationFormStateParams) {
+export function useApplicationFormState({ showLoadingScreen, imagesToPreload, variant, formOrigin, mechanicRole, enableJobTimingStep, fixedJobId }: UseApplicationFormStateParams) {
   const router = useRouter();
   const privacyConsent = usePrivacyConsent();
   const [udAdConsentChecked, setUdAdConsentChecked] = useState(false);
@@ -54,6 +56,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
   const isUdManufacturing = formOrigin === 'ud_manufacturing';
   const requiresEmail = formOrigin === 'coupang' || isMechanicLike || isUdManufacturing;
   const validateBirth = isUdManufacturing ? validateUdBirthDate : validateBirthDateCard;
+  const isInstructor = isMechanic && mechanicRole === 'instructor';
   const isTruck = formOrigin === 'truck';
   const [loading, setLoading] = useState(showLoadingScreen);
   const [currentCardIndex, setCurrentCardIndex] = useState(1);
@@ -142,7 +145,8 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
   }, [isFormDirty, warmUpHiragana]);
 
   const loadJobCount = useCallback(async (params: Partial<JobCountParams>) => {
-    if (isUdManufacturing) return;
+    // 一般整備士の求人数を講師の求人数として表示しない。
+    if (isUdManufacturing || isInstructor) return;
     const hasPostal = typeof params.postalCode === 'string' && params.postalCode.trim().length > 0;
     const hasPref = typeof params.prefectureId === 'string' && params.prefectureId.trim().length > 0;
     const jobCategoryIds = isMechanicLike ? ['3', '10'] : undefined;
@@ -172,7 +176,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
       console.error('Error fetching job count:', error);
       setJobResult({ jobCount: null, message: '', isLoading: false, error: '求人件数の取得中にエラーが発生しました' });
     }
-  }, [isMechanicLike, isUdManufacturing]);
+  }, [isMechanicLike, isUdManufacturing, isInstructor]);
 
   const isSubmitReady = useCallback(
     (phoneNumber: string, email: string) => {
@@ -741,6 +745,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
           oppref,
           experiment: { name: 'people_image', variant },
           formOrigin,
+          mechanicRole: isInstructor ? 'instructor' : undefined,
           metaEventId,
           submissionId: metaEventId,
           appliedJobId,
@@ -782,7 +787,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         // （従来は step_view / form_submit しか無く、CV が別プロパティ側にしか無かった）
         if (!isUdManufacturing) trackEvent('generate_lead', {
           form_name: 'ridejob_application',
-          job_category: isUdManufacturing ? 'manufacturing' : isMechanicLike ? 'mechanic' : isTruck ? 'truck' : 'taxi',
+          job_category: isUdManufacturing ? 'manufacturing' : isInstructor ? 'mechanic_instructor' : isMechanicLike ? 'mechanic' : isTruck ? 'truck' : 'taxi',
           currency: 'JPY',
           value: 0,
         });
@@ -811,7 +816,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
           return;
         }
         const targetPath = isUdManufacturing ? '/ud-manufacturing/applicants/new' : isMechanicLike
-          ? '/mechanic/applicants/new'
+          ? `/mechanic/applicants/new${isInstructor ? '?role=instructor' : ''}`
           : formOrigin === 'coupang'
             ? '/coupang/applicants/new'
             : formOrigin === 'bus'
@@ -827,7 +832,7 @@ export function useApplicationFormState({ showLoadingScreen, imagesToPreload, va
         setIsSubmitting(false);
       }
     },
-    [formData, formOrigin, isMechanicLike, isTruck, router, variant, isSubmitting, jobResult.prefectureId, isUdManufacturing, requiresEmail, fixedJobId, privacyConsent, udAdConsentChecked]
+    [formData, formOrigin, isMechanicLike, isInstructor, isTruck, router, variant, isSubmitting, jobResult.prefectureId, isUdManufacturing, requiresEmail, fixedJobId, privacyConsent, udAdConsentChecked]
   );
 
   const cardStates = useMemo(

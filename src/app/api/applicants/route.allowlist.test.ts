@@ -629,6 +629,38 @@ describe('applicants POST — outbound host allowlist', () => {
     warnSpy.mockRestore();
   });
 
+  it.each([
+    ['instructor', '自動車整備士', 1],
+    ['instructor', undefined, 1],
+    ['instructor', '整備士教員', 0],
+    [undefined, '整備士教員', 1],
+  ])('講師と一般整備士は職種を照合して再送を扱う: %s / %s', async (mechanicRole, existingJob, expectedWebhookCount) => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchSpy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const path = new URL(String(input)).pathname;
+      if (path.endsWith('/records') && init?.method === 'POST') return Response.json({ code: 4001, msg: 'mapping failed' });
+      if (path.endsWith('/records/search')) {
+        const body = JSON.parse(String(init?.body ?? '{}'));
+        return Response.json({ code: 0, data: { items: body?.filter?.conditions?.[0]?.field_name === '電話番号'
+          ? [{ record_id: 'rec_existing', fields: { 応募日: Date.now(), 登録職種: existingJob } }] : [] } });
+      }
+      return successResponse(input, init);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest({ ...applicantBody, formOrigin: 'mechanic', mechanicRole }));
+    expect(res.status).toBe(200);
+    const webhookCalls = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/anycross/trigger/'));
+    expect(webhookCalls).toHaveLength(expectedWebhookCount);
+    if (mechanicRole === 'instructor' && webhookCalls.length) {
+      expect(JSON.parse(String(webhookCalls[0][1]?.body)).registration_job).toBe('整備士教員');
+    }
+    expect(fetchSpy.mock.calls.some(([input, init]) => String(input).includes('/records/rec_existing')
+      && ['PUT', 'PATCH'].includes(String(init?.method ?? '')))).toBe(false);
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
   it('重複とみなした既存レコードには書き戻さない（他人のメモと冪等キーを消さないため）', async () => {
     // putRecord は PUT で列を**置換**する。重複先は自分が作った行ではないので、
     // ここへ通知済み印を書くと営業の記入・[submission_id:] 冪等キー・カタログ帰属行が消える。

@@ -45,6 +45,7 @@ import { normalizeApplicationContext } from '@/lib/application-context';
 import { recordSubmissionAfterResponse, type SubmissionRecord } from '@/lib/submissionLedger';
 import { getUdLaunchConfig, UD_JOB_LABEL, validateUdSubmission } from '@/lib/ud-manufacturing';
 import { assessUdLaunchTest, UD_TEST_MARKER } from '@/lib/ud-launch-test';
+import { resolveMechanicRole, type MechanicRole } from '@/lib/mechanic-role';
 
 // 外部送信ライブラリの個別タイムアウトに加え、保存→通知→後続処理の実行枠を明示する。
 // 全段が上限まで遅延した場合の完了保証ではない。実測時間はサマリで監視する。
@@ -69,6 +70,7 @@ const DUPLICATE_WINDOW_MS = 60 * 60 * 1000;
 
 // Bitable 直書きに必要な、リクエスト内で算出済みの値をまとめたもの。
 export type BaseWriteContext = {
+  mechanicRole?: MechanicRole;
   privacyConsent?: PrivacyConsentRecord;
   marketingConsent?: MarketingConsentRecord;
   udAdConsent?: UdAdConsentRecord;
@@ -146,6 +148,7 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
     : undefined;
 
   if (ctx.isMechanic) {
+    const isInstructor = !ctx.isMechanicNewgrad && !ctx.isUdManufacturing && ctx.mechanicRole === 'instructor';
     // 経験者フォームの転職時期／資格は Base の専用 Select に保存する。1問目（転職意向）は専用の欄が無いので対応履歴メモに残す。
     // 新卒フォームの資格回答（通学コース）は従来どおり対応履歴メモに残す。
     const memo = [
@@ -154,6 +157,7 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
       ctx.udAdConsent ? udAdConsentMemo(ctx.udAdConsent) : '',
       ctx.isLaunchTest ? `${UD_TEST_MARKER}\n動作確認専用・実応募/広告成果の集計対象外・連絡禁止\nテスト実行日時: ${new Date(ctx.submittedAtMs).toISOString()}` : '',
       ctx.isUdManufacturing ? `[form_origin:ud_manufacturing]\n応募職種: 製造・組立\n応募求人: ${UD_JOB_LABEL}` : '',
+      isInstructor ? '希望職種: 整備士教員' : '',
       !ctx.isMechanicNewgrad && ctx.jobIntentLabel ? `転職意向: ${ctx.jobIntentLabel}` : '',
       ctx.isMechanicNewgrad && ctx.jobTimingLabel ? `転職時期: ${ctx.jobTimingLabel}` : '',
       ctx.isMechanicNewgrad && ctx.mechanicQualificationsLabel
@@ -186,7 +190,7 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
         応募日: ctx.isLaunchTest ? undefined : ctx.submittedAtMs,
         ステータス: ctx.isLaunchTest ? 'リード対象外' : 'リード',
         ...(ctx.isLaunchTest ? { SMS配信停止フラグ: true } : {}),
-        登録職種: ctx.isUdManufacturing ? 'その他' : '自動車整備士',
+        登録職種: ctx.isUdManufacturing ? 'その他' : isInstructor ? '整備士教員' : '自動車整備士',
         転職時期: ctx.isMechanicNewgrad ? undefined : ctx.jobTimingLabel || undefined,
         資格: ctx.isUdManufacturing || ctx.isMechanicNewgrad || !ctx.form.mechanicQualification
           ? undefined
@@ -413,7 +417,13 @@ async function saveToBase(
         console.error('重複チェックに失敗、Webhookへ進む:', describeError(e));
         return null;
       });
-      if (dup) {
+      // 講師希望は一般整備士の直近応募へ畳まない。職種が未記録なら
+      // 同一と推測せず、希望職種を含むWebhookへ進めて台帳にも残す。
+      const requestedJob = target.fields['登録職種'];
+      const existingJob = dup?.fields['登録職種'];
+      const involvesInstructor = requestedJob === '整備士教員' || existingJob === '整備士教員';
+      const roleMatches = !involvesInstructor || existingJob === requestedJob;
+      if (dup && roleMatches) {
         console.warn('同じ電話番号の応募が直近にあるため Base Webhook を呼ばない:', {
           profile: target.profile, recordId: dup.recordId,
         });
@@ -482,6 +492,7 @@ type ApplicantFormData = {
 };
 
 type ApplicantSubmission = ApplicantFormData & {
+  mechanicRole?: unknown;
   privacyConsent?: unknown;
   marketingConsent?: unknown;
   udAdConsent?: unknown;
@@ -576,6 +587,7 @@ export async function POST(request: NextRequest) {
     const udAdConsent = isUdManufacturing ? readUdAdConsent(submissionData.udAdConsent) : undefined;
     if (!privacyConsent) return NextResponse.json({ message: `${PRIVACY_CONSENT_ERROR} 表示されない場合はページを再読み込みしてください。` }, { status: 400 });
     const { utmParams, formOrigin, ...formData } = submissionData;
+    const mechanicRole = resolveMechanicRole(formOrigin, submissionData.mechanicRole);
     const submissionId = String(submissionData.submissionId || submissionData.metaEventId || '').trim().slice(0, 128);
     if (!submissionId) {
       return NextResponse.json({ message: 'submissionId is required' }, { status: 400 });
@@ -606,6 +618,7 @@ export async function POST(request: NextRequest) {
         applied_job_id: submissionData.appliedJobId,
         form_origin: formOrigin,
         ...(isLaunchTest ? { is_test: true } : {}),
+        mechanic_role: mechanicRole,
       },
       context: {
         privacy_consent: privacyConsent,
@@ -847,6 +860,7 @@ export async function POST(request: NextRequest) {
 
     // Base 保存用コンテキスト（直書き／Webhook 両方で共有）
     const baseWriteCtx: BaseWriteContext = {
+      mechanicRole,
       isMechanic,
       isMechanicNewgrad,
       isUdManufacturing,
@@ -911,6 +925,8 @@ export async function POST(request: NextRequest) {
       email: formData.email || '',
       job_timing: baseJobTimingLabel,
       job_intent: baseJobIntentLabel,
+      mechanic_role: mechanicRole || '',
+      registration_job: mechanicRole === 'instructor' ? '整備士教員' : '',
       desired_income: baseDesiredIncomeLabel,
       mechanic_qualifications: mechanicQualificationsLabel,
       truck_licenses: truckLicensesLabel,
@@ -979,6 +995,9 @@ export async function POST(request: NextRequest) {
         via: baseSave.savedVia ?? 'none',
         record_id: baseSave.recordId,
         error: baseSave.baseSaveFailed?.slice(0, 200),
+        ...(mechanicRole === 'instructor' && baseSave.savedVia === 'webhook'
+          ? { registration_job_verification: 'pending_webhook_mapping' }
+          : {}),
       },
     });
 
@@ -1074,7 +1093,7 @@ export async function POST(request: NextRequest) {
           ? `転職意向: ${jobIntentLabel}`
           : '';
         const transferTimingDisplay = isMechanicNewgrad ? '' : `転職時期: ${jobTimingLabel || '未選択'}`;
-        const additionalFields = [transferTimingDisplay, desiredIncomeDisplay, mechanicQualificationsDisplay, truckLicensesDisplay, jobIntentDisplay]
+        const additionalFields = [mechanicRole === 'instructor' ? '希望職種: 整備士教員' : '', transferTimingDisplay, desiredIncomeDisplay, mechanicQualificationsDisplay, truckLicensesDisplay, jobIntentDisplay]
           .filter(Boolean)
           .join('\n');
         const ageDisplay = calculateAge(formData.birthDate) ?? '未入力';
