@@ -5,6 +5,7 @@ import { saveToSubmissionVault } from "@/lib/submissionVault";
 import { neutralizeLarkTags } from '@/lib/lark-text';
 import { isLarkWebhookAccepted, type LarkWebhookResult } from '@/lib/larkWebhookResult';
 import { recordSubmissionAfterResponse, type SubmissionRecord } from '@/lib/submissionLedger';
+import { readPrivacyConsent, PRIVACY_CONSENT_ERROR, privacyConsentMemo } from '@/lib/privacy-consent';
 
 // 2027新卒 鈑金塗装職LP（/gulliver/newgraduate → 本番は /entry/gulliver/newgraduate）の
 // 会社説明会お申し込み受付。
@@ -36,6 +37,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true });
     }
 
+    const privacyConsent = readPrivacyConsent({ accepted: form.get('privacyConsent') === 'true',
+      policyVersion: form.get('privacyPolicyVersion'), policyUrl: form.get('privacyPolicyUrl') });
+    if (!privacyConsent) return NextResponse.json({ error: `${PRIVACY_CONSENT_ERROR} 表示されない場合はページを再読み込みしてください。` }, { status: 400 });
+
     const name = cap((form.get("name") || "").toString().trim(), 100);
     const email = cap((form.get("email") || "").toString().trim(), 254);
     const tel = cap((form.get("tel") || "").toString().trim(), 32);
@@ -60,7 +65,7 @@ export async function POST(req: Request) {
       .update(`${email.toLowerCase()}|${tel}|${jstDate}`)
       .digest("hex")
       .slice(0, 32)}`;
-    const vaultPayload = { name, email, tel, area } as Record<string, unknown>;
+    const vaultPayload = { name, email, tel, area, privacy_consent: privacyConsent } as Record<string, unknown>;
     // 受け入れ（検証・bot 判定を通過）。以降の戻り口は respond() で http_status を残し、finally で記録する。
     ledger = {
       source: "form_applicant/entry-bp",
@@ -69,6 +74,7 @@ export async function POST(req: Request) {
       profile: "mechanic",
       applicant: { name, email, tel, area },
       context: {
+        privacy_consent: privacyConsent,
         // IP アドレスと Cookie の値は台帳に入れない（使い道が無く、漏れたときの害だけが増える）。
         request: {
           referer: req.headers.get("referer") || "",
@@ -97,7 +103,7 @@ export async function POST(req: Request) {
           登録職種: "板金/塗装技能士",
           応募日: Date.now(),
           クリエイティブ: "BP_2027新卒LP (/entry/gulliver/newgraduate)",
-          対応履歴メモ: area ? `希望勤務エリア: ${area}` : undefined,
+          対応履歴メモ: [area ? `希望勤務エリア: ${area}` : '', privacyConsentMemo(privacyConsent)].filter(Boolean).join('\n'),
         });
       } catch (e) {
         // ⚠️ 2026-09-24: ここで 502 を返していた。通知はこの後ろなので、Base が落ちると

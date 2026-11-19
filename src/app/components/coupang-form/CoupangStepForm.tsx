@@ -29,6 +29,7 @@ export default function CoupangStepForm({
   },
 }: CoupangStepFormProps) {
   const {
+    privacyConsent,
     formData,
     errors,
     isSubmitting,
@@ -89,6 +90,7 @@ export default function CoupangStepForm({
 
         {/* ステップ4: 求職者基本情報 */}
         <CoupangPersonalInfoCard
+          privacyConsent={privacyConsent}
           stepImageSrc={stepImageSrcs.step4!}
           formData={formData}
           errors={errors}

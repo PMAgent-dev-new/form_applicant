@@ -30,6 +30,9 @@ const CONFIGURED_ENV: Record<string, string> = {
 
 function makeRequest(fields: Record<string, string> = {}) {
   const values: Record<string, string> = {
+    privacyConsent: 'true',
+    privacyPolicyVersion: 'v4-2026-11-05',
+    privacyPolicyUrl: 'https://ridejob.jp/privacy',
     name: '山田 太郎',
     email: 'bp-test@example.com',
     tel: '090-1234-5678',
@@ -63,6 +66,12 @@ type LedgerBody = {
 };
 
 describe('entry-bp POST — 受付台帳', () => {
+  it.each(['', 'false', 'on'])('未同意値%sは外部送信前に拒否する', async privacyConsent => {
+    const { POST } = await import('./route');
+    const response = await POST(makeRequest({ privacyConsent }));
+    expect(response.status).toBe(400);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
   let fetchSpy: ReturnType<typeof vi.fn>;
 
   // Base・通知が通る既定の応答。台帳と退避（Supabase）は 201。
@@ -152,6 +161,7 @@ describe('entry-bp POST — 受付台帳', () => {
       area: '東京都',
     });
     expect(body.context).toEqual({
+      privacy_consent: { accepted: true, received_at: expect.any(String), policy_version: 'v4-2026-11-05', policy_url: 'https://ridejob.jp/privacy', method: 'checkbox', scope: 'privacy_policy' },
       request: {
         referer: 'https://ridejob.jp/entry/gulliver/newgraduate',
         user_agent: 'vitest',

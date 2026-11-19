@@ -1,13 +1,17 @@
 'use client';
 
 import Image from '@/app/components/AppImage';
+import PrivacyConsent, { type PrivacyConsentState } from '@/app/components/PrivacyConsent';
 
+import MarketingConsent from '@/app/components/MarketingConsent';
 import FormCard from './FormCard';
 import FingerHint, { FINGER_HINT_RIGHT_OF_TARGET } from './FingerHint';
 import StepProgressBar from './StepProgressBar';
 import type { FormData, FormErrors, JobCountResult } from '../types';
 
 type PhoneNumberCardProps = {
+  privacyConsent?: PrivacyConsentState;
+  collectMarketingConsent?: boolean;
   stepImageSrc?: string;
   jobResult: JobCountResult;
   showJobCount: boolean;
@@ -31,6 +35,8 @@ type PhoneNumberCardProps = {
 };
 
 export default function PhoneNumberCard({
+  privacyConsent,
+  collectMarketingConsent,
   stepImageSrc,
   jobResult,
   showJobCount,
@@ -68,8 +74,8 @@ export default function PhoneNumberCard({
     return null;
   })();
 
-  const isSubmitEncouraged = !isSubmitDisabled && !isSubmitting && firstIncompleteField === null;
-  const isSubmitButtonDisabled = isSubmitDisabled || isSubmitting;
+  const isSubmitButtonDisabled = isSubmitDisabled || isSubmitting || privacyConsent?.checked === false;
+  const isSubmitEncouraged = !isSubmitButtonDisabled && firstIncompleteField === null;
   const primaryArea = jobResult.prefectureName?.trim() || jobResult.searchArea?.trim();
   const displayAreaName = primaryArea || 'ご希望のエリア';
   const isJobCountAvailable = typeof jobResult.jobCount === 'number';
@@ -168,7 +174,11 @@ export default function PhoneNumberCard({
         </div>
       )}
 
-      <div className="flex justify-around items-center">
+      {privacyConsent && <PrivacyConsent consent={privacyConsent} disabled={isSubmitting || !isActive} />}
+      {collectMarketingConsent ? <>
+        <MarketingConsent disabled={isSubmitButtonDisabled || !isActive} isSubmitting={isSubmitting} />
+        <button type="button" disabled={isSubmitting} className="w-full py-2 text-sm font-bold text-gray-800" onClick={onPrevious}>＜ 戻る</button>
+      </> : <div className="flex justify-around items-center">
         <button type="button" className="py-2 text-sm font-bold cursor-pointer text-gray-800 mb-0" onClick={onPrevious}>
           ＜ 戻る
         </button>
@@ -183,7 +193,7 @@ export default function PhoneNumberCard({
           </button>
           <FingerHint isVisible={isSubmitEncouraged} size={44} className={FINGER_HINT_RIGHT_OF_TARGET} />
         </div>
-      </div>
+      </div>}
     </FormCard>
   );
 }

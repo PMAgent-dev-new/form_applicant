@@ -3,7 +3,11 @@
 import { useEffect, useRef, useState } from 'react';
 import Image from '@/app/components/AppImage';
 import { assetPath } from '@/lib/basePath';
+import { getUdJobDetailsUrl } from '@/lib/ud-manufacturing';
 import { useApplicationFormState } from '@/app/components/application-form/hooks/useApplicationFormState';
+import MarketingConsent, { preventImplicitMarketingSubmit } from '@/app/components/MarketingConsent';
+import PrivacyConsent from '@/app/components/PrivacyConsent';
+import AdMeasurementConsent from './AdMeasurementConsent';
 import { BirthDateCard, NameCard, NameInputCard, PhoneNumberCard, MechanicJobTimingCard } from '@/app/components/application-form/components';
 import { mapJobTimingLabel } from '@/app/components/application-form/utils/mapJobTimingLabel';
 import './ud.css';
@@ -29,12 +33,14 @@ export default function UdApplicationForm({ jobId }: { jobId: string }) {
         <section className="ud-context" aria-label="今回の応募対象">
           <h1>未経験から、UDトラックスで。</h1>
           <p className="ud-tags"><strong>未経験OK</strong><span>正社員</span><span>埼玉県上尾市</span></p>
+          <p className="ud-location"><strong>勤務地は埼玉県上尾市の工場です。</strong><br />車・バイク通勤可。上尾駅から無料送迎バスがあります。</p>
+          <p className="ud-location"><strong>遠方で通勤が難しい方は、転居を伴う勤務です。</strong><br />寮・社宅あり（持ち家がなく、通勤に1時間30分以上かかる方が対象）。住居の種類・費用などの適用条件は、担当者がご案内します。</p>
           <p>対象：35歳以下<br />（長期勤続によるキャリア形成のため）</p>
           <details><summary>応募先・受付について</summary><p>勤務先：UDトラックス株式会社 上尾工場<br />職種：製造・組立スタッフ<br />応募受付：RIDE JOB（株式会社PM Agentの人材紹介）</p>
-            <a href={`https://ridejob.jp/jobs/${encodeURIComponent(jobId)}`} target="_blank" rel="noopener noreferrer">求人詳細を確認する</a></details>
+            <a href={getUdJobDetailsUrl(jobId)} target="_blank" rel="noopener noreferrer">求人詳細を確認する</a></details>
         </section>
         <div ref={formArea} tabIndex={-1} className="ud-form-area" aria-label={confirming ? '入力内容の確認' : `入力ステップ${step}`}>
-          <form onSubmit={event => {
+          <form onKeyDown={preventImplicitMarketingSubmit} onSubmit={event => {
             if (step !== 5) { event.preventDefault(); return; }
             if (!confirming) { event.preventDefault(); if (!state.isSubmitDisabled) setConfirming(true); return; }
             void state.handleSubmit(event);
@@ -48,8 +54,10 @@ export default function UdApplicationForm({ jobId }: { jobId: string }) {
                 ['氏名', `${formData.fullName}（${formData.fullNameKana}）`],
                 ['電話番号', formData.phoneNumber], ['メール', formData.email],
               ].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
-              <p>応募はRIDE JOB（人材紹介）が受け付けます。<a href="https://ridejob.jp/privacy" target="_blank" rel="noopener noreferrer">プライバシーポリシー</a>をご確認ください。</p>
-              <button className="ud-primary" type="submit" disabled={state.isSubmitting || state.isSubmitDisabled}>{state.isSubmitting ? '送信中…' : 'この内容で応募する'}</button>
+              <p>応募はRIDE JOB（人材紹介）が受け付けます。</p>
+              <PrivacyConsent consent={state.privacyConsent} disabled={state.isSubmitting} policyHref={assetPath('/ud-manufacturing/policy')} />
+              <AdMeasurementConsent checked={state.udAdConsentChecked} onChange={state.setUdAdConsentChecked} disabled={state.isSubmitting} />
+              <MarketingConsent intent="apply" disabled={state.isSubmitting || state.isSubmitDisabled || !state.privacyConsent.checked} isSubmitting={state.isSubmitting} />
               <button className="ud-back" type="button" disabled={state.isSubmitting} onClick={() => setConfirming(false)}>入力内容を修正する</button>
             </section> : <>
               {step === 1 && <MechanicJobTimingCard selectedTiming={formData.jobTiming} errors={errors} onSelect={value => state.handleMechanicJobTimingSelect(value)} onNext={state.handleNextMechanicJobTiming} isActive progress={progress} />}
@@ -69,7 +77,7 @@ export default function UdApplicationForm({ jobId }: { jobId: string }) {
         </div>
       </div>
     </main>
-    <footer className="ud-footer">応募受付：RIDE JOB（株式会社PM Agent／人材紹介）<br /><a href="https://www.pmagent.jp/" target="_blank" rel="noopener noreferrer">会社概要</a> ｜ <a href="https://ridejob.jp/privacy" target="_blank" rel="noopener noreferrer">プライバシーポリシー</a></footer>
+    <footer className="ud-footer">応募受付：RIDE JOB（株式会社PM Agent／人材紹介）<br /><a href="https://www.pmagent.jp/" target="_blank" rel="noopener noreferrer">会社概要</a> ｜ <a href={assetPath('/ud-manufacturing/policy')} target="_blank" rel="noopener noreferrer">プライバシーポリシー</a></footer>
     {state.showExitModal && <div className="ud-dialog" role="dialog" aria-modal="true" aria-labelledby="ud-exit-title"><div><h2 id="ud-exit-title">入力を中断しますか？</h2><p>まだ応募は送信されていません。</p><button className="ud-primary" type="button" onClick={state.hideExitModal}>入力に戻る</button><button className="ud-back" type="button" onClick={state.confirmExit}>中断する</button></div></div>}
   </div>;
 }

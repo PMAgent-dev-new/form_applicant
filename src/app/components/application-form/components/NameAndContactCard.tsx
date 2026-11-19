@@ -1,12 +1,14 @@
 'use client';
 
 import Image from '@/app/components/AppImage';
+import PrivacyConsent, { type PrivacyConsentState } from '@/app/components/PrivacyConsent';
 
 import FormCard from './FormCard';
 import FingerHint, { FINGER_HINT_RIGHT_OF_TARGET } from './FingerHint';
 import type { FormData, FormErrors, JobCountResult } from '../types';
 
 type NameAndContactCardProps = {
+  privacyConsent: PrivacyConsentState;
   stepImageSrc: string;
   formData: FormData;
   errors: FormErrors;
@@ -24,6 +26,7 @@ type NameAndContactCardProps = {
 };
 
 export default function NameAndContactCard({
+  privacyConsent,
   stepImageSrc,
   formData,
   errors,
@@ -60,8 +63,8 @@ export default function NameAndContactCard({
     return null;
   })();
 
-  const isSubmitEncouraged = !isSubmitDisabled && !isSubmitting && firstIncompleteField === null;
-  const isSubmitButtonDisabled = isSubmitDisabled || isSubmitting;
+  const isSubmitButtonDisabled = isSubmitDisabled || isSubmitting || !privacyConsent.checked;
+  const isSubmitEncouraged = !isSubmitButtonDisabled && firstIncompleteField === null;
   const primaryArea = jobResult.prefectureName?.trim() || jobResult.searchArea?.trim();
   const displayAreaName = primaryArea || 'ご希望のエリア';
   const isJobCountAvailable = typeof jobResult.jobCount === 'number';
@@ -197,6 +200,7 @@ export default function NameAndContactCard({
         {(errors.phoneNumber || phoneError) && <p className="text-red-500 text-xs mt-1">{errors.phoneNumber || phoneError}</p>}
       </div>
 
+      <PrivacyConsent consent={privacyConsent} disabled={isSubmitting || !isActive} />
       <div className="flex justify-around items-center">
         <button type="button" className="py-2 text-sm font-bold cursor-pointer text-gray-800 mb-0" onClick={onPrevious}>
           ＜ 戻る

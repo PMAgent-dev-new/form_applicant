@@ -4,6 +4,20 @@ import { POST } from './route';
 
 describe('UD受付ゲートは保存・通知・計測より先に閉じる', () => {
   afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
+  it('UDのorigin欠落・別origin指定で任意同意ゲートを迂回できない', async () => {
+    vi.stubEnv('UD_MANUFACTURING_JOB_ID', 'ud-job-test');
+    const fetch = vi.fn(() => { throw new Error('unexpected external request'); });
+    vi.stubGlobal('fetch', fetch);
+    for (const entry of [
+      { body: { appliedJobId: 'ud-job-test' }, referer: 'https://ridejob.jp/' },
+      { body: { formOrigin: 'mechanic' }, referer: 'https://ridejob.jp/entry/ud-manufacturing' },
+      { body: { formOrigin: 'default', udAdConsent: { accepted: false } }, referer: 'https://ridejob.jp/' },
+    ]) {
+      const response = await POST(new NextRequest('https://example.invalid/api/applicants', { method: 'POST', headers: { referer: entry.referer }, body: JSON.stringify(entry.body) }));
+      expect(response.status).toBe(400);
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it('未公開状態では一切外部通信しない', async () => {
     vi.stubEnv('UD_MANUFACTURING_ENABLED', 'false');
     const fetch = vi.fn(() => { throw new Error('unexpected external request'); });

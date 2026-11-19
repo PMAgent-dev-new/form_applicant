@@ -1,3 +1,5 @@
+import { isUdPath } from '@/lib/ud-ad-consent';
+
 type DataLayerEvent = Record<string, unknown> & {
   event: string;
 };
@@ -16,6 +18,7 @@ type DataLayerEvent = Record<string, unknown> & {
  */
 export function trackEvent(event: string, payload: Record<string, unknown>) {
   if (typeof window === 'undefined') return;
+  if (isUdPath(window.location.pathname)) return;
   const data: DataLayerEvent = {
     event,
     ...payload,

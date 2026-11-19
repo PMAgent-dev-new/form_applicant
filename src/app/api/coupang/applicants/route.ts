@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { readPrivacyConsent, privacyConsentMemo, PRIVACY_CONSENT_ERROR, type PrivacyConsentRecord } from '@/lib/privacy-consent';
 import type { CoupangFormData } from '@/app/components/coupang-form/types';
 import {
   COUPANG_META_CONTENT_NAME,
@@ -123,6 +124,7 @@ export type UTMParams = {
 };
 
 type CoupangSubmission = CoupangFormData & {
+  privacyConsent?: unknown;
   utmParams?: UTMParams;
   metaEventId?: string;
   /** 応募単位の安定ID。Base upsertと広告CAPIの重複排除に共用する。 */
@@ -373,6 +375,7 @@ export function buildLiftJobBasePayload(params: {
 
 export function buildLiftJobDirectBaseFields(
   payload: Record<string, unknown>,
+  privacyConsent?: PrivacyConsentRecord,
 ): Record<string, LarkFieldValue | undefined> {
   const applicationSource = text(payload.application_source);
   const submittedAt = text(payload.submitted_at);
@@ -404,6 +407,7 @@ export function buildLiftJobDirectBaseFields(
     'attribution_source': text(payload.attribution_source),
     'submission_id': text(payload.submission_id),
     'ステータス': '応募者',
+    '対応履歴メモ': privacyConsent ? privacyConsentMemo(privacyConsent) : undefined,
   };
 }
 
@@ -423,6 +427,8 @@ export async function POST(request: NextRequest) {
   };
   try {
     const submissionData = (await request.json()) as CoupangSubmission;
+    const privacyConsent = readPrivacyConsent(submissionData.privacyConsent);
+    if (!privacyConsent) return NextResponse.json({ message: `${PRIVACY_CONSENT_ERROR} 表示されない場合はページを再読み込みしてください。` }, { status: 400 });
     const {
       utmParams: submittedUtmParams,
       metaEventId,
@@ -474,6 +480,7 @@ export async function POST(request: NextRequest) {
         desired_location: formData.desiredLocation,
       },
       context: {
+        privacy_consent: privacyConsent,
         utm: utmParams,
         oppref,
         page_url: pageUrl,
@@ -534,7 +541,7 @@ export async function POST(request: NextRequest) {
         profile: 'liftjob',
         reason,
         notified: false,
-        payload: submissionData as unknown as Record<string, unknown>,
+        payload: { ...submissionData, privacy_consent: privacyConsent },
       });
       // 台帳: Base は試していない（保存先が無い）
       ledgerOutcome({ base: { ok: false, via: 'none', error: 'not_configured' }, vaulted: saved });
@@ -561,7 +568,7 @@ export async function POST(request: NextRequest) {
         profile: 'liftjob',
         reason: `${reason} (Base への保存は続行)`,
         notified: false,
-        payload: submissionData as unknown as Record<string, unknown>,
+        payload: { ...submissionData, privacy_consent: privacyConsent },
       });
       if (vaultSaved) ledgerOutcome({ vaulted: true });
     }
@@ -638,6 +645,7 @@ export async function POST(request: NextRequest) {
       submissionId,
       environment: process.env.NODE_ENV,
     });
+    basePayload.privacy_consent = privacyConsent;
 
     // Baseは先に確定する。専用資格情報があればsubmission_idで直接upsertし、
     // 未設定の旧環境だけAutomation Webhookへフォールバックする。
@@ -653,7 +661,7 @@ export async function POST(request: NextRequest) {
           LIFTJOB_TABLE_ID,
           'submission_id',
           submissionId,
-          buildLiftJobDirectBaseFields(basePayload),
+          buildLiftJobDirectBaseFields(basePayload, privacyConsent),
           'liftjob',
           'is',
           false,
@@ -669,7 +677,7 @@ export async function POST(request: NextRequest) {
               LIFTJOB_TABLE_ID,
               'submission_id',
               submissionId,
-              buildLiftJobDirectBaseFields(basePayload),
+              buildLiftJobDirectBaseFields(basePayload, privacyConsent),
               'liftjob',
               'is',
               false,
@@ -780,13 +788,14 @@ export async function POST(request: NextRequest) {
         ? `⚠️Base未登録（${vaultSaved ? '退避済み・要取り込み' : '退避も失敗・この通知が唯一の記録'}）\n${messageContent}`
         : messageContent;
       // 台帳に残す通知（実際に送る本文）。送れたかは下で更新する。
-      const ledgerNotification = { text: neutralizeLarkTags(notificationText), sent: false, via: 'webhook' };
+      const consentNotificationText = `${notificationText}\n${privacyConsentMemo(privacyConsent)}`;
+      const ledgerNotification = { text: neutralizeLarkTags(consentNotificationText), sent: false, via: 'webhook' };
       ledger.notification = ledgerNotification;
       try {
         const resp = await fetch(notifyWebhookUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ msg_type: 'text', content: { text: neutralizeLarkTags(notificationText) } }),
+          body: JSON.stringify({ msg_type: 'text', content: { text: neutralizeLarkTags(consentNotificationText) } }),
           signal: AbortSignal.timeout(LARK_FETCH_TIMEOUT_MS),
         });
         const result = (await resp.json().catch(() => ({}))) as LarkWebhookResult;

@@ -1,4 +1,5 @@
 import { apiPath } from '@/lib/basePath';
+import { usePrivacyConsent } from '@/app/components/PrivacyConsent';
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import type { CoupangFormData, CoupangFormErrors } from '../types';
@@ -38,6 +39,7 @@ const initialFormData: CoupangFormData = {
 };
 
 export function useCoupangFormState() {
+  const privacyConsent = usePrivacyConsent();
   const router = useRouter();
   const [currentStep, setCurrentStep] = useState(1);
   const [formData, setFormData] = useState<CoupangFormData>(initialFormData);
@@ -178,6 +180,7 @@ export function useCoupangFormState() {
       if (isSubmitting) {
         return;
       }
+      if (!privacyConsent.validate()) return;
 
       // 最終バリデーション
       const validation = validateAllSteps(formData);
@@ -236,6 +239,7 @@ export function useCoupangFormState() {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
+            privacyConsent: privacyConsent.payload,
             ...formData,
             utmParams,
             oppref,
@@ -289,7 +293,7 @@ export function useCoupangFormState() {
         setIsSubmitting(false);
       }
     },
-    [formData, isSubmitting, router, trackEvent]
+    [formData, isSubmitting, router, trackEvent, privacyConsent]
   );
 
   // 各ステップのアクティブ状態
@@ -301,6 +305,7 @@ export function useCoupangFormState() {
   };
 
   return {
+    privacyConsent,
     currentStep,
     formData,
     errors,

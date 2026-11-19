@@ -1,11 +1,13 @@
 'use client';
 
 import Image from '@/app/components/AppImage';
+import PrivacyConsent, { type PrivacyConsentState } from '@/app/components/PrivacyConsent';
 import FormCard from '../../application-form/components/FormCard';
 import { TextInput } from './TextInput';
 import type { CoupangFormData, CoupangFormErrors } from '../types';
 
 type CoupangPersonalInfoCardProps = {
+  privacyConsent: PrivacyConsentState;
   stepImageSrc: string;
   formData: CoupangFormData;
   errors: CoupangFormErrors;
@@ -16,6 +18,7 @@ type CoupangPersonalInfoCardProps = {
 };
 
 export default function CoupangPersonalInfoCard({
+  privacyConsent,
   stepImageSrc,
   formData,
   errors,
@@ -65,6 +68,7 @@ export default function CoupangPersonalInfoCard({
         />
       </div>
 
+      <PrivacyConsent consent={privacyConsent} disabled={isSubmitting || !isActive} />
       <div className="mt-8 flex gap-3">
         <button
           type="button"
@@ -76,7 +80,7 @@ export default function CoupangPersonalInfoCard({
         </button>
         <button
           type="submit"
-          disabled={isSubmitting}
+          disabled={isSubmitting || !privacyConsent.checked}
           className="w-2/3 bg-[#1d4ed8] hover:bg-[#1e40af] text-white font-bold py-4 px-6 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {isSubmitting ? '送信中...' : '送信する'}

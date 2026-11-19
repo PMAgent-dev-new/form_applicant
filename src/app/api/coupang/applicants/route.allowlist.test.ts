@@ -85,6 +85,7 @@ function makeRequest(body: unknown, extraHeaders: Record<string, string> = {}) {
 }
 
 const coupangBody = {
+  privacyConsent: { accepted: true, policyVersion: 'v4-2026-11-05', policyUrl: 'https://ridejob.jp/privacy' },
   email: 'applicant@example.com',
   fullName: 'テスト　太郎',
   fullNameKana: 'てすとたろう',

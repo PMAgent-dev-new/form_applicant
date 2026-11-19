@@ -15,6 +15,9 @@ const BASE_ENV: Record<string, string> = {
 
 function makeRequest() {
   const form = new FormData();
+  form.set('privacyConsent', 'true');
+  form.set('privacyPolicyVersion', 'v4-2026-11-05');
+  form.set('privacyPolicyUrl', 'https://ridejob.jp/privacy');
   form.set('name', '山田 太郎');
   form.set('email', 'bp-test@example.com');
   form.set('tel', '090-1234-5678');

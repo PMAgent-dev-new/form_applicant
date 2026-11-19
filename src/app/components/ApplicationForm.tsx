@@ -1,5 +1,7 @@
 'use client';
 
+import { preventImplicitMarketingSubmit } from '@/app/components/MarketingConsent';
+
 import Image from '@/app/components/AppImage';
 import { Suspense, useEffect, useMemo, useRef, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
@@ -101,6 +103,7 @@ function ApplicationFormInner({
   }, [resolvedHeaderLogoSrc, resolvedStep1ImageSrc, resolvedStep2ImageSrc, resolvedStep3ImageSrc, resolvedStep4ImageSrc, resolvedStep5ImageSrc]);
 
   const {
+    privacyConsent,
     loading,
     cardStates,
     formData,
@@ -188,7 +191,7 @@ function ApplicationFormInner({
   // スクロールできてしまう。overflow-clip はスクロールの入れ物にならないので、フォーカスや scrollIntoView で
   // フォームの中身がずれることもない（未対応のブラウザは overflow-hidden）
   const formContent = (
-    <form onSubmit={handleSubmit} id="form" noValidate className="relative overflow-hidden supports-[overflow:clip]:overflow-clip pb-4">
+    <form onSubmit={handleSubmit} onKeyDown={preventImplicitMarketingSubmit} id="form" noValidate className="relative overflow-hidden supports-[overflow:clip]:overflow-clip pb-4">
       {isInstructor && (
         <div className="mb-3 rounded-2xl bg-white px-4 py-4 text-center text-gray-900">
           <h1 id="application-form-title" className="text-lg font-bold">{INSTRUCTOR_FORM_TITLE}</h1>
@@ -290,6 +293,8 @@ function ApplicationFormInner({
           />
 
           <PhoneNumberCard
+            privacyConsent={privacyConsent}
+            collectMarketingConsent
             jobResult={jobResult}
             showJobCount={!isInstructor}
             formData={formData}
@@ -357,6 +362,8 @@ function ApplicationFormInner({
           />
 
           <PhoneNumberCard
+            privacyConsent={privacyConsent}
+            collectMarketingConsent
             jobResult={jobResult}
             showJobCount={true}
             formData={formData}
@@ -424,6 +431,8 @@ function ApplicationFormInner({
           />
 
           <PhoneNumberCard
+            privacyConsent={privacyConsent}
+            collectMarketingConsent
             stepImageSrc={resolvedStep4ImageSrc || resolvedStep3ImageSrc}
             jobResult={jobResult}
             showJobCount={true}
@@ -464,6 +473,7 @@ function ApplicationFormInner({
           />
 
           <NameAndContactCard
+            privacyConsent={privacyConsent}
             stepImageSrc={resolvedStep3ImageSrc}
             formData={formData}
             errors={errors}
@@ -518,6 +528,8 @@ function ApplicationFormInner({
           />
 
           <PhoneNumberCard
+            privacyConsent={privacyConsent}
+            collectMarketingConsent
             stepImageSrc={resolvedStep4ImageSrc || resolvedStep3ImageSrc}
             jobResult={jobResult}
             showJobCount={true}
