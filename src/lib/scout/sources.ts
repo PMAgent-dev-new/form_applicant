@@ -177,8 +177,7 @@ export async function loadCandidates(): Promise<Candidate[]> {
           const f = r.fields;
           const name = fieldText(f["求職者名"]);
           const linked = f["マスタ-応募職種"] as
-            | { link_record_ids?: string[] }
-            | undefined;
+            { link_record_ids?: string[] } | undefined;
           const role =
             base === "driver"
               ? (linked?.link_record_ids ?? [])
@@ -283,9 +282,12 @@ export async function loadJob(id: string): Promise<ScoutJob> {
   return {
     id,
     title: fieldText(job.title || job.jobName || job.catchCopy),
-    company: fieldText(job.companyName),
+    company: job.hideCompanyName ? "非公開" : fieldText(job.companyName),
     region: fieldText(job.addressPrefMuni || job.prefecture?.region),
     url: `https://ridejob.jp/job/${encodeURIComponent(id)}`,
     updatedAt: job.updatedAt,
+    category: fieldText(job.jobCategory?.name),
+    work: fieldText(job.descriptionWork),
+    requirements: fieldText(job.descriptionPerson),
   };
 }

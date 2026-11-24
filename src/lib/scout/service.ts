@@ -1,6 +1,11 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { db, dbAll, rpc } from "./db";
-import { scoutConfig, senderConfig, ScoutError } from "./config";
+import {
+  scoutConfig,
+  senderConfig,
+  ScoutError,
+  SCOUT_COOLDOWN_HOURS,
+} from "./config";
 import { loadCandidates, loadEvidence, loadJob, syncStop } from "./sources";
 import {
   contactKeys,
@@ -12,7 +17,13 @@ import {
   validateCopy,
 } from "./policy";
 import { sendGmailMessage } from "@/lib/email/gmail-client";
-import type { Candidate, ScoutMessage, Staff } from "./types";
+import type {
+  Candidate,
+  Eligibility,
+  ScoutJob,
+  ScoutMessage,
+  Staff,
+} from "./types";
 
 export async function snapshot() {
   const [candidates, evidence, stops] = await Promise.all([
@@ -51,6 +62,64 @@ function ensureEligible(
   if (!result.allowed) throw new ScoutError(result.reasons.join("。"), 409);
   return { candidate, result };
 }
+export function draftRecord(
+  staff: Staff,
+  candidate: Candidate,
+  result: Eligibility,
+  job: ScoutJob,
+  copy: { subject: string; body: string },
+  expiresAt: string,
+) {
+  const sender = senderConfig();
+  const id = randomUUID();
+  const url = new URL(job.url);
+  url.search = new URLSearchParams({
+    utm_source: "ridejob_scout",
+    utm_medium: "email",
+    utm_campaign: "pma_scout",
+    utm_content: id,
+  }).toString();
+  const body = `${candidate.name}様\n\n${copy.body}\n\n【ご紹介する求人】\n${job.company}\n${job.title}\n勤務地：${job.region || "求人詳細をご確認ください"}\n${url}\n\nご興味・ご質問がありましたら、このメールにご返信ください。\n\nRIDE JOB（株式会社PM Agent）\n担当：${staff.display_name}\n${sender.address}\n返信先：${sender.replyTo}\n\nスカウトメールの配信停止：\n${unsubscribeUrl(id)}\n※配信停止後も、お申し込み済みの応募・選考に必要なご連絡は継続します。`;
+  const row: ScoutMessage = {
+    id,
+    staff_id: staff.id,
+    candidate_id: candidate.id,
+    candidate_name: candidate.name,
+    candidate_snapshot: candidate,
+    email: normalizeEmail(candidate.email),
+    contact_keys: contactKeys(candidate),
+    job_id: job.id,
+    job_snapshot: job,
+    subject: copy.subject,
+    body,
+    from_email: sender.from,
+    reply_to: sender.replyTo,
+    consent_snapshot: {
+      evidence: result.evidence,
+      larkConsentDate: candidate.consentDate,
+      larkConsentMethod: candidate.consentMethod,
+      checkedAt: new Date().toISOString(),
+      conditionsConfirmed: true,
+      checkedBy: staff.id,
+    },
+    expires_at: expiresAt,
+    created_at: new Date().toISOString(),
+    status: "draft",
+    provider_id: null,
+    sent_at: null,
+    outcome: "none",
+  };
+  return {
+    message: row,
+    token: {
+      token_hash: digest(tokenFor(id)),
+      email_key: emailKey(candidate.email),
+      email: candidate.email,
+      message_id: id,
+    },
+  };
+}
+
 export async function createDraft(
   staff: Staff,
   input: Record<string, unknown>,
@@ -73,52 +142,22 @@ export async function createDraft(
     s.candidates.find((c) => c.id === input.candidateId),
     s,
   );
-  const sender = senderConfig();
-  const id = randomUUID();
-  const url = new URL(job.url);
-  url.search = new URLSearchParams({
-    utm_source: "ridejob_scout",
-    utm_medium: "email",
-    utm_campaign: "pma_scout",
-    utm_content: id,
-  }).toString();
-  const body = `${candidate.name}様\n\n${copy.body}\n\n【ご紹介する求人】\n${job.company}\n${job.title}\n勤務地：${job.region || "求人詳細をご確認ください"}\n${url}\n\nご興味・ご質問がありましたら、このメールにご返信ください。\n\nRIDE JOB（株式会社PM Agent）\n担当：${staff.display_name}\n${sender.address}\n返信先：${sender.replyTo}\n\nスカウトメールの配信停止：\n${unsubscribeUrl(id)}\n※配信停止後も、お申し込み済みの応募・選考に必要なご連絡は継続します。`;
-  const row = {
-    id,
-    staff_id: staff.id,
-    candidate_id: candidate.id,
-    candidate_name: candidate.name,
-    candidate_snapshot: candidate,
-    email: normalizeEmail(candidate.email),
-    contact_keys: contactKeys(candidate),
-    job_id: job.id,
-    job_snapshot: job,
-    subject: copy.subject,
-    body,
-    from_email: sender.from,
-    reply_to: sender.replyTo,
-    consent_snapshot: {
-      evidence: result.evidence,
-      larkConsentDate: candidate.consentDate,
-      larkConsentMethod: candidate.consentMethod,
-      checkedAt: new Date().toISOString(),
-      conditionsConfirmed: true,
-      checkedBy: staff.id,
-    },
-    expires_at: new Date(Date.now() + 15 * 60_000).toISOString(),
-  };
+  const { message: row, token } = draftRecord(
+    staff,
+    candidate,
+    result,
+    job,
+    copy,
+    new Date(Date.now() + 15 * 60_000).toISOString(),
+  );
+  const id = row.id;
   const saved = await db<ScoutMessage[]>("scout_messages", {
     method: "POST",
     body: JSON.stringify(row),
   });
   await db("scout_unsubscribe_tokens", {
     method: "POST",
-    body: JSON.stringify({
-      token_hash: digest(tokenFor(id)),
-      email_key: emailKey(candidate.email),
-      email: candidate.email,
-      message_id: id,
-    }),
+    body: JSON.stringify(token),
   });
   await db("scout_audit", {
     method: "POST",
@@ -131,14 +170,11 @@ export async function createDraft(
   return saved[0];
 }
 
-export async function sendDraft(staff: Staff, id: string) {
+export async function sendDraft(staff: Staff, id: string, batchId?: string) {
   const config = scoutConfig();
   if (process.env.SCOUT_SEND_ENABLED !== "true")
     throw new ScoutError("実送信はまだ有効になっていません", 409);
-  // 未確定の頻度を既定値で本番に持ち込まない。
-  const cooldown = Number(process.env.SCOUT_COOLDOWN_HOURS);
-  if (!Number.isInteger(cooldown) || cooldown < 1 || cooldown > 8760)
-    throw new ScoutError("送信間隔の設定が必要です");
+  const cooldown = SCOUT_COOLDOWN_HOURS;
   if (!/^[0-9a-f-]{36}$/i.test(id))
     throw new ScoutError("送信IDが正しくありません", 400);
   const rows = await db<ScoutMessage[]>(
@@ -146,6 +182,8 @@ export async function sendDraft(staff: Staff, id: string) {
   );
   const m = rows[0];
   if (!m) throw new ScoutError("下書きが見つかりません", 404);
+  if (m.batch_id && m.batch_id !== batchId)
+    throw new ScoutError("グループの最終確認から送信してください", 409);
   if (m.status !== "draft")
     return { id, status: m.status, providerId: m.provider_id };
   if (Date.parse(m.expires_at) <= Date.now())

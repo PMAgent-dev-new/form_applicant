@@ -18,12 +18,12 @@ export function checkOrigin(req: NextRequest) {
   if (req.headers.get("origin") !== origin)
     throw new ScoutError("この画面からもう一度操作してください", 403);
 }
-export async function readInput(req: NextRequest) {
+export async function readInput(req: NextRequest, maxLength = 16000) {
   checkOrigin(req);
   if (!req.headers.get("content-type")?.startsWith("application/json"))
     throw new ScoutError("入力形式が正しくありません", 400);
   const text = await req.text();
-  if (text.length > 16000) throw new ScoutError("入力が長すぎます", 400);
+  if (text.length > maxLength) throw new ScoutError("入力が長すぎます", 400);
   try {
     const body = JSON.parse(text);
     if (!body || typeof body !== "object" || Array.isArray(body))

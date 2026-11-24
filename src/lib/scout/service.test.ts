@@ -121,6 +121,7 @@ describe("scout send boundary", () => {
   it("resolves recipients and footer on the server; ignores injected recipient", async () => {
     const d = await draft();
     expect(d.email).toBe(c.email);
+    expect(d.from_email).toBe("ridejob@pmagent.jp");
     expect(d.body).toContain("配信停止");
     expect(d.body).toContain("/job/examplejob?utm_source=ridejob_scout");
     expect(sendGmailMessage).not.toHaveBeenCalled();

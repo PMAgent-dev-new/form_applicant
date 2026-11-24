@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState, type FormEvent } from "react";
+import GroupComposer from "./GroupComposer";
 import { apiPath } from "@/lib/basePath";
 import type {
   Candidate,
@@ -49,11 +50,12 @@ async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 export default function ScoutPage() {
   const [staff, setStaff] = useState<Staff | null>(null),
     [ready, setReady] = useState(false),
-    [enabled, setEnabled] = useState(false);
+    [enabled, setEnabled] = useState(false),
+    [aiEnabled, setAiEnabled] = useState(false);
   const [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
     [busy, setBusy] = useState(false);
-  const [view, setView] = useState<"search" | "history">("search"),
+  const [view, setView] = useState<"groups" | "search" | "history">("groups"),
     [query, setQuery] = useState(""),
     [role, setRole] = useState(""),
     [list, setList] = useState<List | null>(null);
@@ -85,11 +87,14 @@ export default function ScoutPage() {
   };
   useEffect(() => {
     let alive = true;
-    api<{ staff: Staff; sendingEnabled: boolean }>("session")
+    api<{ staff: Staff; sendingEnabled: boolean; aiEnabled: boolean }>(
+      "session",
+    )
       .then((s) => {
         if (alive) {
           setStaff(s.staff);
           setEnabled(s.sendingEnabled);
+          setAiEnabled(s.aiEnabled);
         }
       })
       .catch(() => {})
@@ -150,8 +155,11 @@ export default function ScoutPage() {
         }),
       });
       setStaff(r.staff);
-      const s = await api<{ sendingEnabled: boolean }>("session");
+      const s = await api<{ sendingEnabled: boolean; aiEnabled: boolean }>(
+        "session",
+      );
       setEnabled(s.sendingEnabled);
+      setAiEnabled(s.aiEnabled);
     });
   };
   if (!ready)
@@ -203,6 +211,12 @@ export default function ScoutPage() {
         <p>登録者に、次の選択肢を。</p>
         <nav aria-label="スカウトメニュー">
           <button
+            className={view === "groups" ? "active" : ""}
+            onClick={() => setView("groups")}
+          >
+            AIでグループ作成
+          </button>
+          <button
             className={view === "search" ? "active" : ""}
             onClick={() => {
               setView("search");
@@ -243,11 +257,13 @@ export default function ScoutPage() {
           <div>
             <p className="scout-eyebrow">PMA SCOUT DESK</p>
             <h1>
-              {view === "history"
-                ? "送信履歴"
-                : selected
-                  ? "スカウトを作成"
-                  : "候補者を探す"}
+              {view === "groups"
+                ? "AIでスカウトを準備"
+                : view === "history"
+                  ? "送信履歴"
+                  : selected
+                    ? "スカウトを作成"
+                    : "候補者を探す"}
             </h1>
           </div>
           <span className="scout-badge">
@@ -269,7 +285,9 @@ export default function ScoutPage() {
             {notice}
           </div>
         )}
-        {view === "history" ? (
+        {view === "groups" ? (
+          <GroupComposer enabled={enabled} aiEnabled={aiEnabled} />
+        ) : view === "history" ? (
           <>
             <p className="scout-muted">
               最新100件。Gmailの受理は、受信箱への到達・開封を意味しません。返信・面談は担当者が確認して更新します。

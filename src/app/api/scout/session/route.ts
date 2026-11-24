@@ -10,7 +10,11 @@ import {
 export const dynamic = "force-dynamic";
 export async function GET(req: NextRequest) {
   return protectedHandler(req, async (staff) =>
-    json({ staff, sendingEnabled: process.env.SCOUT_SEND_ENABLED === "true" }),
+    json({
+      staff,
+      sendingEnabled: process.env.SCOUT_SEND_ENABLED === "true",
+      aiEnabled: process.env.SCOUT_AI_ENABLED === "true",
+    }),
   );
 }
 export async function POST(req: NextRequest) {

@@ -31,6 +31,9 @@ export type ScoutJob = {
   region: string;
   url: string;
   updatedAt: string;
+  category?: string;
+  work?: string;
+  requirements?: string;
 };
 export type Eligibility = {
   allowed: boolean;
@@ -58,4 +61,23 @@ export type ScoutMessage = {
   expires_at: string;
   sent_at: string | null;
   outcome: "none" | "replied" | "meeting" | "declined";
+  batch_id?: string | null;
+  batch_index?: number | null;
 };
+
+// 管理画面に同意原本・連絡先キー・内部スナップショットを返さない。
+export type ScoutMessageView = Pick<
+  ScoutMessage,
+  | "id"
+  | "candidate_name"
+  | "email"
+  | "subject"
+  | "from_email"
+  | "reply_to"
+  | "status"
+  | "provider_id"
+  | "created_at"
+  | "sent_at"
+  | "outcome"
+  | "batch_index"
+> & { body?: string };

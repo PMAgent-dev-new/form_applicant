@@ -45,7 +45,7 @@ export function scoutConfig() {
   };
 }
 export function senderConfig() {
-  const from = process.env.SCOUT_FROM_EMAIL?.trim();
+  const from = "ridejob@pmagent.jp";
   const replyTo = process.env.SCOUT_REPLY_TO?.trim();
   const address = process.env.SCOUT_SENDER_POSTAL_ADDRESS?.trim();
   if (
@@ -59,4 +59,28 @@ export function senderConfig() {
   )
     throw new ScoutError("送信元・返信先・事業者住所の設定が必要です");
   return { from, replyTo, address, name: "RIDE JOB（株式会社PM Agent）" };
+}
+
+// 2026-11-24 三木さん承認。担当者・媒体をまたぐ同一人への接触制限。
+export const SCOUT_BATCH_LIMIT = 300;
+export const SCOUT_COOLDOWN_HOURS = 168;
+
+export function claudeConfig() {
+  const key = process.env.SCOUT_CLAUDE_API_KEY;
+  const model = process.env.SCOUT_CLAUDE_MODEL;
+  const monthlyLimit = Number(process.env.SCOUT_AI_MONTHLY_LIMIT);
+  if (
+    process.env.SCOUT_AI_ENABLED !== "true" ||
+    !key ||
+    !model ||
+    !/^claude-[a-z0-9-]{3,80}$/.test(model) ||
+    !Number.isInteger(monthlyLimit) ||
+    monthlyLimit < 1 ||
+    monthlyLimit > 100
+  )
+    throw new ScoutError(
+      "Claudeの接続・モデル・月間利用上限を設定してください",
+      409,
+    );
+  return { key, model, monthlyLimit };
 }
