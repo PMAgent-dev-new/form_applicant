@@ -121,10 +121,20 @@ export function buildMimeMessage(opts: {
   to: string;
   cc?: string[];
   bcc?: string[];
+  replyTo?: string;
+  unsubscribeUrl?: string;
   subject: string;
   textBody: string;
   htmlBody: string;
 }): string {
+  // スカウトでは固定した返信先・解除リンクを付ける。既存自動返信は未指定のまま。
+  for (const value of [opts.from, opts.fromName, opts.to, opts.subject, opts.replyTo, ...(opts.cc ?? []), ...(opts.bcc ?? [])]) {
+    if (value && /[\r\n\x00]/.test(value)) throw new Error('Invalid MIME header');
+  }
+  if (opts.unsubscribeUrl) {
+    const url = new URL(opts.unsubscribeUrl);
+    if (url.protocol !== 'https:' || /[\r\n<>]/.test(opts.unsubscribeUrl)) throw new Error('Invalid unsubscribe URL');
+  }
   const boundary = `___boundary_${Math.random().toString(36).slice(2)}_${Date.now()}___`;
   const fromHeader = opts.fromName
     ? `${encodeMimeWord(opts.fromName)} <${opts.from}>`
@@ -141,6 +151,8 @@ export function buildMimeMessage(opts: {
   if (opts.bcc && opts.bcc.length > 0) {
     headerLines.push(`Bcc: ${opts.bcc.join(', ')}`);
   }
+  if (opts.replyTo) headerLines.push(`Reply-To: ${opts.replyTo}`);
+  if (opts.unsubscribeUrl) headerLines.push(`List-Unsubscribe: <${opts.unsubscribeUrl}>`, 'List-Unsubscribe-Post: List-Unsubscribe=One-Click');
 
   headerLines.push(
     `Subject: ${encodeMimeWord(opts.subject)}`,
@@ -179,6 +191,8 @@ export async function sendGmailMessage(opts: {
   fromName?: string;
   cc?: string[];
   bcc?: string[];
+  replyTo?: string;
+  unsubscribeUrl?: string;
   subject: string;
   textBody: string;
   htmlBody: string;

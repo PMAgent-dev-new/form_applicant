@@ -1,0 +1,593 @@
+.scout-app {
+  font-family: Arial, "Noto Sans JP", sans-serif;
+  color: #172d49;
+  background: #f5f7fa;
+  min-height: 100vh;
+  line-height: 1.65;
+  font-size: 15px;
+}
+.scout-app * {
+  box-sizing: border-box;
+}
+.scout-app button {
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: #1769cc;
+  color: white;
+  padding: 11px 20px;
+  font-weight: 700;
+  font-size: 14px;
+  min-height: 44px;
+}
+.scout-app button:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+.scout-app button.secondary {
+  background: white;
+  border-color: #c9d5e4;
+  color: #213f64;
+}
+.scout-app a {
+  color: #1769cc;
+  text-decoration: underline;
+}
+.scout-app h1 {
+  font-size: 29px;
+  line-height: 1.4;
+  font-weight: 800;
+  margin: 0;
+}
+.scout-app h2 {
+  font-size: 20px;
+  font-weight: 700;
+  margin: 4px 0 12px;
+}
+.scout-app h3 {
+  font-weight: 700;
+  margin: 16px 0;
+}
+.scout-app p {
+  margin: 8px 0;
+}
+.scout-app small {
+  font-size: 12px;
+  display: block;
+  color: #65748a;
+  font-weight: 400;
+}
+.scout-app label {
+  display: block;
+  font-size: 14px;
+  font-weight: 700;
+  margin: 0 0 18px;
+}
+.scout-app input:not([type="checkbox"]),
+.scout-app select,
+.scout-app textarea {
+  display: block;
+  width: 100%;
+  border: 1px solid #c9d5e4;
+  border-radius: 7px;
+  padding: 11px 12px;
+  background: white;
+  color: #172d49;
+  margin-top: 6px;
+  font: inherit;
+  font-weight: 400;
+  min-height: 44px;
+}
+.scout-app input:focus,
+.scout-app select:focus,
+.scout-app textarea:focus,
+.scout-app button:focus-visible {
+  outline: 3px solid #cce3ff;
+  outline-offset: 2px;
+}
+.scout-shell {
+  display: grid;
+  grid-template-columns: 224px minmax(0, 1fr);
+  min-height: 100vh;
+}
+.scout-sidebar {
+  background: #102a4a;
+  color: white;
+  padding: 35px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.scout-brand {
+  font-weight: 900;
+  font-size: 25px;
+  letter-spacing: 0.02em;
+}
+.scout-brand small {
+  color: inherit;
+  opacity: 0.6;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+}
+.scout-sidebar > p {
+  font-size: 12px;
+  opacity: 0.6;
+}
+.scout-sidebar nav {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+.scout-sidebar nav button {
+  background: transparent;
+  text-align: left;
+  color: #cbd9ec;
+}
+.scout-sidebar nav button.active {
+  background: #284464;
+  color: white;
+  border-left: 3px solid #f8a158;
+}
+.scout-user {
+  margin-top: auto;
+  border-top: 1px solid #39516c;
+  padding-top: 20px;
+}
+.scout-user span {
+  display: block;
+  font-size: 11px;
+  word-break: break-all;
+  color: #a6b8d0;
+}
+.scout-user button {
+  background: transparent;
+  padding: 8px 0;
+  font-size: 12px;
+  color: #cbd9ec;
+}
+.scout-main {
+  padding: 36px 42px;
+  max-width: 1530px;
+  width: 100%;
+  margin: auto;
+}
+.scout-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 28px;
+  gap: 20px;
+}
+.scout-eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  font-weight: 700;
+  color: #5c789d;
+}
+.scout-badge {
+  border: 1px solid #cbd6e5;
+  border-radius: 20px;
+  padding: 7px 15px;
+  color: #4d6580;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.scout-lead {
+  color: #647388;
+  margin-bottom: 24px !important;
+}
+.scout-search {
+  display: grid;
+  grid-template-columns: 2fr 1fr auto;
+  align-items: end;
+  gap: 16px;
+  background: white;
+  padding: 24px;
+  border: 1px solid #dee5ee;
+  border-radius: 12px;
+}
+.scout-search label {
+  margin: 0;
+}
+.scout-results {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 28px;
+}
+.scout-results h2 {
+  font-size: 30px;
+  margin: 0;
+}
+.scout-results small {
+  display: inline;
+  font-size: 13px;
+}
+.scout-results > span {
+  font-size: 13px;
+  color: #277567;
+}
+.scout-cards {
+  display: grid;
+  gap: 12px;
+  margin-top: 22px;
+}
+.scout-card {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1.2fr;
+  gap: 25px;
+  padding: 24px;
+  background: white;
+  border: 1px solid #dee5ee;
+  border-radius: 10px;
+}
+.scout-card h2 {
+  font-size: 20px;
+  margin: 8px 0;
+}
+.scout-card p {
+  font-size: 13px;
+}
+.scout-id {
+  color: #6d7e93;
+  font-size: 11px !important;
+}
+.scout-pill {
+  display: inline-block;
+  padding: 3px 9px;
+  background: #fff3e5;
+  color: #965b1f;
+  border-radius: 4px;
+  font-size: 11px;
+}
+.scout-pill.ok {
+  color: #226f5b;
+  background: #edf8f2;
+}
+.scout-card-end {
+  text-align: right;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: flex-end;
+}
+.scout-card-end p {
+  font-size: 12px;
+  color: #637084;
+  max-width: 290px;
+}
+.scout-note,
+.scout-error {
+  border-radius: 8px;
+  padding: 14px 18px;
+  margin: 15px 0;
+  font-size: 13px;
+  white-space: pre-line;
+}
+.scout-note {
+  background: #eaf2fc;
+  color: #244d82;
+}
+.scout-error {
+  background: #fff0ec;
+  color: #9d391f;
+}
+.scout-muted {
+  color: #6c7b8f;
+  font-size: 12px;
+}
+.scout-empty {
+  text-align: center;
+  padding: 64px 20px;
+  color: #6b7c92;
+}
+.scout-pagination {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 20px;
+  margin-top: 24px;
+}
+.scout-back {
+  color: #1769cc !important;
+  background: transparent !important;
+  padding-left: 0 !important;
+}
+.scout-compose {
+  display: grid;
+  grid-template-columns: minmax(230px, 0.8fr) minmax(0, 1.7fr);
+  gap: 24px;
+}
+.scout-panel {
+  background: white;
+  border: 1px solid #dee5ee;
+  border-radius: 12px;
+  padding: 25px;
+  height: fit-content;
+}
+.scout-panel dl {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  gap: 10px;
+  font-size: 13px;
+  margin: 22px 0;
+}
+.scout-panel dt {
+  color: #6b7c92;
+}
+.scout-panel dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.scout-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.scout-inline input {
+  flex: 1;
+  min-width: 0;
+}
+.scout-inline button {
+  white-space: nowrap;
+  margin-top: 6px;
+}
+.scout-job {
+  background: #f3f7fc;
+  border-left: 3px solid #1769cc;
+  padding: 15px;
+  margin: 0 0 20px;
+  font-size: 13px;
+}
+.scout-check {
+  display: flex !important;
+  align-items: flex-start;
+  gap: 9px;
+  font-weight: 400 !important;
+  font-size: 13px !important;
+}
+.scout-check input {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  margin-top: 3px;
+}
+.scout-mail {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font:
+    14px/1.9 Arial,
+    sans-serif;
+  background: #f6f8fb;
+  padding: 20px;
+  border: 1px solid #e1e7f0;
+  border-radius: 6px;
+  max-height: 520px;
+  overflow: auto;
+  margin-bottom: 22px;
+}
+.scout-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.scout-login {
+  max-width: 440px;
+  margin: 0 auto;
+  padding: 65px 25px;
+}
+.scout-login h1 {
+  margin: 28px 0 12px;
+  font-size: 25px;
+}
+.scout-login form {
+  margin-top: 30px;
+}
+.scout-login form button {
+  width: 100%;
+}
+.scout-table-wrap {
+  overflow-x: auto;
+  margin-top: 24px;
+  background: white;
+  border: 1px solid #dee5ee;
+  border-radius: 10px;
+}
+.scout-app table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 750px;
+}
+.scout-app th,
+.scout-app td {
+  text-align: left;
+  border-bottom: 1px solid #e2e8ef;
+  padding: 17px;
+  font-size: 13px;
+}
+.scout-app th {
+  background: #f0f4f9;
+  font-size: 12px;
+}
+.scout-app td small {
+  font-size: 10px;
+  margin-top: 5px;
+}
+.scout-app td select {
+  min-width: 160px;
+  font-size: 12px;
+}
+@media (max-width: 1000px) {
+  .scout-main {
+    padding: 28px 22px;
+  }
+  .scout-shell {
+    grid-template-columns: 190px 1fr;
+  }
+  .scout-sidebar {
+    padding: 25px 17px;
+  }
+  .scout-card {
+    grid-template-columns: 1fr 1fr;
+  }
+  .scout-card-end {
+    grid-column: 1/-1;
+    flex-direction: row;
+    align-items: center;
+    text-align: left;
+  }
+  .scout-search {
+    grid-template-columns: 1fr 1fr;
+  }
+  .scout-search button {
+    grid-column: 1/-1;
+  }
+  .scout-compose {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 680px) {
+  .scout-shell {
+    display: block;
+  }
+  .scout-sidebar {
+    padding: 14px 20px;
+    display: block;
+  }
+  .scout-sidebar .scout-brand {
+    font-size: 21px;
+  }
+  .scout-sidebar > p {
+    display: none;
+  }
+  .scout-user {
+    display: flex;
+    align-items: center;
+    border: 0;
+    padding: 0;
+    margin-top: 8px;
+    font-size: 12px;
+  }
+  .scout-user span {
+    display: none;
+  }
+  .scout-user button {
+    margin-left: auto;
+  }
+  .scout-sidebar nav {
+    display: flex;
+    margin: 8px 0 0;
+    gap: 10px;
+  }
+  .scout-sidebar nav button {
+    padding: 8px 14px;
+  }
+  .scout-main {
+    padding: 24px 16px;
+  }
+  .scout-heading {
+    display: block;
+  }
+  .scout-heading h1 {
+    font-size: 25px;
+  }
+  .scout-badge {
+    display: inline-block;
+    margin-top: 12px;
+  }
+  .scout-search {
+    padding: 17px;
+    display: block;
+  }
+  .scout-search label {
+    margin-bottom: 15px;
+  }
+  .scout-search button {
+    width: 100%;
+  }
+  .scout-card {
+    gap: 15px;
+    padding: 20px;
+  }
+  .scout-card-end {
+    display: block;
+  }
+  .scout-card-end button {
+    width: 100%;
+    margin-top: 12px;
+  }
+  .scout-results {
+    display: block;
+  }
+  .scout-panel {
+    padding: 20px;
+  }
+  .scout-inline {
+    display: block;
+  }
+  .scout-inline button {
+    width: 100%;
+  }
+  .scout-actions {
+    flex-wrap: wrap;
+  }
+  .scout-actions button {
+    flex: 1;
+  }
+  .scout-panel dl {
+    grid-template-columns: 70px 1fr;
+  }
+  .scout-login {
+    padding-top: 35px;
+  }
+}
+
+.scout-group-workspace {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+}
+.scout-group-workspace .scout-lead {
+  margin: 0 !important;
+}
+.scout-group-workspace summary {
+  cursor: pointer;
+  font-size: 14px;
+  padding: 8px 0;
+  color: #244d82;
+}
+.scout-group-workspace ul {
+  margin: 10px 0;
+  padding-left: 22px;
+  list-style: disc;
+}
+.scout-group-workspace .scout-results > span {
+  font-size: 12px;
+}
+.scout-group-copy {
+  margin-top: 20px;
+}
+.scout-recipient-list {
+  max-height: 350px;
+  overflow: auto;
+}
+.scout-group-workspace .scout-check {
+  margin-bottom: 12px;
+}
+.scout-group-workspace .scout-table-wrap label {
+  margin: 0;
+}
+.scout-recent {
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+@media (max-width: 680px) {
+  .scout-sidebar nav {
+    flex-wrap: wrap;
+    gap: 3px;
+  }
+  .scout-sidebar nav button {
+    padding: 8px 10px;
+    font-size: 12px;
+  }
+}

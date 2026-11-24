@@ -2,9 +2,9 @@ import type { NextConfig } from "next";
 
 // セキュリティヘッダー（jobmadley に準じる。ただしフレームは jobmadley の DENY と違い、同一オリジンからの埋め込みだけ許可する）
 const securityHeaders = [
-  { key: 'X-Content-Type-Options', value: 'nosniff' },
-  { key: 'X-Frame-Options', value: 'SAMEORIGIN' },
-  { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+  { key: "X-Content-Type-Options", value: "nosniff" },
+  { key: "X-Frame-Options", value: "SAMEORIGIN" },
+  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
 ];
 
 const nextConfig: NextConfig = {
@@ -14,11 +14,26 @@ const nextConfig: NextConfig = {
   poweredByHeader: false,
   async headers() {
     // basePath があればその配下（/entry/:path*）に付く
-    return [{ source: '/:path*', headers: securityHeaders }];
+    const scoutHeaders = [
+      { key: "X-Robots-Tag", value: "noindex, nofollow" },
+      { key: "Referrer-Policy", value: "no-referrer" },
+      { key: "X-Frame-Options", value: "DENY" },
+      { key: "Cache-Control", value: "private, no-store" },
+      {
+        key: "Content-Security-Policy",
+        value:
+          "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; frame-ancestors 'none'; form-action 'self'; base-uri 'self'; object-src 'none'",
+      },
+    ];
+    return [
+      { source: "/:path*", headers: securityHeaders },
+      { source: "/scout/:path*", headers: scoutHeaders },
+      { source: "/api/scout/:path*", headers: scoutHeaders },
+    ];
   },
   images: {
     // Vercelで自動的にAVIF/WebP形式に変換
-    formats: ['image/avif', 'image/webp'],
+    formats: ["image/avif", "image/webp"],
     // レスポンシブ画像のデバイスサイズ
     deviceSizes: [640, 750, 828, 1080, 1200, 1920],
     imageSizes: [16, 32, 48, 64, 96, 128, 256, 384],
@@ -26,10 +41,10 @@ const nextConfig: NextConfig = {
     minimumCacheTTL: 60,
     remotePatterns: [
       {
-        protocol: 'https',
-        hostname: 'images.microcms-assets.io',
-        port: '',
-        pathname: '/**',
+        protocol: "https",
+        hostname: "images.microcms-assets.io",
+        port: "",
+        pathname: "/**",
       },
     ],
   },
@@ -37,7 +52,7 @@ const nextConfig: NextConfig = {
   // Vercel の関数バンドルに node_modules/kuromoji/dict を含める必要がある
   // （動的な path.join なのでトレースが自動では拾えない）。
   outputFileTracingIncludes: {
-    '/api/hiragana': ['./node_modules/kuromoji/dict/**'],
+    "/api/hiragana": ["./node_modules/kuromoji/dict/**"],
   },
 };
 
