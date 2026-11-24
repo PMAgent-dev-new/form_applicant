@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 
 import { captureAttribution } from '@/lib/attribution';
 import { captureApplicationContext } from '@/lib/application-context';
+import { isScoutPath } from '@/lib/scout-path';
 
 /**
  * 全ページでマウントし、着地時点の流入元を Cookie（rj_attr）へ取り込む。
@@ -23,6 +24,7 @@ import { captureApplicationContext } from '@/lib/application-context';
  */
 export default function AttributionCapture() {
   useEffect(() => {
+    if (isScoutPath(window.location.pathname)) return;
     // ⚠️ ここで例外を漏らすと、effect の未捕捉例外として React ツリーが落ちる。
     // このアプリには error.tsx / global-error.tsx が無いため Next の既定エラー画面になり、
     // **そのユーザーは応募フォームを一切使えなくなる**（原因が Cookie なのでリロードしても直らない）。
