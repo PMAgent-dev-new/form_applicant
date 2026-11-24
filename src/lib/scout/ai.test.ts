@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("./db", () => ({ rpc: vi.fn() }));
 import { rpc } from "./db";
-import { generatePlan, publicJobInput } from "./ai";
+import { generatePlan, publicJobInput, buildClaudeRequest } from "./ai";
 const staff = {
   id: "staff-private",
   email: "private-staff@example.com",
@@ -67,6 +67,19 @@ describe("Claude boundary", () => {
       p_staff: staff.id,
       p_limit: 100,
     });
+  });
+  it("uses the approved Sonnet 5.5 request profile without unsupported forced tools or sampling", () => {
+    const payload = JSON.parse(buildClaudeRequest(job, "claude-sonnet-5-5"));
+    expect(payload.model).toBe("claude-sonnet-5-5");
+    expect(payload.thinking).toEqual({ type: "between_tools" });
+    expect(payload.output_config).toEqual({ effort: "medium" });
+    expect(payload.tools[0].strict).toBe(true);
+    expect(payload.tool_choice.type).toBe("auto");
+    expect(payload).not.toHaveProperty("temperature");
+    expect(payload.max_tokens).toBe(1800);
+    expect(
+      JSON.parse(buildClaudeRequest(job, "claude-haiku-4-5-20251001")),
+    ).not.toHaveProperty("thinking");
   });
   it("removes contact links in public text", () => {
     expect(

@@ -18,7 +18,7 @@ RIDE JOBの公開求人からClaudeが候補者の選定条件とメール文を
 
 ## 本番設定
 
-新規SaaSは不要。既存の応募受付用SupabaseとGmail APIを使う。**本PRは本番送信の有効化を行わない。** 利用者・返信先・Claude接続/モデル/利用上限の決定と、画面・テスト結果の確認後に有効化する。送信元は三木さん承認の `RIDE JOB（株式会社PM Agent） <ridejob@pmagent.jp>` に固定。
+新規SaaSは不要。既存の応募受付用SupabaseとGmail APIを使う。**本PRは本番送信の有効化を行わない。** 利用者・返信先の決定と、画面・テスト結果の確認後に有効化する。Claudeは2026-11-24にSonnet 5.5・月100回・税別10米ドル目安を承認済み。送信元は三木さん承認の `RIDE JOB（株式会社PM Agent） <ridejob@pmagent.jp>` に固定。
 
 | 設定 | 用途 |
 |---|---|
@@ -56,7 +56,7 @@ RIDE JOBの公開求人からClaudeが候補者の選定条件とメール文を
 
 生成は `https://api.anthropic.com/v1/messages` に限定し、入力24,000 UTF-8バイト、出力1,800トークンまで。ツールは提案結果を返すだけで外部操作をしない。月間上限は日本時間の暦月・全担当者合算でDBから原子的に確保し、失敗・タイムアウトも1回に数える。自動再試行・モデルのフォールバックなし。モデル/金額はClaude接続準備時に確定し、OpenAI提案時の金額を流用しない。運用開始前に、選んだモデルで日本語の実出力・原文整合・利用量を実測する。
 
-本番のキーやモデルは未設定。ローカルのAI/メール/UIテストは偽の応答のみ。実在者への送信・実API呼出しはしていない。定時ジョブや新しい外部送信システムは作らない。送信の停止は `SCOUT_SEND_ENABLED=false`、AI呼出しの停止は `SCOUT_AI_ENABLED=false`。
+実在者への送信は未実施。ローカルのAI/メール/UIテストは偽の応答のみ。本番のキーはVercelのSecretに保存し、読み戻さずサーバー上で検証する。定時ジョブや新しい外部送信システムは作らない。送信の停止は `SCOUT_SEND_ENABLED=false`、AI呼出しの停止は `SCOUT_AI_ENABLED=false`。
 
 ## 検証
 
@@ -73,3 +73,9 @@ SCOUT_TEST_PG_HOST=/tmp/pma-scout-pg-20261124 SCOUT_TEST_PG_PORT=55483 python3 s
 - [Supabaseのサーバー認証](https://supabase.com/docs/guides/auth/server-side/nextjs)
 
 - [Claude Messages API・ツール定義](https://platform.claude.com/docs/en/agents-and-tools/tool-use/define-tools)
+
+## 担当者未登録時の単発接続確認
+
+`SCOUT_ENABLED`・`SCOUT_AI_ENABLED`・`SCOUT_SEND_ENABLED`をすべてfalseのまま、承認済みの公開求人3件だけを`scout-preflight.ts`で検証できる。通常buildには接続せず、既存ridejob-entryへ`--prod --skip-domain`の単発buildで実行し、既存ドメインの割当を変更しない。結果を保存後、当該検証デプロイだけを削除し、旧本番のaliasが維持されたことを確認してからmainへ進める。検証版を既存の自動ロールバック候補へ残さない。モデルはSonnet 5.5、入力上限・出力上限・公開情報の限定・応答検証を本体と共有する。
+
+先にJST当月の`scout_ai_usage`行を用意し、開始時のattemptsと1時間以内の期限を固定する。実行例：`npx tsx scripts/scout-preflight.ts --approved-three-public-jobs YYYY-MM-01 0 DEADLINE_ISO`。各API呼出しの前にattemptsを比較付き更新し、同じ開始値での再実行や競合は止める。失敗も1回として残し、3回を月間100回に含める。生成直前にも期限/JST月を再確認する。応答検証が失敗した場合も安全な利用量・終了理由・確保済み回数を記録する。結果は公開求人・下書き・利用量だけをログに残す。候補者の読み取り、担当者の仮作成、Gmail送信は行わない。実施結果・残回数は案件の目標設計書で管理する。
