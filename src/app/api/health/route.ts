@@ -75,7 +75,7 @@ const BASE_WRITE_COLUMN_CHECK_FIXTURE: BaseWriteContext = {
 };
 
 // 通知のあとに書き戻す列。組み立て関数を通らずに updateBaseRecord で書く（applicants/route.ts・
-// coupang/applicants/route.ts）ので、ここで足す。ridejob は代わりに対応履歴メモへ印を書く（期待列に入っている）。
+// coupang/applicants/route.ts）ので、ここで足す。
 const NOTIFIED_FLAG_COLUMN = 'Lark通知送信済み';
 
 export type ExpectedColumnsGroup = { profile: LarkProfile; tableId: string; expected: string[] };
@@ -91,7 +91,7 @@ export function resolveExpectedColumnsGroups(): ExpectedColumnsGroup[] {
   // `DirectBaseWrite | null` のため防御的にガードする（null ならそのプロファイルの列は調べない）。
   const ridejobWrite = resolveDirectBaseWrite(BASE_WRITE_COLUMN_CHECK_FIXTURE);
   if (ridejobWrite) {
-    groups.push({ profile: 'ridejob', tableId: ridejobWrite.tableId, expected: Object.keys(ridejobWrite.fields) });
+    groups.push({ profile: 'ridejob', tableId: ridejobWrite.tableId, expected: [...Object.keys(ridejobWrite.fields), NOTIFIED_FLAG_COLUMN] });
   }
 
   // 経験者でも新卒でもキーは同じ（転職時期・資格は値が undefined になるだけ）。値の変換を通らない新卒の入力で組み立てる。

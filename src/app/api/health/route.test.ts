@@ -644,8 +644,8 @@ describe('GET /api/health', () => {
         resolveExpectedColumnsGroups().find((g) => g.profile === profile)!.expected;
       expect(expectedOf('mechanic')).toContain('Lark通知送信済み');
       expect(expectedOf('liftjob')).toContain('Lark通知送信済み');
-      // ridejob は対応履歴メモに印を書く
-      expect(expectedOf('ridejob')).not.toContain('Lark通知送信済み');
+      // ridejob も専用列に通知状態を保存する
+      expect(expectedOf('ridejob')).toContain('Lark通知送信済み');
       expect(expectedOf('ridejob')).toContain('対応履歴メモ');
     });
 

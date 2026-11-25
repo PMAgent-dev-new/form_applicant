@@ -715,4 +715,55 @@ describe('checkBaseColumns（Base の表に書き込み側の列がそろって�
     });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
+  it('falls back to the legacy memo before creating and preserves the human memo', async () => {
+    for (const [key, value] of Object.entries({ APP_ID_RIDEJOB: 'test-app-id', APP_SECRET_RIDEJOB: 'test-app-secret', APP_TOKEN_RIDEJOB: 'test-app-token' })) vi.stubEnv(key, value)
+    const memo = '営業メモ\n[submission_id:id-legacy]\n[lark_notified:id-legacy]'
+    const fetchSpy = vi.fn(async (input: unknown, init?: RequestInit) => {
+      if (String(input).includes('tenant_access_token')) return Response.json({code:0, tenant_access_token:'token', expire:7200})
+      if (String(input).includes('/records/search')) {
+        const query = JSON.parse(String(init?.body)).filter.conditions[0]
+        return Response.json({code:0, data:{items: query.field_name === '対応履歴メモ' ? [{record_id:'rec-legacy', fields:{対応履歴メモ:memo}}] : []}})
+      }
+      throw new Error('unexpected mutation')
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+    const { upsertBaseRecordByTextField } = await import("./larkBase")
+    await expect(upsertBaseRecordByTextField("tbl-test", "submission_id", "id-legacy", {submission_id: "id-legacy"}, "ridejob", "is", false, true)).resolves.toEqual({recordId:'rec-legacy',created:false,previousFields:{対応履歴メモ:memo}})
+    expect(fetchSpy.mock.calls.filter(([url])=>String(url).includes('/records/search'))).toHaveLength(2)
+  })
+  it('rejects a conflicting legacy ID without overwriting or creating a row', async () => {
+    for (const [key, value] of Object.entries({ APP_ID_RIDEJOB: 'test-app-id', APP_SECRET_RIDEJOB: 'test-app-secret', APP_TOKEN_RIDEJOB: 'test-app-token' })) vi.stubEnv(key, value)
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown, init?: RequestInit) => {
+      if (String(input).includes('tenant_access_token')) return Response.json({code:0,tenant_access_token:'token',expire:7200})
+      if (String(input).includes('/records/search')) {
+        const query = JSON.parse(String(init?.body)).filter.conditions[0]
+        return Response.json({code:0,data:{items:query.field_name === '対応履歴メモ' ? [{record_id:'rec-conflict', fields:{submission_id:'other-id'}}] : []}})
+      }
+      throw new Error('unexpected mutation')
+    }))
+    const { upsertBaseRecordByTextField } = await import("./larkBase")
+    await expect(upsertBaseRecordByTextField("tbl-test", "submission_id", "id-legacy", {submission_id: "id-legacy"}, "ridejob", "is", false, true)).rejects.toThrow('conflicts')
+  })
+
+  it('uses the same create token before and after the driver field migration', async () => {
+    for (const [key,value] of Object.entries({APP_ID_RIDEJOB:'test-app-id',APP_SECRET_RIDEJOB:'test-app-secret',APP_TOKEN_RIDEJOB:'test-app-token'})) vi.stubEnv(key,value)
+    const tokens: string[] = []
+    vi.stubGlobal('fetch',vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url=String(input)
+      if(url.includes('tenant_access_token')) return Response.json({code:0,tenant_access_token:'token',expire:7200})
+      if(url.includes('/records/search')) return Response.json({code:0,data:{items:[]}})
+      if(new URL(url).pathname.endsWith('/records') && init?.method==='POST') {
+        tokens.push(new URL(url).searchParams.get('client_token') || '')
+        return Response.json({code:0,data:{record:{record_id:'rec-created'}}})
+      }
+      throw new Error('unexpected fetch')
+    }))
+    const {upsertBaseRecordByTextField} = await import("./larkBase")
+    await upsertBaseRecordByTextField("tbl-test","対応履歴メモ","[submission_id:id-1]",{},"ridejob","contains",false)
+    await upsertBaseRecordByTextField("tbl-test","submission_id","id-1",{submission_id:"id-1"},"ridejob","is",false,true)
+    expect(tokens).toHaveLength(2)
+    expect(tokens[0]).toBeTruthy()
+    expect(tokens[1]).toBe(tokens[0])
+  })
+
 });
