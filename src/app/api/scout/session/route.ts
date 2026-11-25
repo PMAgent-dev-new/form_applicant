@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { scoutSenderReady } from "@/lib/scout/readiness";
 import {
   checkOrigin,
   json,
@@ -9,13 +10,16 @@ import {
 } from "@/lib/scout/auth";
 export const dynamic = "force-dynamic";
 export async function GET(req: NextRequest) {
-  return protectedHandler(req, async (staff) =>
-    json({
+  return protectedHandler(req, async (staff) => {
+    const senderReady = await scoutSenderReady();
+    console.info("scout_sender_readiness", senderReady ? "ready" : "not_ready");
+    return json({
       staff,
-      sendingEnabled: process.env.SCOUT_SEND_ENABLED === "true",
+      senderReady,
+      sendingEnabled: process.env.SCOUT_SEND_ENABLED === "true" && senderReady,
       aiEnabled: process.env.SCOUT_AI_ENABLED === "true",
-    }),
-  );
+    });
+  });
 }
 export async function POST(req: NextRequest) {
   try {

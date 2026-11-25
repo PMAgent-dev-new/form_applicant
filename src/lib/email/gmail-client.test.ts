@@ -64,6 +64,18 @@ describe('応募受付メール（Gmail API）のタイムアウト', () => {
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
+  it('送信元の疎通はトークンだけを検証し、メールを作成・送信しない', async () => {
+    const network = vi.fn(); vi.stubGlobal('fetch', network);
+    await loadEmail();
+    const { checkGmailSender } = await import('./gmail-client');
+    await expect(checkGmailSender('ridejob@pmagent.jp')).resolves.toBe(true);
+    expect(jwt.options[0]).toMatchObject({subject:'ridejob@pmagent.jp',scopes:['https://www.googleapis.com/auth/gmail.send']});
+    jwt.getAccessToken.mockResolvedValueOnce({token:null});
+    await expect(checkGmailSender('ridejob@pmagent.jp')).resolves.toBe(false);
+    jwt.getAccessToken.mockRejectedValueOnce(new Error('private-provider-details'));
+    await expect(checkGmailSender('ridejob@pmagent.jp')).resolves.toBe(false);
+    expect(network).not.toHaveBeenCalled();
+  });
 
   it('Gmail API が応答しないとき、5秒のタイムアウトで打ち切って reason: error を返す', async () => {
     const timeoutSpy = shortenAbortSignalTimeout();

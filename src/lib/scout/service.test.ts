@@ -7,9 +7,11 @@ vi.mock("./sources", () => ({
   syncStop: vi.fn(),
 }));
 vi.mock("@/lib/email/gmail-client", () => ({ sendGmailMessage: vi.fn() }));
+vi.mock("./readiness", () => ({ scoutSenderReady: vi.fn() }));
 import { db, dbAll, rpc } from "./db";
 import { loadCandidates, loadEvidence, loadJob, syncStop } from "./sources";
 import { sendGmailMessage } from "@/lib/email/gmail-client";
+import { scoutSenderReady } from "./readiness";
 import { createDraft, sendDraft, unsubscribe } from "./service";
 import {
   marketingConsentPayload,
@@ -48,6 +50,7 @@ const job = {
 let saved: ScoutMessage;
 describe("scout send boundary", () => {
   beforeEach(() => {
+    vi.mocked(scoutSenderReady).mockResolvedValue(true);
     vi.stubEnv("SCOUT_ENABLED", "true");
     vi.stubEnv("SCOUT_SEND_ENABLED", "true");
     vi.stubEnv("SCOUT_COOLDOWN_HOURS", "168");
@@ -125,6 +128,15 @@ describe("scout send boundary", () => {
     expect(d.body).toContain("配信停止");
     expect(d.body).toContain("/job/examplejob?utm_source=ridejob_scout");
     expect(sendGmailMessage).not.toHaveBeenCalled();
+  });
+  it("sender authentication failure stops before reserving a contact or sending mail", async () => {
+    const d = await draft();
+    vi.mocked(scoutSenderReady).mockResolvedValue(false);
+    vi.mocked(rpc).mockClear();
+    await expect(sendDraft(staff, d.id)).rejects.toMatchObject({status:503});
+    expect(rpc).not.toHaveBeenCalled();
+    expect(sendGmailMessage).not.toHaveBeenCalled();
+    expect(saved.status).toBe("draft");
   });
   it("rechecks optout after preview, before provider call", async () => {
     const d = await draft();
