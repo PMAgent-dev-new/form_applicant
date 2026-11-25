@@ -17,6 +17,7 @@ import {
   validateCopy,
 } from "./policy";
 import { sendGmailMessage } from "@/lib/email/gmail-client";
+import { scoutSenderReady } from "./readiness";
 import type {
   Candidate,
   Eligibility,
@@ -192,6 +193,8 @@ export async function sendDraft(staff: Staff, id: string, batchId?: string) {
       409,
     );
   const sender = senderConfig();
+  if (!await scoutSenderReady())
+    throw new ScoutError("送信元メールの接続を確認してください", 503);
   if (
     sender.from !== m.from_email ||
     sender.replyTo !== m.reply_to ||

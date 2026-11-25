@@ -184,6 +184,13 @@ export function buildMimeMessage(opts: {
  * Gmail API の users.messages.send を呼んでメールを送信する。
  * 失敗時は throw する(呼び出し側で握り潰す前提)。トークン取得・送信とも GMAIL_TIMEOUT_MS で打ち切る。
  */
+// Verify the existing delegated sender without creating or sending a message.
+// Never return the access token or provider error to a caller/browser.
+export async function checkGmailSender(from: string): Promise<boolean> {
+  try { return Boolean((await getJwtClient(from).getAccessToken()).token); }
+  catch { return false; }
+}
+
 export async function sendGmailMessage(opts: {
   to: string;
   /** 送信元 (impersonate対象)。例: support_team@pmagent.jp */
