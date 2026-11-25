@@ -1,6 +1,7 @@
+import { DRIVER_LEGACY_MEMO_WRITE } from '@/lib/larkSubmissionState';
 import { describe, expect, it } from 'vitest';
 import { mapJobTimingLabel } from '@/app/components/application-form/utils/mapJobTimingLabel';
-import { appendLarkNotificationMarker, resolveDirectBaseWrite, type BaseWriteContext } from './route';
+import { resolveDirectBaseWrite, type BaseWriteContext } from './route';
 
 function mechanicContext(): BaseWriteContext {
   return {
@@ -77,14 +78,12 @@ describe('resolveDirectBaseWrite', () => {
       expect(target?.fields).not.toHaveProperty('CR素材');
       expect(target?.fields).not.toHaveProperty('CR素材状態');
     }
-    // 監視が照合に使う受付IDの印は残す
+    // 監視が照合に使う受付IDは専用列へ
     const ridejob = resolveDirectBaseWrite({ ...mechanicContext(), isMechanic: false, isTruck: true, submissionId: 'submission-1', creativeText });
-    expect(ridejob?.fields.対応履歴メモ).toContain('[submission_id:submission-1]');
+    expect(ridejob?.fields.submission_id).toBe('submission-1');
+    expect(String(ridejob?.fields.対応履歴メモ).includes('[submission_id:')).toBe(DRIVER_LEGACY_MEMO_WRITE);
   });
-  it('担当者が追記したメモを保持して通知済み印を追加する', () => {
-    expect(appendLarkNotificationMarker('[submission_id:submission-1]\n電話済み', 'submission-1'))
-      .toBe('[submission_id:submission-1]\n電話済み\n[lark_notified:submission-1]');
-  });
+
 
   it('カタログで見た求人と実際の応募求人を専用欄へ保存する', () => {
     const target = resolveDirectBaseWrite({
@@ -185,7 +184,7 @@ function truckContext(): BaseWriteContext {
 }
 
 describe('resolveDirectBaseWrite (truck)', () => {
-  it('RIDE JOB Baseでは既存メモ列に求人帰属とsubmission_idを保存する', () => {
+  it('RIDE JOB Baseでは求人帰属をメモ、受付IDを専用列に保存する', () => {
     const target = resolveDirectBaseWrite({
       ...truckContext(),
       submissionId: 'submission-ridejob-1',
@@ -196,8 +195,8 @@ describe('resolveDirectBaseWrite (truck)', () => {
       catalogAttributionStatus: 'changed_job',
     });
 
-    expect(target?.fields.submission_id).toBeUndefined();
-    expect(target?.fields.対応履歴メモ).toContain('[submission_id:submission-ridejob-1]');
+    expect(target?.fields.submission_id).toBe('submission-ridejob-1');
+    expect(String(target?.fields.対応履歴メモ).includes('[submission_id:')).toBe(DRIVER_LEGACY_MEMO_WRITE);
     expect(target?.fields.対応履歴メモ).toContain('広告クリック求人ID: job-1');
     expect(target?.fields.対応履歴メモ).toContain('広告クリック求人名: タクシードライバー');
     expect(target?.fields.対応履歴メモ).toContain('応募求人ID: job-2');

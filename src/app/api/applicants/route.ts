@@ -1,3 +1,4 @@
+import { driverSubmissionMemo, larkFieldText, larkNotificationSent, larkNotificationUpdate } from '@/lib/larkSubmissionState';
 import { NextRequest, NextResponse } from 'next/server';
 import { restoreMarketingConsent } from '@/lib/marketing-consent-server';
 import { readMarketingConsent, marketingConsentMemo, marketingConsentFields, type MarketingConsentRecord } from '@/lib/marketing-consent';
@@ -107,19 +108,11 @@ export type BaseWriteContext = {
   catalogAttributionStatus?: CatalogAttributionStatus;
 };
 
-const submissionMarker = (submissionId: string): string => `[submission_id:${submissionId}]`;
-const notificationMarker = (submissionId: string): string => `[lark_notified:${submissionId}]`;
-export const appendLarkNotificationMarker = (memo: string, submissionId: string): string => {
-  const marker = notificationMarker(submissionId);
-  if (memo.includes(marker)) return memo;
-  return [memo.trim(), marker].filter(Boolean).join('\n');
-};
-
 const buildCatalogMemoLines = (ctx: BaseWriteContext): string[] => [
+  driverSubmissionMemo(ctx.submissionId),
   ctx.privacyConsent ? privacyConsentMemo(ctx.privacyConsent) : '',
   ctx.marketingConsent ? marketingConsentMemo(ctx.marketingConsent) : '',
   ctx.udAdConsent ? udAdConsentMemo(ctx.udAdConsent) : '',
-  ctx.submissionId ? submissionMarker(ctx.submissionId) : '',
   ctx.appliedJobId ? `応募求人ID: ${ctx.appliedJobId}` : '',
   ctx.catalogJobId ? `広告クリック求人ID: ${ctx.catalogJobId}` : '',
   ctx.catalogJobName ? `広告クリック求人名: ${ctx.catalogJobName}` : '',
@@ -253,6 +246,7 @@ export function resolveDirectBaseWrite(ctx: BaseWriteContext): DirectBaseWrite |
       市区町村以下: address,
       応募日: ctx.submittedAtMs,
       Status: 'リード',
+      submission_id: ctx.submissionId,
       // 求職者DB🚕 に「登録職種」列は無く、職種は応募職種マスタへの関連フィールド
       //「マスタ-応募職種」で持つ（linkedRecordName からレコードIDを解決して書き込む）。
       'マスタ-応募職種': jobCategoryName ? { linkedRecordName: jobCategoryName } : undefined,
@@ -312,20 +306,19 @@ async function saveToBase(
   if (target && isLarkBaseConfigured(target.profile)) {
     try {
       if (ctx.submissionId) {
-        const usesMemoMarker = target.profile === 'ridejob';
-        const uniqueValue = usesMemoMarker ? submissionMarker(ctx.submissionId) : ctx.submissionId;
+        const legacyMemoFallback = target.profile === 'ridejob';
         let saved = await upsertBaseRecordByTextField(
           target.tableId,
-          usesMemoMarker ? '対応履歴メモ' : 'submission_id',
-          uniqueValue,
+          'submission_id',
+          ctx.submissionId,
           target.fields,
           target.profile,
-          usesMemoMarker ? 'contains' : 'is',
+          'is',
           false,
+          legacyMemoFallback,
         );
-        const hasNotificationMarker = (fields: Record<string, unknown>): boolean => usesMemoMarker
-          ? String(fields['対応履歴メモ'] ?? '').includes(notificationMarker(ctx.submissionId))
-          : fields['Lark通知送信済み'] === true;
+        const hasNotificationMarker = (fields: Record<string, unknown>): boolean =>
+          larkNotificationSent(fields, ctx.submissionId, legacyMemoFallback);
         let notificationAlreadySent = hasNotificationMarker(saved.previousFields);
 
         // 同じsubmission_idが同時到着した場合、作成の敗者は先着の通知完了を待つ。
@@ -335,12 +328,13 @@ async function saveToBase(
             await new Promise((resolve) => setTimeout(resolve, 250));
             saved = await upsertBaseRecordByTextField(
               target.tableId,
-              usesMemoMarker ? '対応履歴メモ' : 'submission_id',
-              uniqueValue,
+              'submission_id',
+              ctx.submissionId,
               target.fields,
               target.profile,
-              usesMemoMarker ? 'contains' : 'is',
+              'is',
               false,
+              legacyMemoFallback,
             );
             notificationAlreadySent = hasNotificationMarker(saved.previousFields);
           }
@@ -380,9 +374,7 @@ async function saveToBase(
           notificationRecoveryExpired,
           profile: target.profile,
           tableId: target.tableId,
-          memo: usesMemoMarker
-            ? String(saved.previousFields['対応履歴メモ'] ?? target.fields['対応履歴メモ'] ?? '').trim()
-            : undefined,
+          memo: larkFieldText(saved.previousFields['対応履歴メモ'] ?? target.fields['対応履歴メモ']),
         };
       }
       await createBaseRecord(target.tableId, target.fields, target.profile);
@@ -1230,11 +1222,7 @@ ${additionalFields ? `${additionalFields}\n` : ''}電話番号: ${formData.phone
         // （営業の記入・[submission_id:] 冪等キー・カタログ帰属行）が消える。
         // 冪等キーが消えると直書き経路が同じ応募をもう一度作る＝重複を止める処理が重複を作る。
         if (baseSave.recordId && !baseSave.dedupedExisting) {
-          const notificationFields = baseSave.profile === 'ridejob'
-            ? {
-                対応履歴メモ: appendLarkNotificationMarker(baseSave.memo || '', submissionId),
-              }
-            : { 'Lark通知送信済み': true };
+          const notificationFields = larkNotificationUpdate(baseSave.memo, submissionId, baseSave.profile === 'ridejob');
           let notificationStatePersisted = false;
           let lastPersistError: unknown;
           for (let attempt = 1; attempt <= 3; attempt += 1) {

@@ -1,3 +1,4 @@
+import { larkFieldText } from './larkSubmissionState';
 // Lark Bitable(Base)へレコードを作成する軽量クライアント。
 // tenant_access_token を取得 →（プロファイル別にプロセス内キャッシュ）→ 指定テーブルへ records 作成。
 // プロファイル = .env の接尾辞。APP_ID_<PROFILE> / APP_SECRET_<PROFILE> / APP_TOKEN_<PROFILE> /
@@ -615,6 +616,7 @@ export async function upsertBaseRecordByTextField(
   profile: LarkProfile = DEFAULT_PROFILE,
   operator: "is" | "contains" = "is",
   updateExisting = true,
+  legacyMemoFallback = false,
 ): Promise<BaseUpsertResult> {
   const cfg = readConfig(profile);
   if (!cfg) {
@@ -623,14 +625,17 @@ export async function upsertBaseRecordByTextField(
   }
   if (!uniqueValue.trim()) throw new Error("Base upsertの一意キーが空です。");
 
-  const searchCurrent = () => searchRecordsByTextField(
-    cfg,
-    profile,
-    tableId,
-    uniqueFieldName,
-    uniqueValue,
-    operator,
-  );
+  const useLegacy = legacyMemoFallback && profile === 'ridejob' && uniqueFieldName === 'submission_id';
+  const searchCurrent = async () => {
+    const found = await searchRecordsByTextField(cfg, profile, tableId, uniqueFieldName, uniqueValue, operator);
+    if (found.length || !useLegacy) return found;
+    const legacy = await searchRecordsByTextField(cfg, profile, tableId, '対応履歴メモ', `[submission_id:${uniqueValue}]`, 'contains');
+    if (legacy.some(row => {
+      const dedicated = larkFieldText(row.fields?.submission_id);
+      return dedicated && dedicated !== uniqueValue;
+    })) throw new Error('Legacy submission identity conflicts with dedicated field');
+    return legacy;
+  };
   const records = await searchCurrent();
   if (records.length > 1) {
     throw new Error(`Base upsertの一意キー「${uniqueValue}」が複数件あります。`);
@@ -675,7 +680,9 @@ export async function upsertBaseRecordByTextField(
       freshToken,
       tableId,
       cleaned,
-      idempotencyToken(`${cfg.appToken}/${tableId}/${uniqueFieldName}/${uniqueValue}`),
+      idempotencyToken(useLegacy
+        ? `${cfg.appToken}/${tableId}/対応履歴メモ/[submission_id:${uniqueValue}]`
+        : `${cfg.appToken}/${tableId}/${uniqueFieldName}/${uniqueValue}`),
     ),
   );
   if (result.code === 1254608) {

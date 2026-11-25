@@ -1,3 +1,4 @@
+import { DRIVER_LEGACY_MEMO_WRITE } from '@/lib/larkSubmissionState';
 import { NextRequest } from 'next/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const afterTasks = vi.hoisted(() => ({ queue: [] as (() => unknown)[] }));
@@ -196,6 +197,10 @@ describe('applicants POST — outbound host allowlist', () => {
     const { POST } = await import('./route');
     const response = await POST(makeRequest({ ...applicantBody, metaEventId: undefined, submissionId: 'compact-notice', utmParams: { utm_source: 'fb', utm_medium: 'cpc', utm_id: '123456789' } }));
     expect(response.status).toBe(200);
+    const notificationUpdates = fetchSpy.mock.calls.filter(([target, init]) => String(target).includes('/records/') && (init as RequestInit)?.method === 'PUT')
+      .map(([, init]) => JSON.parse(String((init as RequestInit)?.body)).fields)
+    expect(notificationUpdates.some(fields => fields['Lark通知送信済み'] === true)).toBe(true)
+    expect(notificationUpdates.every(fields => Object.hasOwn(fields, '対応履歴メモ') === DRIVER_LEGACY_MEMO_WRITE)).toBe(true)
     const sent = fetchSpy.mock.calls.filter(([input]) => String(input).includes('/im/v1/messages')).map(([, init]) => String((init as RequestInit)?.body ?? '')).join('\n');
     for (const line of ['Instagram投稿: https://www.instagram.com/p/EXAMPLE/', '本文: CR本文', '見出し: CR見出し', '説明: CR説明']) expect(sent).toContain(line);
     for (const verbose of ['ad.id', '広告管理画面', '注意:', '取得日時', '集客元', '応募経路', 'CR参照状態']) expect(sent).not.toContain(verbose);
@@ -204,7 +209,8 @@ describe('applicants POST — outbound host allowlist', () => {
     expect(saves.length).toBeGreaterThan(0);
     for (const fields of saves) {
       expect(String(fields.対応履歴メモ ?? '')).not.toContain('CR本文');
-      expect(String(fields.対応履歴メモ ?? '')).toContain('[submission_id:compact-notice]');
+      expect(fields.submission_id).toBe('compact-notice');
+      expect(String(fields.対応履歴メモ ?? '').includes('[submission_id:')).toBe(DRIVER_LEGACY_MEMO_WRITE);
       expect(String(fields.クリエイティブ ?? '')).toContain('本文: CR本文');
     }
   });
