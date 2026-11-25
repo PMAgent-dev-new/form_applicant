@@ -28,7 +28,14 @@ export async function verifyPortalRequest(req: Request): Promise<PortalClaim> {
   if (!c || c.v !== 1 || !uuid.test(c.id) || typeof c.email !== "string" || c.email.length > 254 || !/^[a-f0-9]{64}$/.test(c.session) || !uuid.test(c.nonce) || !Number.isSafeInteger(c.at) || !/^[a-f0-9]{64}$/.test(c.body)) throw denied("claim_format");
   if (c.at > Date.now() + 5000 || c.at < Date.now() - 60000) throw denied("expired");
   if (c.method !== req.method) throw denied("method");
-  if (c.target !== u.pathname + u.search) throw denied("target");
+  // Next can strip the configured basePath before passing a route its Request.
+  // Restore only that trusted prefix for scout APIs; never trust forwarded URLs
+  // or normalize away a different endpoint/query from the signed target.
+  const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "";
+  const target = basePath && u.pathname.startsWith("/api/scout/")
+    ? basePath + u.pathname + u.search
+    : u.pathname + u.search;
+  if (c.target !== target) throw denied("target");
   if (Number(req.headers.get("content-length") || 0) > 400000) throw denied("body_size");
   const body = await req.clone().text();
   if (Buffer.byteLength(body) > 400000 || createHash("sha256").update(body).digest("hex") !== c.body) throw denied("body");

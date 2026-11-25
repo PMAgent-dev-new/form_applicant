@@ -1,5 +1,6 @@
 import { beforeEach, expect, test, vi } from "vitest";
 import { createHash, createHmac, randomUUID } from "node:crypto";
+import { NextRequest } from "next/server";
 vi.mock("./db", () => ({ rpc: vi.fn() }));
 import { rpc } from "./db";
 import { verifyPortalRequest, consumePortalClaim } from "./portal-auth";
@@ -12,10 +13,24 @@ function request(overrides: Record<string, unknown> = {}, actual: { body?: strin
   const encoded = Buffer.from(JSON.stringify(claim)).toString("base64url");
   return new Request("https://ridejob.jp" + (actual.target || target), { method: actual.method || "POST", body: actual.body ?? body, headers: { "x-pma-scout-claim": encoded, "x-pma-scout-signature": createHmac("sha256", key).update(encoded).digest("hex") } });
 }
-beforeEach(() => { process.env.SCOUT_PORTAL_KEY = key; vi.clearAllMocks(); });
+beforeEach(() => { process.env.SCOUT_PORTAL_KEY = key; delete process.env.NEXT_PUBLIC_BASE_PATH; vi.clearAllMocks(); });
 test("valid signature binds the unchanged request and leaves its body readable", async () => {
   const r = request(); const c = await verifyPortalRequest(r);
   expect(c.id).toBe(actor.id); expect(await r.text()).toBe('{"action":"step"}');
+});
+test("Next base-path normalization preserves the exact signed public target", async () => {
+  process.env.NEXT_PUBLIC_BASE_PATH = "/entry";
+  const normalized = new NextRequest(request({}, {target:target.replace("/entry", "")}));
+  expect((await verifyPortalRequest(normalized)).target).toBe(target);
+  expect((await verifyPortalRequest(request())).target).toBe(target);
+});
+test("base-path handling still rejects other endpoints, queries and unsigned prefixes", async () => {
+  process.env.NEXT_PUBLIC_BASE_PATH = "/entry";
+  for (const changed of ["/api/scout/send?id=test", "/api/scout/batches?id=other", "/other/api/scout/batches?id=test"]) {
+    await expect(verifyPortalRequest(new NextRequest(request({}, {target:changed})))).rejects.toMatchObject({status:401});
+  }
+  delete process.env.NEXT_PUBLIC_BASE_PATH;
+  await expect(verifyPortalRequest(new NextRequest(request({}, {target:target.replace("/entry", "")})))).rejects.toMatchObject({status:401});
 });
 test("changed body, method, query and expired claims fail before any database work", async () => {
   for (const r of [request({}, {body:'{"action":"approve"}'}), request({}, {method:"PUT"}), request({}, {target:target+"2"}), request({at:Date.now()-61000}), request({at:Date.now()+61000}), request({session:""}), request({v:2})]) await expect(verifyPortalRequest(r)).rejects.toMatchObject({status:401});
