@@ -27,6 +27,13 @@ test("forged signature and missing server key fail closed", async () => {
   delete process.env.SCOUT_PORTAL_KEY;
   await expect(verifyPortalRequest(request())).rejects.toMatchObject({status:503});
 });
+test("diagnostics contain fixed reason codes without request or identity data", async () => {
+  const log = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    await expect(verifyPortalRequest(request({}, {target:target+"2"}))).rejects.toMatchObject({status:401});
+    expect(log.mock.calls).toEqual([["scout_portal_auth_denied", "target"]]);
+  } finally { log.mockRestore(); }
+});
 test("verified claim still requires a live session, permission, consent and one-use nonce", async () => {
   const c = await verifyPortalRequest(request());
   vi.mocked(rpc).mockResolvedValueOnce(actor).mockResolvedValueOnce(null);
