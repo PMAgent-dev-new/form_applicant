@@ -77,6 +77,22 @@ describe('応募受付メール（Gmail API）のタイムアウト', () => {
     expect(network).not.toHaveBeenCalled();
   });
 
+  it('送信元認証の失敗ログに外部応答・秘密情報を含めない', async () => {
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await loadEmail();
+    const { checkGmailSender } = await import('./gmail-client');
+    for (const [error, expected] of [
+      [{ response: { data: { error: 'invalid_grant', error_description: 'Invalid email or User ID', token: 'private-token' } } }, 'invalid_sender'],
+      [{ response: { data: { error: 'unauthorized_client', error_description: 'private-details' } } }, 'delegation_not_authorized'],
+      [new Error('private-provider-details'), 'unavailable'],
+    ] as const) {
+      jwt.getAccessToken.mockRejectedValueOnce(error);
+      await expect(checkGmailSender('ridejob@pmagent.jp')).resolves.toBe(false);
+      expect(log).toHaveBeenLastCalledWith('scout_sender_auth_failed', expected);
+    }
+    expect(JSON.stringify(log.mock.calls)).not.toContain('private-');
+  });
+
   it('Gmail API が応答しないとき、5秒のタイムアウトで打ち切って reason: error を返す', async () => {
     const timeoutSpy = shortenAbortSignalTimeout();
     const fetchSpy = hangingFetch();

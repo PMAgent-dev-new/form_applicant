@@ -188,7 +188,20 @@ export function buildMimeMessage(opts: {
 // Never return the access token or provider error to a caller/browser.
 export async function checkGmailSender(from: string): Promise<boolean> {
   try { return Boolean((await getJwtClient(from).getAccessToken()).token); }
-  catch { return false; }
+  catch (error) {
+    // Log only a fixed category: provider errors can contain credentials or identities.
+    const failure = error as { message?: unknown; response?: { data?: { error?: unknown; error_description?: unknown } } } | null;
+    const code = failure?.response?.data?.error;
+    const detail = failure?.response?.data?.error_description;
+    let reason = 'unavailable';
+    if (code === 'invalid_grant') reason = detail === 'Invalid email or User ID' ? 'invalid_sender' : 'invalid_grant';
+    else if (code === 'unauthorized_client') reason = 'delegation_not_authorized';
+    else if (code === 'access_denied') reason = 'access_denied';
+    else if (failure?.message === 'GOOGLE_SERVICE_ACCOUNT_KEY_BASE64 (or GOOGLE_SERVICE_ACCOUNT_KEY) is not set.') reason = 'credentials_missing';
+    else if (failure?.message === 'Service account key is not valid JSON.' || failure?.message === 'Service account key JSON is missing client_email or private_key.') reason = 'credentials_invalid';
+    console.warn('scout_sender_auth_failed', reason);
+    return false;
+  }
 }
 
 export async function sendGmailMessage(opts: {
