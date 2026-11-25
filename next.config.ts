@@ -8,6 +8,7 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
+  async redirects() { return process.env.SCOUT_AUTH_MODE === "pma_google" ? [{source:"/scout",destination:"https://apps.pmagent.jp/scout",permanent:false}] : []; },
   // マルチゾーン配信: ridejob.jp 配下へ複製する deployment でのみ NEXT_PUBLIC_BASE_PATH=/entry を設定する。
   // 既存の ridejob.pmagent.jp（単独ドメイン）deployment では未設定＝basePathなし（挙動不変）。
   basePath: process.env.NEXT_PUBLIC_BASE_PATH || undefined,

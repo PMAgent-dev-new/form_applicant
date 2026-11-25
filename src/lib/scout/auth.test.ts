@@ -29,6 +29,13 @@ describe("scout auth", () => {
     vi.unstubAllGlobals();
     vi.clearAllMocks();
   });
+  it("Google mode rejects legacy passwords and cookies before contacting Auth", async () => {
+    vi.stubEnv("SCOUT_AUTH_MODE", "pma_google");
+    vi.stubEnv("SCOUT_PORTAL_KEY", "test-only-key-".repeat(5));
+    await expect(login(request())).rejects.toMatchObject({status:403});
+    await expect(requireStaff(request())).rejects.toMatchObject({status:401});
+    expect(fetch).not.toHaveBeenCalled(); expect(db).not.toHaveBeenCalled();
+  });
   it("rejects missing sessions and forged cookie user IDs", async () => {
     await expect(
       requireStaff(

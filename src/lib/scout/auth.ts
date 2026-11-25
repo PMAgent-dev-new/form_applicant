@@ -4,6 +4,7 @@ import { db, rpc } from "./db";
 import { scoutConfig, ScoutError } from "./config";
 import { normalizeEmail } from "./policy";
 import type { Staff } from "./types";
+import { verifyPortalRequest, consumePortalClaim } from "./portal-auth";
 
 export const SESSION_COOKIE = "rj_scout_session";
 export const privateHeaders = {
@@ -35,6 +36,9 @@ export async function readInput(req: NextRequest, maxLength = 16000) {
 }
 export async function requireStaff(req: NextRequest): Promise<Staff> {
   const c = scoutConfig();
+  if (process.env.SCOUT_AUTH_MODE === "pma_google") {
+    return consumePortalClaim(await verifyPortalRequest(req));
+  }
   const token = req.cookies.get(SESSION_COOKIE)?.value;
   if (!token || token.length > 8000)
     throw new ScoutError("ログインしてください", 401);
@@ -63,6 +67,8 @@ export async function requireStaff(req: NextRequest): Promise<Staff> {
   return rows[0];
 }
 export async function login(req: NextRequest) {
+  if (process.env.SCOUT_AUTH_MODE === "pma_google")
+    throw new ScoutError("社内アプリのGoogleログインをご利用ください", 403);
   const input = await readInput(req);
   const c = scoutConfig();
   if (
