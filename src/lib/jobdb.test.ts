@@ -122,7 +122,10 @@ describe('一覧の取り方', () => {
     responder = (url) => {
       const offset = Number(url.searchParams.get('offset'));
       const n = offset === 0 ? 1000 : 5;
-      return Response.json(Array.from({ length: n }, (_, i) => ({ id: String(offset + i), name: 'x', prefecture: null })));
+      return new Response(
+        JSON.stringify(Array.from({ length: n }, (_, i) => ({ id: String(offset + i), name: 'x', prefecture: null }))),
+        { headers: { 'content-range': `${offset}-${offset + n - 1}/1005` } },
+      );
     };
     const rows = await fetchMunicipalities('13');
     expect(rows).toHaveLength(1005);
@@ -135,9 +138,21 @@ describe('一覧の取り方', () => {
     expect(rows[0]).toEqual({ id: '0', name: 'x', prefecture: null });
   });
 
+  it('サーバーの1回の上限が1,000行より小さくても、件数まで取り切る', async () => {
+    responder = (url) => {
+      const offset = Number(url.searchParams.get('offset'));
+      const n = Math.min(500, 1200 - offset);
+      return new Response(JSON.stringify(Array.from({ length: n }, (_, i) => ({ id: String(offset + i) }))), {
+        headers: { 'content-range': `${offset}-${offset + n - 1}/1200` },
+      });
+    };
+    expect(await fetchMunicipalities()).toHaveLength(1200);
+    expect(calls.map((c) => c.url.searchParams.get('offset'))).toEqual(['0', '500', '1000']);
+  });
+
   it('-publishedAt は publishedAt の降順のあとに既定の並び', async () => {
     await getLatestJobsByCategoryId('6', 3);
-    expect(calls[0].url.searchParams.get('order')).toBe('publishedAt.desc,createdAt.desc,cmsRank.asc.nullslast,id.asc');
+    expect(calls[0].url.searchParams.get('order')).toBe('publishedAt.desc.nullslast,createdAt.desc,cmsRank.asc.nullslast,id.asc');
     expect(calls[0].url.searchParams.get('jobCategoryId')).toBe('eq.6');
     expect(calls[0].url.searchParams.get('limit')).toBe('3');
   });
@@ -150,7 +165,9 @@ describe('一覧の取り方', () => {
   it('都道府県×職種のランダム: ID だけを全件取り、選んだ分の中身を取る', async () => {
     responder = (url) =>
       url.searchParams.get('select') === 'id'
-        ? Response.json([{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }])
+        ? new Response(JSON.stringify([{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }]), {
+            headers: { 'content-range': '0-3/4' },
+          })
         : Response.json((url.searchParams.get('id') ?? '').replace(/^in\.\(|\)$/g, '').split(',').map((id) => ({ id })));
     const jobs = await getRandomJobsByPrefectureIdsAndCategory(['13', '14', '13'], '5', 3);
     expect(jobs).toHaveLength(3);
@@ -183,6 +200,7 @@ describe('1件と失敗のとき', () => {
   it('接続設定が無ければ取りに行かない', async () => {
     vi.stubEnv('JOBDB_SUPABASE_ANON_KEY', '');
     await expect(fetchJobById('a')).rejects.toThrow(/not set/);
+    await expect(getLatestJobsByCategoryIds(['6'], 3)).rejects.toThrow(/not set/);
     expect(calls).toHaveLength(0);
   });
 });

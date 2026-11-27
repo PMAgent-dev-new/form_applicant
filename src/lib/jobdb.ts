@@ -17,7 +17,7 @@ const PAGE_SIZE = 1000;
 const CMS_DEFAULT_LIMIT = 10;
 
 const ORDER_DEFAULT = 'createdAt.desc,cmsRank.asc.nullslast,id.asc';
-const ORDER_PUBLISHED_DESC = `publishedAt.desc,${ORDER_DEFAULT}`;
+const ORDER_PUBLISHED_DESC = `publishedAt.desc.nullslast,${ORDER_DEFAULT}`;
 const ORDER_MASTER = 'cmsRank.asc.nullslast,id.asc';
 
 // site_jobs のうち CMS の項目だけ（絞り込み用の prefectureId・prefEff・tagIds・cmsRank・kwText などは取らない）
@@ -100,6 +100,8 @@ type FetchMode = { cache: 'no-store'; timeoutMs: number } | { revalidate: number
 // 一覧・マスタは CMS と同じく 60秒の再検証。1件（応募の照合・スカウト）は CMS と同じく毎回・5秒で打ち切る。
 const LIST_FETCH: FetchMode = { revalidate: 60 };
 const ONE_FETCH: FetchMode = { cache: 'no-store', timeoutMs: 5000 };
+// スカウトの事前確認の一覧（CMS の取得と同じ10秒）
+const PREFLIGHT_FETCH: FetchMode = { cache: 'no-store', timeoutMs: 10000 };
 
 async function request(
   view: string,
@@ -138,16 +140,20 @@ async function request(
   return { rows, totalCount };
 }
 
-/** 全件をページに分けて取る（並びは一意になるよう id を最後に含めること）。 */
+/**
+ * 全件をページに分けて取る（並びは一意になるよう id を最後に含めること）。件数（Content-Range）まで取り切るので、
+ * サーバーの1回の上限が1,000行より小さくても途中で切れない。
+ */
 async function requestAll(view: string, params: URLSearchParams): Promise<Row[]> {
   const results: Row[] = [];
-  for (let offset = 0; ; offset += PAGE_SIZE) {
+  for (let offset = 0; ; ) {
     const page = new URLSearchParams(params);
     page.set('limit', String(PAGE_SIZE));
     page.set('offset', String(offset));
-    const { rows } = await request(view, page);
+    const { rows, totalCount } = await request(view, page, { count: true });
     results.push(...rows);
-    if (rows.length < PAGE_SIZE) break;
+    offset += rows.length;
+    if (rows.length === 0 || offset >= totalCount!) break;
   }
   return results;
 }
@@ -187,7 +193,8 @@ function shapeReference(value: Row, depthLeft: number): Row {
 /** site_jobs の1行を CMS（depth=1）の1件の形に。 */
 export function toCmsJob(row: Row): Job {
   const out = shapeObject(row, 1);
-  // CMS に無い項目。job-db では true のときだけ値がある
+  // title・imageUrl・expiresAt・companyUrl・companyLogo・hideCompanyName は CMS に無い項目で、同期が空に戻す
+  // （2026-11-27 公開中の全件で6項目とも空を実測）。空でなければ出す。hideCompanyName は true のときだけ。
   if (out.hideCompanyName !== true) delete out.hideCompanyName;
   if (Array.isArray(out.tags)) {
     out.tags = out.tags.map((t) => (isPlainObject(t) ? shapeReference(t, 1) : t));
@@ -325,12 +332,13 @@ export async function getLatestJobsByCategoryId(categoryId: string, count: numbe
 export async function getLatestJobsByCategoryIds(categoryIds: string[], count: number = 3): Promise<Job[]> {
   void categoryIds;
   void count;
+  jobdbConfig(); // CMS と同じく、接続設定が無ければ例外
   return [];
 }
 
 /** 公開日の新しい順に count 件の { id, publishedAt }（スカウトの事前確認用。CMS の fields=id,publishedAt&orders=-publishedAt）。 */
 export async function listLatestPublishedJobIds(count: number): Promise<Array<{ id: string; publishedAt: string }>> {
   const params = new URLSearchParams({ select: 'id,publishedAt', order: ORDER_PUBLISHED_DESC, limit: String(count) });
-  const { rows } = await request('site_jobs', params, { mode: ONE_FETCH });
+  const { rows } = await request('site_jobs', params, { mode: PREFLIGHT_FETCH });
   return rows.map((row) => toCmsJob(row) as unknown as { id: string; publishedAt: string });
 }

@@ -51,7 +51,7 @@ beforeEach(() => {
       if (url.startsWith("https://api.anthropic.com/v1/models/"))
         return Response.json({ id: "claude-sonnet-5-5" });
       if (url.startsWith("https://jobdb-test.supabase.co/rest/v1/site_jobs?")) {
-        expect(new URL(url).searchParams.get("order")).toMatch(/^publishedAt\.desc,/);
+        expect(new URL(url).searchParams.get("order")).toMatch(/^publishedAt\.desc(\.nullslast)?,/);
         return Response.json(
           ["job1", "job2", "job3"].map((id) => ({ id, publishedAt: "2026-11-24" })),
         );

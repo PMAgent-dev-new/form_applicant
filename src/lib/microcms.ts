@@ -6,7 +6,8 @@ const API_KEY = process.env.MICROCMS_API_KEY;
 const BASE_URL = SERVICE_DOMAIN ? `https://${SERVICE_DOMAIN}.microcms.io/api/v1` : '';
 const hasMicrocmsEnv = Boolean(SERVICE_DOMAIN && API_KEY);
 
-if (!hasMicrocmsEnv) {
+// 読み先が job-db のとき（JOBS_READ_SOURCE=jobdb）は CMS を読まないので、設定が無くても警告しない
+if (!hasMicrocmsEnv && process.env.JOBS_READ_SOURCE?.trim().toLowerCase() !== 'jobdb') {
   console.warn('microCMS environment variables are not set. Falling back to static data where available.');
 }
 
