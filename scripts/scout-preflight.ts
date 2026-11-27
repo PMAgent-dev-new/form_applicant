@@ -3,6 +3,12 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildClaudeRequest, parseClaudeResponse } from "../src/lib/scout/ai";
 import { loadJob } from "../src/lib/scout/sources";
+import {
+  hasJobdbConfig,
+  JobdbHttpError,
+  listLatestPublishedJobIds,
+} from "../src/lib/jobdb";
+import { jobsReadSource } from "../src/lib/jobs-source";
 
 export async function runPreflight(args: string[]) {
   const [permission, month, startText, deadlineText] = args;
@@ -36,13 +42,15 @@ export async function runPreflight(args: string[]) {
   const serviceKey = process.env.SUBMISSION_VAULT_SERVICE_KEY;
   const domain = process.env.MICROCMS_SERVICE_DOMAIN;
   const cmsKey = process.env.MICROCMS_API_KEY;
+  // 求人の読み先（JOBS_READ_SOURCE）の接続設定だけを求める
+  const readsJobdb = jobsReadSource() === "jobdb";
   if (
     !key ||
     !serviceKey ||
     vault !== "https://tdlnowmdanapxmgebaqu.supabase.co" ||
-    !domain ||
-    !/^[a-zA-Z0-9-]+$/.test(domain) ||
-    !cmsKey
+    (readsJobdb
+      ? !hasJobdbConfig()
+      : !domain || !/^[a-zA-Z0-9-]+$/.test(domain) || !cmsKey)
   )
     throw new Error("connection_configuration");
   const claudeHeaders = {
@@ -63,16 +71,27 @@ export async function runPreflight(args: string[]) {
   console.log(
     "SCOUT_PREFLIGHT " + JSON.stringify({ keyAuthenticated: true, model }),
   );
-  const jobsResponse = await fetch(
-    `https://${domain}.microcms.io/api/v1/jobs?limit=3&fields=id,publishedAt&orders=-publishedAt`,
-    {
-      headers: { "X-MICROCMS-API-KEY": cmsKey },
-      signal: AbortSignal.timeout(10000),
-    },
-  );
-  if (!jobsResponse.ok)
-    throw new Error(`public_jobs_http_${jobsResponse.status}`);
-  const listing = await jobsResponse.json();
+  let listing: { contents?: Array<{ id: string; publishedAt: string }> };
+  if (readsJobdb) {
+    try {
+      listing = { contents: await listLatestPublishedJobIds(3) };
+    } catch (error) {
+      if (error instanceof JobdbHttpError)
+        throw new Error(`public_jobs_http_${error.status}`);
+      throw new Error("public_jobs_fetch");
+    }
+  } else {
+    const jobsResponse = await fetch(
+      `https://${domain}.microcms.io/api/v1/jobs?limit=3&fields=id,publishedAt&orders=-publishedAt`,
+      {
+        headers: { "X-MICROCMS-API-KEY": cmsKey! },
+        signal: AbortSignal.timeout(10000),
+      },
+    );
+    if (!jobsResponse.ok)
+      throw new Error(`public_jobs_http_${jobsResponse.status}`);
+    listing = await jobsResponse.json();
+  }
   const ids = listing.contents?.map(
     (j: { id: string; publishedAt: string }) => j.publishedAt && j.id,
   );

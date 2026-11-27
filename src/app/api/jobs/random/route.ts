@@ -4,7 +4,7 @@ import {
   getLatestJobsByCategoryIds,
   getRandomJobsByPrefectureId,
   getRandomJobsByPrefectureIdsAndCategory,
-} from '@/lib/microcms';
+} from '@/lib/jobs-source';
 import { clampCount, isMicrocmsId, parseMicrocmsIdList } from '@/lib/query-params';
 
 // 画面は count=3 で呼ぶ。上限は microCMS の limit にそのまま渡るので小さく抑える

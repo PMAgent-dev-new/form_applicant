@@ -50,6 +50,12 @@ beforeEach(() => {
     vi.fn(async (url: string, request?: RequestInit) => {
       if (url.startsWith("https://api.anthropic.com/v1/models/"))
         return Response.json({ id: "claude-sonnet-5-5" });
+      if (url.startsWith("https://jobdb-test.supabase.co/rest/v1/site_jobs?")) {
+        expect(new URL(url).searchParams.get("order")).toMatch(/^publishedAt\.desc(\.nullslast)?,/);
+        return Response.json(
+          ["job1", "job2", "job3"].map((id) => ({ id, publishedAt: "2026-11-24" })),
+        );
+      }
       if (url.includes("microcms.io/api/v1/jobs?"))
         return Response.json({
           contents: ["job1", "job2", "job3"].map((id) => ({
@@ -159,4 +165,29 @@ it("records safe token usage and stop reason before rejecting a paid truncated r
   ).toBe(true);
   expect(paidCalls).toBe(1);
   expect(attempts).toBe(1);
+});
+it("reads the three public jobs from job-db when JOBS_READ_SOURCE=jobdb (no CMS settings needed)", async () => {
+  vi.stubEnv("JOBS_READ_SOURCE", "jobdb");
+  vi.stubEnv("JOBDB_SUPABASE_URL", "https://jobdb-test.supabase.co");
+  vi.stubEnv(
+    "JOBDB_SUPABASE_ANON_KEY",
+    `x.${Buffer.from(JSON.stringify({ role: "anon" })).toString("base64url")}.y`,
+  );
+  vi.stubEnv("MICROCMS_SERVICE_DOMAIN", "");
+  vi.stubEnv("MICROCMS_API_KEY", "");
+  await runPreflight(args());
+  const urls = vi.mocked(fetch).mock.calls.map((call) => String(call[0]));
+  expect(urls.some((u) => u.includes("microcms.io"))).toBe(false);
+  expect(urls.some((u) => u.includes("/rest/v1/site_jobs?"))).toBe(true);
+  expect(paidCalls).toBe(3);
+});
+it("refuses job-db mode without the public job-db key before network", async () => {
+  vi.stubEnv("JOBS_READ_SOURCE", "jobdb");
+  vi.stubEnv("JOBDB_SUPABASE_URL", "https://jobdb-test.supabase.co");
+  vi.stubEnv(
+    "JOBDB_SUPABASE_ANON_KEY",
+    `x.${Buffer.from(JSON.stringify({ role: "service_role" })).toString("base64url")}.y`,
+  );
+  await expect(runPreflight(args())).rejects.toThrow("connection_configuration");
+  expect(vi.mocked(fetch)).not.toHaveBeenCalled();
 });

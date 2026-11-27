@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-import { getJobsByPrefectureId, fetchPrefectureById, fetchMunicipalityById, getPrefectureByRegion } from '@/lib/microcms';
+import { getJobsByPrefectureId, fetchPrefectureById, fetchMunicipalityById, getPrefectureByRegion } from '@/lib/jobs-source';
 import { normalizePostcode } from '@/lib/postcode';
 import { isMicrocmsId, parseMicrocmsIdList } from '@/lib/query-params';
 import { fetchAddressByZipcode } from '@/lib/zipcloud';

@@ -35,7 +35,7 @@ import {
 } from '@/lib/larkBase';
 import { assessCatalogTouch, type CatalogAttributionStatus } from '@/lib/catalog-attribution';
 import { isMetaCatalogJob } from '@/lib/catalog-eligibility';
-import { fetchJobById } from '@/lib/microcms';
+import { fetchJobById } from '@/lib/jobs-source';
 import { describeError } from '@/lib/describe-error';
 import { findRecentRecordByPhone } from '@/lib/larkBase';
 import { markSubmissionVaultNotified, saveToSubmissionVault } from '@/lib/submissionVault';
