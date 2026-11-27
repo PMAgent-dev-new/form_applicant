@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 
-import { fetchPrefectures } from '@/lib/microcms';
+import { fetchPrefectures } from '@/lib/jobs-source';
 
 export async function GET() {
   try {

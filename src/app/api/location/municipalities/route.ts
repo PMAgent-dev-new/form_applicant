@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-import { fetchMunicipalities, fetchMunicipalityById } from '@/lib/microcms';
+import { fetchMunicipalities, fetchMunicipalityById } from '@/lib/jobs-source';
 import { isMicrocmsId } from '@/lib/query-params';
 
 export async function GET(request: NextRequest) {

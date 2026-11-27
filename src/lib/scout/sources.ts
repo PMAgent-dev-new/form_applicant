@@ -1,6 +1,8 @@
 import { dbAll } from "./db";
 import { ScoutError } from "./config";
 import { normalizeEmail } from "./policy";
+import * as jobdb from "../jobdb";
+import { jobsReadSource } from "../jobs-source";
 import type { Candidate, ConsentEvidence, ScoutJob } from "./types";
 
 const bases = {
@@ -259,9 +261,23 @@ export async function syncStop(email: string, all: Candidate[]): Promise<void> {
   }
 }
 
-export async function loadJob(id: string): Promise<ScoutJob> {
-  if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id))
-    throw new ScoutError("求人IDを確認してください", 400);
+// 公開中の求人1件（CMS の depth=1 の形）。読み先は JOBS_READ_SOURCE（jobs-source.ts）に従う。
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function fetchPublishedJob(id: string): Promise<any> {
+  if (jobsReadSource() === "jobdb") {
+    if (!jobdb.hasJobdbConfig()) throw new ScoutError("求人への接続設定が必要です");
+    let job;
+    try {
+      job = await jobdb.fetchJobById(id);
+    } catch (error) {
+      // CMS の取得で !r.ok と同じ扱い（通信の失敗はそのまま投げる）
+      if (error instanceof jobdb.JobdbHttpError)
+        throw new ScoutError("公開中の求人を確認できません", 409);
+      throw error;
+    }
+    if (!job) throw new ScoutError("公開中の求人を確認できません", 409);
+    return job;
+  }
   const domain = process.env.MICROCMS_SERVICE_DOMAIN;
   const key = process.env.MICROCMS_API_KEY;
   if (!domain || !/^[a-zA-Z0-9-]+$/.test(domain) || !key)
@@ -275,7 +291,13 @@ export async function loadJob(id: string): Promise<ScoutJob> {
     },
   );
   if (!r.ok) throw new ScoutError("公開中の求人を確認できません", 409);
-  const job = await r.json();
+  return r.json();
+}
+
+export async function loadJob(id: string): Promise<ScoutJob> {
+  if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id))
+    throw new ScoutError("求人IDを確認してください", 400);
+  const job = await fetchPublishedJob(id);
   if (job.id !== id || !job.publishedAt || !job.updatedAt)
     throw new ScoutError("公開求人の内容を確認できません", 409);
   // 公開中だけでは紹介許可を代替しない。担当者確認と併用する。

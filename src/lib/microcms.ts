@@ -1,4 +1,6 @@
 // microCMS API client
+import { FALLBACK_PREFECTURES } from './prefecture-fallback';
+
 const SERVICE_DOMAIN = process.env.MICROCMS_SERVICE_DOMAIN;
 const API_KEY = process.env.MICROCMS_API_KEY;
 const BASE_URL = SERVICE_DOMAIN ? `https://${SERVICE_DOMAIN}.microcms.io/api/v1` : '';
@@ -337,53 +339,3 @@ export async function getLatestJobsByCategoryIds(categoryIds: string[], count: n
   const response = await fetchFromMicroCMS<Job>('jobs', params);
   return response.contents;
 }
-
-const FALLBACK_PREFECTURES: PrefectureEntry[] = [
-  { id: '01', region: '北海道', area: '' },
-  { id: '02', region: '青森県', area: '' },
-  { id: '03', region: '岩手県', area: '' },
-  { id: '04', region: '宮城県', area: '' },
-  { id: '05', region: '秋田県', area: '' },
-  { id: '06', region: '山形県', area: '' },
-  { id: '07', region: '福島県', area: '' },
-  { id: '08', region: '茨城県', area: '' },
-  { id: '09', region: '栃木県', area: '' },
-  { id: '10', region: '群馬県', area: '' },
-  { id: '11', region: '埼玉県', area: '' },
-  { id: '12', region: '千葉県', area: '' },
-  { id: '13', region: '東京都', area: '' },
-  { id: '14', region: '神奈川県', area: '' },
-  { id: '15', region: '新潟県', area: '' },
-  { id: '16', region: '富山県', area: '' },
-  { id: '17', region: '石川県', area: '' },
-  { id: '18', region: '福井県', area: '' },
-  { id: '19', region: '山梨県', area: '' },
-  { id: '20', region: '長野県', area: '' },
-  { id: '21', region: '岐阜県', area: '' },
-  { id: '22', region: '静岡県', area: '' },
-  { id: '23', region: '愛知県', area: '' },
-  { id: '24', region: '三重県', area: '' },
-  { id: '25', region: '滋賀県', area: '' },
-  { id: '26', region: '京都府', area: '' },
-  { id: '27', region: '大阪府', area: '' },
-  { id: '28', region: '兵庫県', area: '' },
-  { id: '29', region: '奈良県', area: '' },
-  { id: '30', region: '和歌山県', area: '' },
-  { id: '31', region: '鳥取県', area: '' },
-  { id: '32', region: '島根県', area: '' },
-  { id: '33', region: '岡山県', area: '' },
-  { id: '34', region: '広島県', area: '' },
-  { id: '35', region: '山口県', area: '' },
-  { id: '36', region: '徳島県', area: '' },
-  { id: '37', region: '香川県', area: '' },
-  { id: '38', region: '愛媛県', area: '' },
-  { id: '39', region: '高知県', area: '' },
-  { id: '40', region: '福岡県', area: '' },
-  { id: '41', region: '佐賀県', area: '' },
-  { id: '42', region: '長崎県', area: '' },
-  { id: '43', region: '熊本県', area: '' },
-  { id: '44', region: '大分県', area: '' },
-  { id: '45', region: '宮崎県', area: '' },
-  { id: '46', region: '鹿児島県', area: '' },
-  { id: '47', region: '沖縄県', area: '' },
-];
